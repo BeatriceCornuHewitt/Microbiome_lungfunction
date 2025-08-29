@@ -1,0 +1,57 @@
+# function to rename phyloseq to sequence level
+rename_ASVs <- function(ps) {
+  print(all(taxa_names(ps) == names(refseq(ps))))
+  
+  taxa_names(ps) <- refseq(ps) %>% as.character()
+  tax_table(ps) <- tax_table(ps)[,!colnames(tax_table(ps)) == "ASV"]
+  
+  return(ps)
+}
+
+# reorder merged phyloseq for most frequent sequences in combined dataset 
+tax_sum_reorder <- function(ps) {
+  index <- order(taxa_sums(ps), decreasing = T)
+  tax_table(ps) <- tax_table(ps)[index, ]
+  otu_table(ps) <- otu_table(ps)[index, ]
+  return(ps)
+}
+
+# creates ASV names from the taxonomy table 
+create_tax_names <- function(tax_table) {
+  tax_names <- apply(tax_table, 1, function(x) {
+    if(any(names(na.omit(x)) %in% "species")) {
+      name <- str_c(tail(na.omit(x), 2), collapse = "_")
+    } else { 
+      name <- tail(na.omit(x), 1)
+    }
+    return(name)
+  })
+  
+  tax_names %<>% 
+    str_replace_all("-| ", "_") %>%
+    str_remove_all("\\[|\\]|\\(|\\)")
+  
+  return(str_c(tax_names, 1:nrow(tax_table), sep = "_"))
+}
+
+# relabel the sequences to ASV names 
+create_phylo_custom <- function(ps) {
+  dna <- Biostrings::DNAStringSet(taxa_names(ps))
+  names(dna) <- taxa_names(ps)
+  ps <- merge_phyloseq(ps, dna)
+  taxa_names(ps) <- create_tax_names(tax_table(ps))
+  tax_table(ps) <- cbind(tax_table(ps), ASV = taxa_names(ps))
+  return(ps)
+}
+
+
+# example of how to use functions: 
+## relabel to sequence level
+ps_1_seq <- rename_ASVs(ps_1) 
+ps_2_seq <- rename_ASVs(ps_2) 
+## combine phylo's
+ps_comb <- merge_phyloseq(ps_1_seq, ps_2_seq) 
+## reorder data
+ps_taxa_ord <- tax_sum_reorder(ps_comb) # rearrange the ASVs levels to most frequent in the combined dataset
+## relable data 
+ps_renamed <- create_phylo_custom(ps_taxa_ord) 

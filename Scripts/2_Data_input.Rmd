@@ -1,0 +1,2077 @@
+---
+title: "Load data"
+author: "Beatrice Cornu Hewitt"
+date: "`r Sys.time()`"
+output: html_document
+---
+
+# Load packages 
+```{r}
+library(phyloseq); library(vegan); library(tidyr); library(dplyr); library(ggplot2);library(tidyverse); library(microbiomer); library(paletteer);library(microbiome); library(devtools); library(forcats); library(haven); library(openxlsx); library(vegan); library(ggsignif); library(patchwork); library(decontam); library(RColorBrewer); library(forcats); library(lubridate)
+
+source("functions.R")
+
+# Theme for plots in script
+theme_set(theme_bw())
+theme_update(axis.text.x = element_text(angle = 45, hjust=1),
+             strip.text = element_text(colour = 'white'),
+             strip.background =element_rect(fill="#2F4858", color = "#2F4858"))
+```
+# Load data
+```{r}
+#### VGO2 NP #### 
+# These samples were sequenced at RIVM, processed using DADA2 at the RIVM by MLO
+VGO2_NP_all <- readRDS("../Input/Phyloseq/VGO2_NP/Received_Mari_Lee/ps_raw.Rds") # all time points 
+
+# Check the number of participants included at each time point in the raw dataset (T1, T2, T3)
+time_points_NP <- sample_data(VGO2_NP_all) %>%
+  data.frame() %>%
+  filter(time_period %in% c("T1", "T2", "T3")) %>%
+  group_by(time_period) %>%
+  summarise(unique_participants = n_distinct(respnr)) %>%
+  arrange(time_period) # T1 = 220, T2 = 12, T3 = 12
+
+# Remove samples where subject_identifier contains "T2" or "T3" - we will only keep time point 1 for analysis 
+VGO2_NP <- subset_samples(
+  VGO2_NP_all,
+  !str_detect(subject_identifier, "T2|T3")
+)
+
+# # Remove taxa with 0 sum 
+# VGO2_NP <- prune_taxa(taxa_sums(VGO2_NP) > 0, VGO2_NP) # 289 samples, 10892 taxa
+
+# Identify all duplicated `respnr` values (only in NP samples)
+# Extract full metadata
+meta_all <- sample_data(VGO2_NP) %>% data.frame()
+meta_all$SampleID <- sample_names(VGO2_NP)
+# Split into NP and non-NP
+meta_NP <- meta_all %>% filter(sample_type == "NP")
+meta_other <- meta_all %>% filter(sample_type != "NP")
+# Deduplicate only NP samples by respnr
+meta_NP_dedup <- meta_NP %>%
+  filter(!is.na(respnr)) %>%
+  distinct(respnr, .keep_all = TRUE)
+meta_NP_na <- meta_NP %>% filter(is.na(respnr))
+# Combine deduplicated NP with other niches
+samples_to_keep <- c(meta_NP_dedup$SampleID, meta_NP_na$SampleID, meta_other$SampleID)
+# Prune phyloseq object
+VGO2_NP_dedup <- prune_samples(samples_to_keep, VGO2_NP)
+# Confirm
+cat("Original sample count:", nsamples(VGO2_NP), "\n") # 289
+cat("After deduplication of NP samples:", nsamples(VGO2_NP_dedup), "\n") # 288
+
+
+#### VGO2 OP #### 
+# These samples were sequenced at the UMCU. Subsequently the V3 region was trimmed by AB, and run through the RIVM DADA2 pipeline by MLO
+VGO2_OP_all <- readRDS("../Input/Phyloseq/VGO2_OP/V4/VGO_OP_v4_50_220_3.rds") 
+# Extract and modify sample_data
+sample_data(VGO2_OP_all) <- sample_data(VGO2_OP_all) %>%
+  data.frame() %>%
+  mutate(OP_time = case_when(
+    str_detect(sample_identifier, "T1") ~ "T1",
+    str_detect(sample_identifier, "T2") ~ "T2",
+    str_detect(sample_identifier, "T3") ~ "T3",
+    TRUE ~ NA_character_  # fallback in case none matched
+  )) %>%
+  sample_data()
+
+time_points_VGO2_OP <- sample_data(VGO2_OP_all) %>%
+  data.frame() %>%
+  filter(OP_time %in% c("T1", "T2", "T3")) %>%
+  group_by(OP_time) %>%
+  summarise(unique_participants = n_distinct(sample_identifier)) %>%
+  arrange(OP_time) # T1 = 281, T2 = 21, T3 = 20
+
+# Only keep time point T1 from VGO2 OP data
+VGO2_OP <- subset_samples(
+  VGO2_OP_all,
+  !str_detect(sample_identifier, "T2|T3"))# 340 samples, 1592 taxa (41 removed)
+# # Remove taxa with 0 sum 
+# VGO2_OP <- prune_taxa(taxa_sums(VGO2_OP) > 0, VGO2_OP) # 340 samples, 1540 taxa
+
+# create respnr column  
+VGO2_OP@sam_data$respnr <- sub("T1$", "", VGO2_OP@sam_data$sample_identifier)
+VGO2_OP@sam_data$respnr[!grepl("^\\d", VGO2_OP@sam_data$respnr)] <- NA
+# number of VGO2 OP samples
+length(unique(na.omit(VGO2_OP@sam_data$respnr))) # 281
+# Additional metadata for VGO2_OP dataset
+VGO2_OP_meta <- read.xlsx("../Input/Phyloseq/VGO2_OP/V4/sample_sheet_VGO_OP.xlsx")
+VGO2_OP@sam_data$Sample
+VGO2_OP_meta$assay_sample
+# First, ensure both identifiers are character type
+VGO2_OP@sam_data$Sample <- as.character(VGO2_OP@sam_data$Sample)
+VGO2_OP_meta$assay_sample <- as.character(VGO2_OP_meta$assay_sample)
+# Subset only relevant metadata column for merging
+# Convert sample_data to data.frame and preserve rownames
+sam_df <- data.frame(VGO2_OP@sam_data)
+sam_df$Sample <- rownames(sam_df)  # create a 'Sample' column for merging
+# Make sure meta has correct column names
+meta_subset <- VGO2_OP_meta[, c("assay_sample", "pg/ul")]
+colnames(meta_subset) <- c("Sample", "pg_ul")  # rename for easier handling
+# Merge metadata
+merged_meta <- merge(sam_df, meta_subset, by = "Sample", all.x = TRUE)
+# Set rownames back using Sample column (which matches phyloseq sample names)
+rownames(merged_meta) <- merged_meta$Sample
+# Remove redundant 'Sample' column if needed
+merged_meta$Sample <- NULL
+# Assign merged data back to phyloseq
+sample_data(VGO2_OP) <- sample_data(merged_meta)
+
+# Add "niche" column to the sam_data
+# Extract sample data as a data.frame
+meta_OP_VGO2 <- sample_data(VGO2_OP) %>% data.frame()
+meta_OP_VGO2$sample_identifier
+# Create the niche column according to your rules:
+meta_OP_VGO2$niche <- ifelse(
+  !is.na(meta_OP_VGO2$respnr) & grepl("^\\d{5}$", meta_OP_VGO2$respnr),  # VGO3_ID exists & is 5-digit number
+  "OP",
+  meta_OP_VGO2$sample_identifier  # Otherwise, use sample_ID
+)
+# Assign updated metadata back to the phyloseq object (make sure niche is a factor)
+sample_data(VGO2_OP) <- sample_data(meta_OP_VGO2)
+
+# Identify all duplicated `respnr` values (only in OP samples)
+# Extract full metadata
+meta_all <- sample_data(VGO2_OP) %>% data.frame()
+meta_all$SampleID <- sample_names(VGO2_OP)
+# Split into NP and non-NP
+meta_OP <- meta_all %>% filter(niche == "OP")
+meta_other <- meta_all %>% filter(niche != "OP")
+# Deduplicate only NP samples by respnr
+meta_OP_dedup <- meta_OP %>%
+  filter(!is.na(respnr)) %>%
+  distinct(respnr, .keep_all = TRUE)
+meta_OP_na <- meta_OP %>% filter(is.na(respnr))
+# Combine deduplicated NP with other niches
+samples_to_keep <- c(meta_OP_dedup$SampleID, meta_OP_na$SampleID, meta_other$SampleID)
+# Prune phyloseq object
+VGO2_OP_dedup <- prune_samples(samples_to_keep, VGO2_OP)
+# Confirm
+cat("Original sample count:", nsamples(VGO2_OP), "\n") # 340
+cat("After deduplication of NP samples:", nsamples(VGO2_OP_dedup), "\n") # 340 i.e. none duplicated
+
+
+
+#### VGO3 NP & OP #### 
+VGO3_NPOP <- readRDS("../Input/Phyloseq/VGO3_NPOP/1_ps_raw.Rds")
+
+# only keep control control participants - exclude GF and GP samples - keep blanks etc.
+VGO3_NPOP <- subset_samples(VGO3_NPOP, !(population %in% c("GF", "GP")))
+table(VGO3_NPOP@sam_data$niche) 
+ #  NP   OP   BD   BP   FB ZMCB ZMCD  UMD   BB 
+ # 978  989  152   17  101   87   29   26    3
+table(VGO3_NPOP@sam_data$population) # CP 1941
+
+# Exclude duplicated participants
+# Extract metadata
+meta <- data.frame(sample_data(VGO3_NPOP))
+meta$SampleID <- sample_names(VGO3_NPOP)
+# Mark duplicates: only within CP population AND niche is OP or NP
+meta <- meta %>%
+  mutate(dup = if_else(
+    population == "CP" & niche %in% c("OP", "NP") & duplicated(paste(VGO3_ID, niche)),
+    TRUE, FALSE
+  ))
+# Keep non-duplicates or samples outside the CP+OP/NP filter
+keep_samples <- meta$SampleID[!meta$dup]
+# Prune phyloseq object
+VGO3_NPOP_dedup <- prune_samples(keep_samples, VGO3_NPOP)
+# Optional: confirm counts
+cat("Samples before:", nsamples(VGO3_NPOP), "\n") # 2397 
+cat("Samples after deduplication:", nsamples(VGO3_NPOP_dedup), "\n") # 2364 
+
+
+# Realised that some niche values are assigned as NP or OP but they are actually the blanks for these niches 
+# Filter for rows where niche is NP or OP but VGO3_ID is NOT a 5-digit number
+meta_check <- data.frame(VGO3_NPOP_dedup@sam_data)
+bad_niche_assignments <- meta_check %>%
+  filter(niche %in% c("NP", "OP") & !grepl("^\\d{5}$", VGO3_ID))
+# Print how many problematic rows there are
+cat("Number of samples with niche NP or OP but invalid VGO3_ID:", nrow(bad_niche_assignments), "\n") # 22 
+# View these rows 
+bad_niche_assignments # there are 2 which are not needed, the rest are blanks for the NP so need to be relabelled to be BL
+
+# Extract sample data
+meta <- data.frame(VGO3_NPOP_dedup@sam_data)
+meta$SampleID <- sample_names(VGO3_NPOP_dedup)
+# Remove two specific samples by sample_identifier
+samples_to_remove <- meta %>%
+  filter(sample_identifier %in% c("ISO_38_OP_TOP_B1_M", "ISO_38_OP_TOP_B2_M")) %>%
+  pull(SampleID)
+# Prune to remove those samples
+VGO3_NPOP_dedup <- prune_samples(!(sample_names(VGO3_NPOP_dedup) %in% samples_to_remove), VGO3_NPOP_dedup)
+# Fix niche values where VGO3_ID is not a 5-digit number but niche is NP or OP
+# Re-extract updated metadata
+meta <- data.frame(VGO3_NPOP_dedup@sam_data)
+# Identify the rows to correct
+bad_niche_idx <- which(meta$niche %in% c("NP", "OP") & !grepl("^\\d{5}$", meta$VGO3_ID))
+# Convert niche to character before assignment
+meta$niche <- as.character(meta$niche)
+# Now assign "FB" to the bad indices
+meta$niche[bad_niche_idx] <- "FB"
+# Optionally convert niche back to factor
+meta$niche <- factor(meta$niche)
+# Assign the modified metadata back to the phyloseq object
+sample_data(VGO3_NPOP_dedup) <- sample_data(meta)# Assign corrected metadata back to phyloseq object
+table(VGO3_NPOP_dedup@sam_data$niche)
+
+# How many samples have NA in 'niche' 
+cat("Number of samples with NA in niche:", sum(is.na(meta$niche)), "\n") #3 have NA
+# View the full rows where niche is still NA
+meta_with_na_niche <- meta %>%
+  filter(is.na(niche))
+# Print or inspect these rows
+print(meta_with_na_niche)
+# Optional: view nicely in RStudio viewer
+View(meta_with_na_niche)
+# Extract metadata from the phyloseq object
+meta <- data.frame(sample_data(VGO3_NPOP_dedup))
+meta$SampleID <- sample_names(VGO3_NPOP_dedup)
+# Assign "FB" to the two identified samples
+fb_samples <- c("ISO_73_NP_TOP_BL_N5_1001", "ISO_73_NP_TOP_BL_N5_1005")
+meta$niche[meta$sample_identifier %in% fb_samples] <- "FB"
+# Identify the remaining samples that had NA in 'niche'
+meta_with_na_niche <- meta %>%
+  filter(is.na(niche) & !(sample_identifier %in% fb_samples))
+# Set 'niche' to "unknown" for these
+# Add "unknown" to the levels of niche if not already present
+if (!"unknown" %in% levels(meta$niche)) {
+  levels(meta$niche) <- c(levels(meta$niche), "unknown")
+}
+meta$niche[meta$SampleID %in% meta_with_na_niche$SampleID] <- "unknown"
+# Update the phyloseq object with the revised metadata
+sample_data(VGO3_NPOP_dedup) <- sample_data(meta)
+# Optional: check that no NAs remain
+cat("Remaining NAs in niche:", sum(is.na(sample_data(VGO3_NPOP_dedup)$niche)), "\n")
+
+
+# Check remaining unique participants in NP and OP niches (population CP)
+length(unique(VGO3_NPOP_dedup@sam_data$VGO3_ID[VGO3_NPOP_dedup@sam_data$niche == "NP" & VGO3_NPOP_dedup@sam_data$population == "CP"])) # 956
+length(unique(VGO3_NPOP_dedup@sam_data$VGO3_ID[VGO3_NPOP_dedup@sam_data$niche == "OP" & VGO3_NPOP_dedup@sam_data$population == "CP"])) # 954
+
+# Remove taxa with 0 sum
+# VGO3_NPOP_dedup <- prune_taxa(taxa_sums(VGO3_NPOP_dedup) > 0, VGO3_NPOP_dedup) # 2434  samples, 24134 taxa
+
+# Add 'dataset' column to each phyloseq object's sample_data
+sample_data(VGO2_NP_dedup)$dataset <- "VGO2_NP"
+sample_data(VGO2_OP_dedup)$dataset <- "VGO2_OP"
+sample_data(VGO3_NPOP_dedup)$dataset <- "VGO3_NPOP"
+
+# Add 'timepoint' column to each phyloseq object's sample_data
+sample_data(VGO2_NP_dedup)$timepoint <- "T0"
+sample_data(VGO2_OP_dedup)$timepoint <- "T0"
+sample_data(VGO3_NPOP_dedup)$timepoint <- "T1"
+
+# dna_isolation_date is simply the date, convert this to run numbers to match with DI.Run from the VGO3 dataset
+sample_data(VGO2_NP_dedup)$DI.Run <- as.factor(as.numeric(factor(sample_data(VGO2_NP_dedup)$dna_isolation_date)))
+# DNA isolation run is not known for VGO2_Op dataset so add it as an empty column in sam_data
+sample_data(VGO2_OP_dedup)$DI.Run <- NA  # This creates logical NAs
+
+# filter metadata in each dataset
+names(VGO2_NP_dedup@sam_data) # keep: subject_identifier, dna_isolation_date, qPCR_pg_ul, respnr, dataset, timepoint
+names(VGO2_OP_dedup@sam_data)# keep: sample_identifier, dataset, timepoint
+names(VGO3_NPOP_dedup@sam_data) # keep: sample_identifier, DI.Run, qPCR, VGO3_ID,  dataset, niche, timepoint
+
+# For VGO2_NP: keep subject_identifier, dna_isolation_date, qPCR_pg_ul, respnr, dataset
+VGO2_NP_dedup@sam_data
+sample_data(VGO2_NP_dedup) <- sample_data(VGO2_NP_dedup)[, c("subject_identifier", "qPCR_pg_ul", "respnr", "dataset", "timepoint", "sample_type", "DI.Run")]
+
+# For VGO2_OP: keep sample_identifier, dataset
+sample_data(VGO2_OP_dedup) <- sample_data(VGO2_OP_dedup)[, c("sample_identifier", "pg_ul", "respnr" ,"dataset", "timepoint", "niche", "DI.Run")]
+
+# For VGO3_NPOP: keep DI.Run, qPCR, VGO3_ID, dataset
+sample_data(VGO3_NPOP_dedup) <- sample_data(VGO3_NPOP_dedup)[, c("sample_identifier", "qPCR", "VGO3_ID", "dataset", "timepoint", "niche", "DI.Run")]
+
+# rename some of the metadata columns to align with eachother for later merging
+# VGO2_NP
+colnames(sample_data(VGO2_NP_dedup))[
+  colnames(sample_data(VGO2_NP_dedup)) == "subject_identifier"
+] <- "sample_ID"
+
+colnames(sample_data(VGO2_NP_dedup))[
+  colnames(sample_data(VGO2_NP_dedup)) == "sample_type"
+] <- "niche"
+
+
+colnames(sample_data(VGO2_NP_dedup))[
+  colnames(sample_data(VGO2_NP_dedup)) == "qPCR_pg_ul"
+] <- "qPCR"
+
+colnames(sample_data(VGO2_NP_dedup))[
+  colnames(sample_data(VGO2_NP_dedup)) == "respnr"
+] <- "VGO3_ID"
+
+# VGO2_OP
+colnames(sample_data(VGO2_OP_dedup))[
+  colnames(sample_data(VGO2_OP_dedup)) == "sample_identifier"
+] <- "sample_ID"
+
+colnames(sample_data(VGO2_OP_dedup))[
+  colnames(sample_data(VGO2_OP_dedup)) == "respnr"
+] <- "VGO3_ID"
+
+colnames(sample_data(VGO2_OP_dedup))[
+  colnames(sample_data(VGO2_OP_dedup)) == "pg_ul"
+] <- "qPCR"
+
+# VGO3_NP
+colnames(sample_data(VGO3_NPOP_dedup))[
+  colnames(sample_data(VGO3_NPOP_dedup)) == "sample_identifier"
+] <- "sample_ID"
+
+
+
+####  Check longitudinal data (VGO2 and VGO3) #### 
+## NP 
+VGO3_NP <- subset_samples(VGO3_NPOP_dedup, niche == "NP")
+# VGO3_NP <- prune_taxa(taxa_sums(VGO3_NP) > 0, VGO3_NP) # 957 samples, 11053 taxa
+
+# Extract IDs from sample_data
+ids_VGO2 <- sample_data(VGO2_NP_dedup)$VGO3_ID
+ids_VGO3 <- sample_data(VGO3_NP)$VGO3_ID
+
+# Find intersecting IDs
+shared_ids_NP <- intersect(ids_VGO2, ids_VGO3)
+# Number of shared individuals
+length(shared_ids_NP) # 112 longitudinal NP samples
+
+
+## OP 
+VGO3_OP <- subset_samples(VGO3_NPOP, niche != "NP")
+# VGO3_OP <- prune_taxa(taxa_sums(VGO3_OP) > 0, VGO3_OP) # 1404 samples, 12902 taxa
+
+# Extract IDs from sample_data
+ids_VGO2 <- sample_data(VGO2_OP_dedup)$VGO3_ID
+ids_VGO3 <- sample_data(VGO3_OP)$VGO3_ID
+# Find intersecting IDs
+shared_ids_OP <- intersect(ids_VGO2, ids_VGO3)
+# Number of shared individuals
+length(shared_ids_OP) # 141 longitudinal OP samples
+```
+# Merge phyloseqs and taxonomy naming 
+```{r}
+head(taxa_names(VGO2_NP_dedup)) # ASVs named already e.g. "Corynebacterium_1", "Moraxella_2"  etc.
+head(taxa_names(VGO2_OP_dedup)) # Named by the sequence
+head(taxa_names(VGO3_NPOP_dedup))# ASVs named already e.g. "Dolosigranulum_pigrum_1" "Staphylococcus_2"
+
+ntaxa(VGO2_NP_dedup) # 10892
+ntaxa(VGO2_OP_dedup) # 1540
+ntaxa(VGO3_NPOP_dedup) # 20687
+nsamples(VGO2_NP_dedup) # 289
+nsamples(VGO2_OP_dedup) # 340
+nsamples(VGO3_NPOP_dedup) # 2039
+
+# Fix VGO2_OP so that the refseq() slot has the sequences and taxa_names are the ASV names
+# Get DNA sequences from current taxa_names
+seqs <- taxa_names(VGO2_OP_dedup)
+# Create ASV names
+asv_names <- paste0("ASV", seq_along(seqs))
+# Assign ASV names to the phyloseq object
+taxa_names(VGO2_OP_dedup) <- asv_names
+# Create DNAStringSet with ASV names
+dna_seqs <- Biostrings::DNAStringSet(seqs)
+names(dna_seqs) <- asv_names
+# Add refseq slot
+VGO2_OP_dedup <- merge_phyloseq(VGO2_OP_dedup, dna_seqs)
+# VGO2_OP_dedup <- prune_taxa(taxa_sums(VGO2_OP_dedup) > 0, VGO2_OP_dedup)
+# VGO2_OP_dedup <- prune_samples(sample_sums(VGO2_OP_dedup) > 0, VGO2_OP_dedup)
+
+# Rename ASVs to Sequence Level
+VGO2_NP_seq <- rename_ASVs(VGO2_NP_dedup)
+VGO2_OP_seq <- rename_ASVs(VGO2_OP_dedup)
+VGO3_NPOP_seq <- rename_ASVs(VGO3_NPOP_dedup)
+
+# Check that tax_table is annotated in the same way
+colnames(VGO2_NP_seq@tax_table)
+colnames(VGO2_OP_seq@tax_table)
+colnames(VGO3_NPOP_seq@tax_table)
+
+# Change all to lower case
+colnames(VGO2_OP_seq@tax_table) <- tolower(colnames(VGO2_OP_seq@tax_table))
+colnames(VGO2_NP_seq@tax_table) <- tolower(colnames(VGO2_NP_seq@tax_table))
+colnames(VGO3_NPOP_seq@tax_table) <- tolower(colnames(VGO3_NPOP_seq@tax_table))
+
+colnames(VGO2_NP_seq@tax_table)
+colnames(VGO2_OP_seq@tax_table)
+colnames(VGO3_NPOP_seq@tax_table)
+
+
+table(VGO2_NP_seq@sam_data$niche)
+table(VGO2_OP_seq@sam_data$niche)
+table(VGO3_NPOP_dedup@sam_data$niche)
+
+# Remove 'Species_one' column from VGO3 phyloseqs
+# For VGO3_NP_seq
+tax_table(VGO3_NPOP_dedup) <- tax_table(VGO3_NPOP_dedup)[, !colnames(tax_table(VGO3_NPOP_dedup)) %in% c("species_one", "asv")]
+colnames(VGO2_NP_seq@tax_table)
+colnames(VGO2_OP_seq@tax_table)
+colnames(VGO3_NPOP_seq@tax_table)
+
+
+# Check for mismatches in sam_data before merging phyloseqs
+# Sam_data variables between objects:
+all.equal(colnames(sample_data(VGO2_NP_seq)),
+          colnames(sample_data(VGO2_OP_seq)),
+          colnames(sample_data(VGO3_NPOP_seq)))
+# Get the column names for each phyloseq object
+cols_np   <- colnames(sample_data(VGO2_NP_seq))
+cols_op   <- colnames(sample_data(VGO2_OP_seq))
+cols_vgo3 <- colnames(sample_data(VGO3_NPOP_seq))
+# Compare: what's in VGO2 NP but not in VGO2 OP
+setdiff(cols_np, cols_op) # nothing
+# Compare: what's in VGO2 OP but not in VGO2 NP
+setdiff(cols_op, cols_np)
+# Compare: what's in VGO2 NP but not in VGO3 OP/NP
+setdiff(cols_np, cols_vgo3)
+
+# Get classes for each column in each phyloseq object
+classes_np <- sapply(sample_data(VGO2_NP_seq), class)
+classes_op <- sapply(sample_data(VGO2_OP_seq), class)
+classes_vgo3 <- sapply(sample_data(VGO3_NPOP_seq), class)
+
+# Combine into a comparison table
+compare_classes <- data.frame(
+  column_name = names(classes_np),
+  NP_class    = unname(classes_np),
+  OP_class    = unname(classes_op[names(classes_np)]),
+  VGO3_class  = unname(classes_vgo3[names(classes_np)])
+)
+
+# Convert the mismatches 
+sample_data(VGO2_NP_seq)$VGO3_ID <- as.character(sample_data(VGO2_NP_seq)$VGO3_ID)
+sample_data(VGO3_NPOP_seq)$niche <- as.character(sample_data(VGO3_NPOP_seq)$niche)
+VGO3_NPOP_seq@sam_data$niche
+
+# Merge datasets now that all variables across the phyloseqs are aligned and the same data class
+ps_combined <- merge_phyloseq(
+  VGO2_NP_seq,
+  VGO2_OP_seq,
+  VGO3_NPOP_seq
+  )
+
+#  Reorder ASVs by Abundance
+ps_reordered <- tax_sum_reorder(ps_combined)
+
+# Rename ASVs Based on Taxonomy
+ps <- create_phylo_custom(ps_reordered)
+table(ps@sam_data$niche)
+# Check tax table
+head(ps@tax_table)
+head(ps@otu_table)
+ps@sam_data
+ps
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 27827 taxa and 2660 samples ]
+# sample_data() Sample Data:       [ 2660 samples by 6 sample variables ]
+# tax_table()   Taxonomy Table:    [ 27827 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 27827 reference sequences ]
+```
+
+# Join participant metadata/spirometry with microbiome data 
+```{r}
+# Load metadata
+metadata_VGO2 <- read.csv("../Output/Participant_data/Datasets/VGO2_data.csv")
+metadata_VGO3 <- read.csv("../Output/Participant_data/Datasets/VGO3_data.csv")
+# Combine metadata into one table (optional, only if needed)
+metadata_all <- bind_rows(metadata_VGO2, metadata_VGO3)
+colnames(metadata_all)[colnames(metadata_all) == "ID"] <- "VGO3_ID"
+
+# Extract sample_data from phyloseq
+ps_meta <- data.frame(sample_data(ps))
+ps_meta$SampleName <- rownames(ps_meta)  # keep rownames for reassignment
+
+# Match correct metadata to each sample based on ID and timepoint
+ps_meta_joined <- ps_meta %>%
+  mutate(VGO3_ID = as.character(VGO3_ID)) %>%
+  left_join(
+    metadata_all %>% mutate(VGO3_ID = as.character(VGO3_ID)),
+    by = c("VGO3_ID", "timepoint")
+  )
+
+# Remove column X from dataframe
+ps_meta_joined$X <- NULL
+
+# Blank samples (with no VGO3_ID) are missing 'study' variable, add this 
+# Fill in missing 'study' for blanks based on timepoint
+ps_meta_joined <- ps_meta_joined %>%
+  mutate(study = ifelse(is.na(study) & timepoint == "T0", "VGO2",
+                 ifelse(is.na(study) & timepoint == "T1", "VGO3", study)))
+
+table(VGO2_OP_dedup@sam_data$niche)
+table(VGO2_NP_dedup@sam_data$niche)
+table(VGO3_NPOP_dedup@sam_data$niche)
+
+# Check niche assignment again
+table(ps_meta_joined$dataset)
+table(ps_meta_joined$timepoint)
+table(ps_meta_joined$niche)
+
+# View the first few rows
+sum(is.na(ps_meta_joined$dataset)) # 0
+sum(is.na(ps_meta_joined$timepoint)) # 0
+sum(is.na(ps_meta_joined$niche)) # 0 
+
+# Replace sample_data with updated metadata (ps_meta_joined)
+rownames(ps_meta_joined) <- ps_meta_joined$SampleName
+ps2 <- ps
+sample_data(ps2) <- sample_data(ps_meta_joined)
+
+# Inspect
+ps2@sam_data # Sample Data: [2566 samples by 88 sample variables]:
+table(ps2@sam_data$niche)
+table(ps2@sam_data$dataset)
+table(ps2@sam_data$timepoint)
+
+# Save ps 
+saveRDS(ps2, "../Output/Phyloseq/ps2.rds")
+```
+# Composition plots per dataset - before pre-processing
+```{r}
+# Subset ps2 for dataset == "VGO3_NP"
+ps_vgo2_np <- subset_samples(ps2, dataset == "VGO2_NP" & niche == "NP")
+ps_vgo2_np_filt <- prune_taxa(taxa_sums(ps_vgo2_np) > 0, ps_vgo2_np)
+ps_vgo2_np_filt <- prune_samples(sample_sums(ps_vgo2_np_filt) > 0, ps_vgo2_np_filt)
+
+# stacked bar plot
+VGO2_NP_stackedbar <- create_ordered_bar_n(ps_vgo2_np, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO2 NP microbiome composition per sample")
+# Save plot
+ggsave("../Output/Microbiome_descriptives/Before_preprocessing_composition/VGO2_NP_barplot.svg", VGO2_NP_stackedbar, width = 5, height = 6)
+
+
+# Subset ps2 for dataset == "VGO3_NP"
+ps_vgo2_op <- subset_samples(ps2, dataset == "VGO2_OP" & niche == "OP")
+ps_vgo2_op_filt <- prune_taxa(taxa_sums(ps_vgo2_op) > 0, ps_vgo2_op)
+ps_vgo2_op_filt <- prune_samples(sample_sums(ps_vgo2_op_filt) > 0, ps_vgo2_op_filt)
+
+# stacked bar plot
+VGO2_OP_stackedbar <- create_ordered_bar_n(ps_vgo2_op_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO2 OP microbiome composition per sample")
+
+# Save plot
+ggsave("../Output/Microbiome_descriptives/Before_preprocessing_composition/VGO2_OP_barplot.svg", VGO2_OP_stackedbar, width = 5, height = 6)
+
+
+
+# Subset ps2 for dataset == "VGO3_NP"
+ps_vgo3_np <- subset_samples(ps2, dataset == "VGO3_NPOP" & niche == "NP")
+ps_vgo3_np_filt <- prune_taxa(taxa_sums(ps_vgo3_np) > 0, ps_vgo3_np)
+ps_vgo3_np_filt <- prune_samples(sample_sums(ps_vgo3_np_filt) > 0, ps_vgo3_np_filt)
+
+# stacked bar plot
+VGO3_NP_stackedbar <- create_ordered_bar_n(ps_vgo3_np_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO3 NP microbiome composition per sample")
+# Save plot
+ggsave("../Output/Microbiome_descriptives/Before_preprocessing_composition/VGO3_NP_barplot.svg", VGO3_NP_stackedbar, width = 5, height = 6)
+
+
+# Subset ps2 for dataset == "VGO3_NP"
+ps2@sam_data$dataset
+ps_vgo3_op <- subset_samples(ps2, dataset == "VGO3_NPOP" & niche == "OP")
+ps_vgo3_op_filt <- prune_taxa(taxa_sums(ps_vgo3_op) > 0, ps_vgo3_op)
+ps_vgo3_op_filt <- prune_samples(sample_sums(ps_vgo3_op_filt) > 0, ps_vgo3_op_filt)
+
+# stacked bar plot
+VGO3_OP_stackedbar <- create_ordered_bar_n(ps_vgo3_op_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO3 OP microbiome composition per sample")
+# Save plot
+ggsave("../Output/Microbiome_descriptives/Before_preprocessing_composition/VGO3_OP_barplot.svg", VGO3_OP_stackedbar, width = 5, height = 6)
+
+
+
+#### Combine plots: NP on top row, OP on bottom row ####
+composition_combined <- (VGO2_NP_stackedbar | VGO3_NP_stackedbar) / 
+                        (VGO2_OP_stackedbar | VGO3_OP_stackedbar) +
+                        plot_annotation(tag_levels = 'A')  # Optional: add panel tags A, B, C, D
+
+print(composition_combined)
+
+# Save combined figure
+ggsave("../Output/Microbiome_descriptives/Before_preprocessing_composition/Combined_composition_barplots.svg",
+       composition_combined, width = 12, height = 12)
+
+```
+
+# Pre-processing
+## Visualise library size
+```{r}
+df <- meta_to_df(ps2)
+df$LibrarySize <- sample_sums(ps2)
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df))
+
+# Library sizes - all samples including blanks
+libsize_niche <- ggplot(data = df, aes(x=Index, y=LibrarySize, color=niche)) + geom_point()
+ggsave("../Output/Preprocessing/librarysize_perniche.svg", libsize_niche)
+
+# Library size of NP and OP samples only 
+df_filtered <- df %>% filter(niche %in% c("NP", "OP"))
+libsize_niche_NPOP <- ggplot(data = df_filtered, aes(x = Index, y = LibrarySize, color = niche)) +
+  geom_point()
+ggsave("../Output/Preprocessing/librarysize_NPvsOP.svg", libsize_niche_NPOP, width = 6, height = 5)
+
+```
+## Visualise bacterial density 
+```{r}
+bacterial_density_NP_OP <- df %>%
+  filter(niche %in% c("NP", "OP")) %>%
+  ggplot(aes(x = niche, y = qPCR)) +
+  geom_boxplot(alpha = 0.4, fill = "white") +
+  geom_jitter(aes(color = niche), width = 0.2, size = 1, alpha = 0.7) +
+  labs(x = "Niche", y = "Bacterial density (pg/µl)", color = "Niche") +
+  scale_y_continuous(trans = 'log10',
+                     breaks = scales::trans_breaks('log10', function(x) 10^x),
+                     labels = scales::trans_format('log10', scales::math_format(10^.x)))
+
+ggsave("../Output/Preprocessing/bacterial_density_NPvsOP.svg", bacterial_density_NP_OP)
+
+```
+# Decontaminating the microbiome data
+## Preparing data for decontamination
+```{r}
+# We want to decontaminate per sequencing group - i.e. VGO2_NP, VGO2_OP, VGO3_NP and VGO3_OP (VGO3 data was sequenced/processed together for NP and OP)
+# Define decontamination groups 
+sum(is.na(ps2@sam_data$dataset))# No NAs for dataset
+
+unique(sample_data(ps2)$dataset) #  "VGO2_NP"   "VGO2_OP"   "VGO3_NPOP"
+sum(is.na(sample_data(ps2)$decontam_group)) # 0 
+
+sample_data(ps2)$decontam_group <- case_when(
+  sample_data(ps2)$dataset == "VGO3_NPOP" ~ "VGO3_NPOP", 
+  sample_data(ps2)$dataset == "VGO2_NP" ~ "VGO2_NP",
+  sample_data(ps2)$dataset == "VGO2_OP" ~ "VGO2_OP",
+  TRUE ~ NA_character_
+)
+
+# Count zero-sum samples *before* the split
+zero_samples <- sample_sums(ps2) == 0
+table(zero_samples, sample_data(ps2)$decontam_group)
+
+table(sample_data(ps2)$decontam_group)
+# VGO2_NP   VGO2_OP  VGO3_combined 
+# 288       336      2036 
+
+# Split phyloseq by group
+# Get the unique group names
+groups <- unique(na.omit(sample_data(ps2)$decontam_group))
+
+# Use lapply to avoid `.x` evaluation issues
+ps2_groups <- setNames(lapply(groups, function(g) {
+  keep_samples <- rownames(sample_data(ps2))[sample_data(ps2)$decontam_group == g]
+  prune_samples(keep_samples, ps2)
+}), groups)
+
+# Create and assign objects with custom names
+for (group in names(ps2_groups)) {
+  assign(paste0(group, "_ps_for_decontam"), ps2_groups[[group]])
+}
+
+# Save each phyloseq to an individual object
+list2env(ps2_groups, envir = .GlobalEnv)
+
+# These are the phyloseqs for decontamination
+VGO2_NP_ps_for_decontam
+VGO2_OP_ps_for_decontam
+VGO3_NPOP_ps_for_decontam
+
+table(VGO2_NP_ps_for_decontam@sam_data$niche) # Niche = Blank, NP, Zymo Mock
+table(VGO2_OP_ps_for_decontam@sam_data$niche) # EBL, NEG, NTC, OP, SBL, VBL, ZMCB
+table(VGO3_NPOP_ps_for_decontam@sam_data$niche) # BB, BD, BL, BP, FB, NP, OP, UMD, ZMCB, ZMCD
+
+# ZMCD	Zymo mock DNA (miseq PCR)		
+# ZMCB	Zymo mock Bacteria (extraction)		
+# AMCD	ATCC mock DNA (miseq PCR)		
+# UMD	UMCU low density mock DNA (miseq PCR)		
+# MSS	Mixed (fecal/NP/OP…) sample control 		
+# MSD	Mixed (fecal/NP/OP…) sample control DNA		
+# BD	Blank from DNA extraction		
+# BP	Blank from PCR		
+
+# For decontam we use the following as negative controls: 
+## Blank (n=47)
+## For OP it is not clear 
+## BD for the VGO3 dataset (NP and OP) (n=152)
+
+# # Check composition of the unknown samples in VGO2_OP: "EBL", "NEG", "NTC", "OP", "SBL", "VBL", "ZMCB"
+# # Check OP first
+# ps_vgo2_op_op <- subset_samples(ps2, dataset == "VGO2_OP" & niche == "OP")
+# ps_vgo2_op_op <- prune_taxa(taxa_sums(ps_vgo2_op_op) > 0, ps_vgo2_op_op)
+# ps_vgo2_op_op <- prune_samples(sample_sums(ps_vgo2_op_op) > 0, ps_vgo2_op_op)
+# 
+# # stacked bar plot
+# VGO2_OP_stackedbar <- create_ordered_bar_n(ps_vgo2_op_op, 15) +
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank()) +
+#   geom_bar(stat = "identity", width = 1) +
+#   labs(title = "VGO2 OP microbiome composition per sample")
+# VGO2_OP_stackedbar
+# ggsave("../Output/Decontamination/VGO2_OP_blankcompositions/VGO2_OP_stackedbar.svg", VGO2_OP_stackedbar)
+# 
+# # NTC
+# ps_vgo2_op_ntc <- subset_samples(ps2, dataset == "VGO2_OP" & niche == "NTC")
+# ps_vgo2_op_ntc <- prune_taxa(taxa_sums(ps_vgo2_op_ntc) > 0, ps_vgo2_op_ntc)
+# ps_vgo2_op_ntc <- prune_samples(sample_sums(ps_vgo2_op_ntc) > 0, ps_vgo2_op_ntc)
+# 
+# VGO2_OP_NTC_stackedbar <- create_ordered_bar_n(ps_vgo2_op_ntc, 12) +
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank()) +
+#   geom_bar(stat = "identity", width = 1) +
+#   labs(title = "VGO2 OP NTC microbiome composition per sample")
+# VGO2_OP_NTC_stackedbar
+# ggsave("../Output/Decontamination/VGO2_OP_blankcompositions/VGO2_OP_NTC_stackedbar.svg", VGO2_OP_NTC_stackedbar)
+# 
+# # SBL samples
+# ps_vgo2_op_sbl <- subset_samples(ps2, dataset == "VGO2_OP" & niche == "SBL")
+# ps_vgo2_op_sbl <- prune_taxa(taxa_sums(ps_vgo2_op_sbl) > 0, ps_vgo2_op_sbl)
+# ps_vgo2_op_sbl <- prune_samples(sample_sums(ps_vgo2_op_sbl) > 0, ps_vgo2_op_sbl)
+# 
+# VGO2_OP_SBL_stackedbar <- create_ordered_bar_n(ps_vgo2_op_sbl, 15) +
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank()) +
+#   geom_bar(stat = "identity", width = 1) +
+#   labs(title = "VGO2 OP SBL microbiome composition per sample")
+# VGO2_OP_SBL_stackedbar
+# ggsave("../Output/Decontamination/VGO2_OP_blankcompositions/VGO2_OP_SBL_stackedbar.svg", VGO2_OP_SBL_stackedbar)
+# 
+# # VBL samples
+# ps_vgo2_op_vbl <- subset_samples(ps2, dataset == "VGO2_OP" & niche == "VBL")
+# ps_vgo2_op_vbl <- prune_taxa(taxa_sums(ps_vgo2_op_vbl) > 0, ps_vgo2_op_vbl)
+# ps_vgo2_op_vbl <- prune_samples(sample_sums(ps_vgo2_op_vbl) > 0, ps_vgo2_op_vbl)
+# 
+# VGO2_OP_VBL_stackedbar <- create_ordered_bar_n(ps_vgo2_op_vbl, 15) +
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank()) +
+#   geom_bar(stat = "identity", width = 1) +
+#   labs(title = "VGO2 OP VBL microbiome composition per sample")
+# VGO2_OP_VBL_stackedbar
+# ggsave("../Output/Decontamination/VGO2_OP_blankcompositions/VGO2_OP_VBL_stackedbar.svg", VGO2_OP_VBL_stackedbar)
+# 
+# 
+# # ZMCB samples
+# ps_vgo2_op_zmcb <- subset_samples(ps2, dataset == "VGO2_OP" & niche == "ZMCB")
+# ps_vgo2_op_zmcb <- prune_taxa(taxa_sums(ps_vgo2_op_zmcb) > 0, ps_vgo2_op_zmcb)
+# ps_vgo2_op_zmcb <- prune_samples(sample_sums(ps_vgo2_op_zmcb) > 0, ps_vgo2_op_zmcb)
+# 
+# VGO2_OP_ZMCB_stackedbar <- create_ordered_bar_n(ps_vgo2_op_zmcb, 8) +
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank()) +
+#   geom_bar(stat = "identity", width = 1) +
+#   labs(title = "VGO2 OP ZMCB microbiome composition per sample")
+# VGO2_OP_ZMCB_stackedbar
+# ggsave("../Output/Decontamination/VGO2_OP_blankcompositions/VGO2_OP_ZMCB_stackedbar.svg", VGO2_OP_ZMCB_stackedbar)
+# 
+# # EBL samples
+# ps_vgo2_op_ebl <- subset_samples(ps2, dataset == "VGO2_OP" & niche == "EBL")
+# ps_vgo2_op_ebl <- prune_taxa(taxa_sums(ps_vgo2_op_ebl) > 0, ps_vgo2_op_ebl)
+# ps_vgo2_op_ebl <- prune_samples(sample_sums(ps_vgo2_op_ebl) > 0, ps_vgo2_op_ebl)
+# 
+# VGO2_OP_EBL_stackedbar <- create_ordered_bar_n(ps_vgo2_op_ebl, 15) +
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank()) +
+#   geom_bar(stat = "identity", width = 1) +
+#   labs(title = "VGO2 OP EBL microbiome composition per sample")
+# VGO2_OP_EBL_stackedbar
+# ggsave("../Output/Decontamination/VGO2_OP_blankcompositions/VGO2_OP_EBL_stackedbar.svg", VGO2_OP_EBL_stackedbar)
+
+# NEG (there are <2 NEG samples therefore cannot make plot)
+# ps_vgo2_op_neg <- subset_samples(ps2, dataset == "VGO2_OP" & niche == "NEG")
+# ps_vgo2_op_neg <- prune_taxa(taxa_sums(ps_vgo2_op_neg) > 0, ps_vgo2_op_neg)
+# ps_vgo2_op_neg <- prune_samples(sample_sums(ps_vgo2_op_neg) > 0, ps_vgo2_op_neg)
+#
+# VGO2_OP_NEG_stackedbar <- create_ordered_bar_n(ps_vgo2_op_neg, 15) +
+#   theme(axis.text.y = element_blank(),
+#         axis.ticks.y = element_blank()) +
+#   geom_bar(stat = "identity", width = 1) +
+#   labs(title = "VGO2 OP NEG microbiome composition per sample")
+# VGO2_OP_NEG_stackedbar
+
+# # Side by side plots to determine whihc blanks for OP 
+# # Combine plots into a single figure
+# combined_plot <- (
+#   VGO2_OP_stackedbar + 
+#   VGO2_OP_NTC_stackedbar + 
+#   VGO2_OP_SBL_stackedbar +
+#   VGO2_OP_VBL_stackedbar +
+#   VGO2_OP_ZMCB_stackedbar +
+#   VGO2_OP_EBL_stackedbar
+# ) + 
+#   plot_layout(ncol = 3) +  # Adjust to ncol = 2 or 3 depending on your screen size
+#   plot_annotation(title = "VGO2_OP Microbiome Composition by Niche")
+# 
+# # Display
+# combined_plot
+# ggsave("../Output/Decontamination/VGO2_OP_blankcompositions/Blanks_all_VGO2_OP.svg", combined_plot, width = 20, height= 10)
+
+# Use the following samples as the blanks in the decontam analysis for VGO2 OP sequencing: NTC, SBL, VBL, EBL 
+
+# Therefore, 
+# For decontam we use the following as negative controls: 
+## Blank (n=47)
+## NTC, SBL, VBL, EBL (n = 54)
+## BL (n=22), BD (n=1), BP (n=1) and FB for VGO3NPOP dataset
+
+sample_data(VGO2_NP_ps_for_decontam)$is_neg <- sample_data(VGO2_NP_ps_for_decontam)$niche == "Blank"
+sample_data(VGO2_OP_ps_for_decontam)$is_neg <- sample_data(VGO2_OP_ps_for_decontam)$niche %in% c("SBL", "VBL", "EBL")
+sample_data(VGO3_NPOP_ps_for_decontam)$is_neg <- sample_data(VGO3_NPOP_ps_for_decontam)$niche == "BD"
+
+
+# NP samples were in DI.Run = 39-74
+# OP samples were in DI.Run = 1,2, 5-8, 10-12, 33-38, 75-91
+## Therefore we only want to select the BD samples from these run to do decontam per niche
+
+# Select BD samples for NP decontam
+np_DI_runs <- 39:74
+# Subset to NP and the correct BD runs
+VGO3_NP_ps_for_decontam <- subset_samples(
+  VGO3_NPOP_ps_for_decontam,
+  (niche == "NP") | (niche == "BD" & DI.Run %in% np_DI_runs)
+)
+# Prune taxa with 0 total counts
+VGO3_NP_ps_for_decontam <- prune_taxa(taxa_sums(VGO3_NP_ps_for_decontam) > 0, VGO3_NP_ps_for_decontam)
+
+# Define BD runs for OP
+op_DI_runs <- c(1, 2, 5:8, 10:12, 33:38, 75:91)
+# Subset to OP and the correct BD runs
+VGO3_OP_ps_for_decontam <- subset_samples(
+  VGO3_NPOP_ps_for_decontam,
+  (niche == "OP") | (niche == "BD" & DI.Run %in% op_DI_runs)
+)
+# Prune taxa with 0 total counts
+VGO3_OP_ps_for_decontam <- prune_taxa(taxa_sums(VGO3_OP_ps_for_decontam) > 0, VGO3_OP_ps_for_decontam)
+
+
+# Remove mocks & other unnecessary samples from the datasets
+table(VGO2_NP_ps_for_decontam@sam_data$niche)
+table(VGO2_OP_ps_for_decontam@sam_data$niche)
+table(VGO3_NP_ps_for_decontam@sam_data$niche)
+table(VGO3_OP_ps_for_decontam@sam_data$niche)
+
+VGO2_NP_ps_for_decontam <- subset_samples(VGO2_NP_ps_for_decontam, niche != "Zymo Mock") %>% 
+  subset_samples(., qPCR != 0) # 269 samples
+table(VGO2_NP_ps_for_decontam@sam_data$niche) # blank = 47, NP = 222
+
+VGO2_OP_ps_for_decontam <- subset_samples(VGO2_OP_ps_for_decontam, niche != "NEG") %>%  subset_samples(., niche != "NTC") %>%  subset_samples(., niche != "ZMCB") %>%
+  subset_samples(., qPCR != 0) # 313   samples 
+table(VGO2_OP_ps_for_decontam@sam_data$niche) # EBL  = 16, OP = 281, SBL= 8, VBL = 8
+
+VGO3_NP_ps_for_decontam <- subset_samples(VGO3_NP_ps_for_decontam, niche != "BB") %>%  subset_samples(., niche != "BP") %>% subset_samples(., niche != "FB") %>% subset_samples(., niche != "UMD") %>%  subset_samples(., niche != "ZMCB") %>% subset_samples(., niche != "ZMCD") %>% subset_samples(., niche != "unknown") %>%  
+  subset_samples(., qPCR != 0) # 1026  samples
+table(VGO3_NP_ps_for_decontam@sam_data$niche)
+
+VGO3_OP_ps_for_decontam <- subset_samples(VGO3_OP_ps_for_decontam, niche != "BB") %>%  subset_samples(., niche != "BP") %>% subset_samples(., niche != "FB") %>% subset_samples(., niche != "UMD") %>%  subset_samples(., niche != "ZMCB") %>% subset_samples(., niche != "ZMCD") %>% subset_samples(., niche != "unknown") %>%  
+  subset_samples(., qPCR != 0) # 991 samples
+table(VGO3_OP_ps_for_decontam@sam_data$niche)
+```
+## Run decontam combined method
+```{r}
+rownames(VGO2_NP_ps_for_decontam@tax_table)
+rownames(VGO2_OP_ps_for_decontam@tax_table)
+rownames(VGO3_NPOP_ps_for_decontam@tax_table)
+
+# VGO2 NP 
+VGO2_NP_ps_for_decontam <- prune_taxa(taxa_sums(VGO2_NP_ps_for_decontam) > 0, VGO2_NP_ps_for_decontam)
+contaminants_VGO2_NP <- isContaminant(VGO2_NP_ps_for_decontam, method="combined", conc="qPCR", neg="is_neg")
+contaminants_VGO2_NP <- subset(contaminants_VGO2_NP, contaminant == TRUE)
+dim(contaminants_VGO2_NP)[1] # 64 identified in the NP
+write.csv(contaminants_VGO2_NP, "../Output/Decontamination/Decontam_combined_method/VGO2_NP_contaminants.csv")
+
+# VGO2 OP
+VGO2_OP_ps_for_decontam <- prune_taxa(taxa_sums(VGO2_OP_ps_for_decontam) > 0, VGO2_OP_ps_for_decontam)
+contaminants_VGO2_OP <- isContaminant(VGO2_OP_ps_for_decontam, method="combined", conc="qPCR", neg="is_neg")
+contaminants_VGO2_OP <- subset(contaminants_VGO2_OP, contaminant == TRUE)
+dim(contaminants_VGO2_OP)[1] # 24 identified in the NP
+write.csv(contaminants_VGO2_OP, "../Output/Decontamination/Decontam_combined_method/VGO2_OP_contaminants.csv")
+
+# VGO3 NP
+# Prune taxa with total abundance of 0 across samples
+VGO3_NP_ps_for_decontam <- prune_taxa(taxa_sums(VGO3_NP_ps_for_decontam) > 0, VGO3_NP_ps_for_decontam)
+# Run decontam on NP subset (using method="combined")
+contaminants_VGO3_NP <- isContaminant(VGO3_NP_ps_for_decontam, method = "combined", conc = "qPCR", neg = "is_neg")
+contaminants_VGO3_NP <- subset(contaminants_VGO3_NP, contaminant == TRUE)
+dim(contaminants_VGO3_NP)[1] # 110 identified in the NP
+write.csv(contaminants_VGO3_NP, "../Output/Decontamination/Decontam_combined_method/VGO3_NP_contaminants.csv")
+
+# VGO3 OP
+# Prune taxa with total abundance of 0 across samples
+VGO3_OP_ps_for_decontam <- prune_taxa(taxa_sums(VGO3_OP_ps_for_decontam) > 0, VGO3_OP_ps_for_decontam)
+# Run decontam on NP subset (using method="combined")
+contaminants_VGO3_OP <- isContaminant(VGO3_OP_ps_for_decontam, method = "combined", conc = "qPCR", neg = "is_neg")
+contaminants_VGO3_OP <- subset(contaminants_VGO3_OP, contaminant == TRUE)
+dim(contaminants_VGO3_OP)[1] # 88 identified in the OP
+write.csv(contaminants_VGO3_OP, "../Output/Decontamination/Decontam_combined_method/VGO3_OP_contaminants.csv")
+```
+## Kruskall-Wallis across DNA isolation runs 
+We implement a Kruskal-Wallis test to see which ASVs show discrepancies across the DNA isolation runs. These differences might indicate contamination, so the Kruskal-Wallis test is applied to each ASV to assess whether its relative abundance (RA) differs significantly across the DI.Run groups N.B. DI run groups are only available for VGO2 NP and VGO3 NP/OP dataset. 
+```{r}
+# We only know the DI.Run for VGO2 NP and VGO3 datasets
+VGO2_NP_ps_for_decontam  
+
+VGO2_NP_filt_RA_1 <- VGO2_NP_ps_for_decontam %>% 
+  pres_abund_filter() %>% # Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>% # convert to relative abundance
+  pres_abund_filter(pres = 15, abund = 0.0001) # keep taxa in ≥15 samples at ≥0.01%
+# A total of 792 ASVs were found to be present at or above a level of confident detection (0.1% relative abundance) in at least 2 samples (n = 32376 ASVs excluded).
+# A total of 412 ASVs were found to be present at or above a level of confident detection (0.01% relative abundance) in at least 15 samples (n = 380 ASVs excluded).
+
+VGO2_NP_filt_RA_2 <- VGO2_NP_ps_for_decontam %>% 
+  pres_abund_filter() %>% #  Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>%  # convert to relative abundance
+  pres_abund_filter(pres = 40, abund = 0.01) # keep taxa in ≥40 samples at ≥1%
+# A total of 792 ASVs were found to be present at or above a level of confident detection (0.1% relative abundance) in at least 2 samples (n = 32376 ASVs excluded).
+# A total of 27 ASVs were found to be present at or above a level of confident detection (1% relative abundance) in at least 40 samples (n = 765 ASVs excluded).
+
+VGO2_NP_filt_RA_1 <- prune_taxa(!taxa_names(VGO2_NP_filt_RA_1) %in% taxa_names(VGO2_NP_filt_RA_2), VGO2_NP_filt_RA_1) # Exclude the high-abundance/core taxa from VGO2_NP_filt_RA_1
+
+# Reshape phyloseq 
+df_VGO2 <- ps_to_df(VGO2_NP_filt_RA_1)
+
+# Identify ASVs from the phyloseq object
+asv_names <- taxa_names(VGO2_NP_filt_RA_1)
+# Keep only ASVs that actually exist in df_VGO2
+existing_asvs <- intersect(asv_names, colnames(df_VGO2))
+
+# Select DI.Run and ASV columns
+df_VGO2 <- df_VGO2 %>%
+  select(all_of(c("DI.Run", existing_asvs)))
+
+# Pivot longer to long format (ASV, RA)
+df_VGO2_pivot <- pivot_longer(df_VGO2, cols = existing_asvs,
+                             names_to = "ASV", values_to = "RA")
+
+# Run Kruskal-Wallis test per ASV
+kruskal_results <- df_VGO2_pivot %>%
+  group_by(ASV) %>%
+  summarise(
+    kruskal_test = list(
+      kruskal.test(RA ~ DI.Run, data = pick(DI.Run, RA)) %>% broom::tidy()
+    ),
+    .groups = "drop"
+  ) %>%
+  unnest(cols = kruskal_test)
+
+# Flag significant ASVs as contaminants
+kruskal_results$contaminant <- ifelse(kruskal_results$p.value < 0.001, TRUE, FALSE)
+# Subset only significant (putative contaminants)
+KW_contams_vgo2_np <- subset(kruskal_results, contaminant == TRUE)
+KW_contams_vgo2_np # 94 detected 
+KW_contams_vgo2_np$ASV
+
+# Filter for significant ASVs
+KW_contams_VGO2NP <- ggplot(subset(df_VGO2_pivot, ASV %in% KW_contams_vgo2_np$ASV), 
+            aes(x = as.character(DI.Run), y = RA)) +
+  labs(y = "Relative abundance (%)", x = "DI Run") +
+  geom_point(alpha = 0.5, shape = 16, size = 2,
+             position = position_jitter(width = 0.25, height = 0)) +
+  geom_boxplot(colour = "black", alpha = 0.5) +
+  stat_summary(fun = "mean", geom = "point", shape = 8,
+               size = 2, color = "black") +
+  facet_wrap(~ASV, scales = "free_y") +
+  theme_bw()
+
+ggsave("../Output/Decontamination/Kruskall_Wallis/KW_VGO2NP.svg", KW_contams_VGO2NP, width = 20, height = 20)
+
+
+#### VGO3 NP ####
+VGO3_NP_ps_for_decontam_1 <- VGO3_NP_ps_for_decontam %>% 
+  pres_abund_filter() %>% # Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>% # convert to relative abundance
+  pres_abund_filter(pres = 15, abund = 0.0001) # keep taxa in ≥15 samples at ≥0.01%
+
+VGO3_NP_ps_for_decontam_2 <- VGO3_NP_ps_for_decontam %>% 
+  pres_abund_filter() %>% #  Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>%  # convert to relative abundance
+  pres_abund_filter(pres = 40, abund = 0.01) # keep taxa in ≥40 samples at ≥1%
+
+VGO3_NP_ps_for_decontam_1 <- prune_taxa(!taxa_names(VGO3_NP_ps_for_decontam_1) %in% taxa_names(VGO3_NP_ps_for_decontam_2), VGO3_NP_ps_for_decontam_1) # Exclude the high-abundance/core taxa from ps_vgo3_np_for_decontam_1
+
+# Reshape phyloseq 
+df_VGO3_np <- ps_to_df(VGO3_NP_ps_for_decontam_1)
+
+# Identify ASVs from the phyloseq object
+asv_names <- taxa_names(VGO3_NP_ps_for_decontam_1)
+# Keep only ASVs that actually exist in df_VGO2
+existing_asvs <- intersect(asv_names, colnames(df_VGO3_np))
+
+# Select DI.Run and ASV columns
+df_VGO3_np <- df_VGO3_np %>%
+  select(all_of(c("DI.Run", existing_asvs)))
+
+# Pivot longer to long format (ASV, RA)
+df_VGO3_np_pivot <- pivot_longer(df_VGO3_np, cols = existing_asvs,
+                             names_to = "ASV", values_to = "RA")
+
+# Run Kruskal-Wallis test per ASV
+kruskal_results_vgo3_np <- df_VGO3_np_pivot %>%
+  group_by(ASV) %>%
+  summarise(
+    kruskal_test = list(
+      kruskal.test(RA ~ DI.Run, data = pick(DI.Run, RA)) %>% broom::tidy()
+    ),
+    .groups = "drop"
+  ) %>%
+  unnest(cols = kruskal_test)
+
+# Flag significant ASVs as contaminants
+kruskal_results_vgo3_np$contaminant <- ifelse(kruskal_results_vgo3_np$p.value < 0.001, TRUE, FALSE)
+# Subset only significant (putative contaminants)
+KW_contams_vgo3_np <- subset(kruskal_results_vgo3_np, contaminant == TRUE)
+KW_contams_vgo3_np # 246 detected 
+KW_contams_vgo3_np$ASV
+
+# Filter for significant ASVs
+KW_contams_VGO3NP <- ggplot(subset(df_VGO3_np_pivot, ASV %in% KW_contams_vgo3_np$ASV), 
+            aes(x = as.character(DI.Run), y = RA)) +
+  labs(y = "Relative abundance (%)", x = "DI Run") +
+  geom_point(alpha = 0.5, shape = 16, size = 2,
+             position = position_jitter(width = 0.25, height = 0)) +
+  geom_boxplot(colour = "black", alpha = 0.5) +
+  stat_summary(fun = "mean", geom = "point", shape = 8,
+               size = 2, color = "black") +
+  facet_wrap(~ASV, scales = "free_y") +
+  theme_bw()
+
+ggsave("../Output/Decontamination/Kruskall_Wallis/KW_contams_VGO3NP.svg", KW_contams_VGO3NP, width = 25, height = 25)
+ggsave("../Output/Decontamination/Kruskall_Wallis/KW_contams_VGO3NP.png", KW_contams_VGO3NP, width = 25, height = 25)
+
+
+#### VGO3 OP ####
+VGO3_OP_ps_for_decontam_1 <- VGO3_OP_ps_for_decontam %>% 
+  pres_abund_filter() %>% # Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>% # convert to relative abundance
+  pres_abund_filter(pres = 15, abund = 0.0001) # keep taxa in ≥15 samples at ≥0.01%
+
+VGO3_OP_ps_for_decontam_2 <- VGO3_OP_ps_for_decontam %>% 
+  pres_abund_filter() %>% #  Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>%  # convert to relative abundance
+  pres_abund_filter(pres = 40, abund = 0.01) # keep taxa in ≥40 samples at ≥1%
+
+VGO3_OP_ps_for_decontam_1 <- prune_taxa(!taxa_names(VGO3_OP_ps_for_decontam_1) %in% taxa_names(VGO3_OP_ps_for_decontam_2), VGO3_OP_ps_for_decontam_1) # Exclude the high-abundance/core taxa from ps_vgo3_op_for_decontam_1
+
+# Reshape phyloseq 
+df_VGO3_op <- ps_to_df(VGO3_OP_ps_for_decontam_1)
+
+# Identify ASVs from the phyloseq object
+asv_names <- taxa_names(VGO3_OP_ps_for_decontam_1)
+# Keep only ASVs that actually exist in df_VGO2
+existing_asvs <- intersect(asv_names, colnames(df_VGO3_op))
+
+# Select DI.Run and ASV columns
+df_VGO3_op <- df_VGO3_op %>%
+  select(all_of(c("DI.Run", existing_asvs)))
+
+# Pivot longer to long format (ASV, RA)
+df_VGO3_op_pivot <- pivot_longer(df_VGO3_op, cols = existing_asvs,
+                                 names_to = "ASV", values_to = "RA")
+
+# Run Kruskal-Wallis test per ASV
+kruskal_results_vgo3_op <- df_VGO3_op_pivot %>%
+  group_by(ASV) %>%
+  summarise(
+    kruskal_test = list(
+      kruskal.test(RA ~ DI.Run, data = pick(DI.Run, RA)) %>% broom::tidy()
+    ),
+    .groups = "drop"
+  ) %>%
+  unnest(cols = kruskal_test)
+
+# Flag significant ASVs as contaminants
+kruskal_results_vgo3_op$contaminant <- ifelse(kruskal_results_vgo3_op$p.value < 0.001, TRUE, FALSE)
+# Subset only significant (putative contaminants)
+KW_contams_vgo3_op <- subset(kruskal_results_vgo3_op, contaminant == TRUE)
+KW_contams_vgo3_op #125 detected 
+KW_contams_vgo3_op$ASV
+
+# Filter for significant ASVs
+KW_contams_VGO3OP <- ggplot(subset(df_VGO3_op_pivot, ASV %in% KW_contams_vgo3_op$ASV), 
+                            aes(x = as.character(DI.Run), y = RA)) +
+  labs(y = "Relative abundance (%)", x = "DI Run") +
+  geom_point(alpha = 0.5, shape = 16, size = 2,
+             position = position_jitter(width = 0.25, height = 0)) +
+  geom_boxplot(colour = "black", alpha = 0.5) +
+  stat_summary(fun = "mean", geom = "point", shape = 8,
+               size = 2, color = "black") +
+  facet_wrap(~ASV, scales = "free_y") +
+  theme_bw()
+
+ggsave("../Output/Decontamination/Kruskall_Wallis/KW_contams_VGO3OP.svg", KW_contams_VGO3OP, width = 20, height = 20)
+```
+## Combine contaminants from both methods per dataset
+```{r}
+# Check which contaminants are the same across decontam method and kruskall wallis
+# Extract ASV names from decontam (rownames)
+decontam_VGO2_NP_ASVs <- rownames(contaminants_VGO2_NP)
+decontam_VGO2_OP_ASVs <- rownames(contaminants_VGO2_OP)
+decontam_VGO3_NP_ASVs <- rownames(contaminants_VGO3_NP)
+decontam_VGO3_OP_ASVs <- rownames(contaminants_VGO3_OP)
+
+# Extract ASV names from Kruskal-Wallis results
+KW_VGO2_NP_ASVs <- KW_contams_vgo2_np$ASV
+KW_VGO3_NP_ASVs <- KW_contams_vgo3_np$ASV
+KW_VGO3_OP_ASVs <- KW_contams_vgo3_op$ASV
+
+# Function to get counts of overlaps and uniques
+compare_contaminants <- function(decontam_asvs, kw_asvs) {
+  decontam_set <- unique(decontam_asvs)
+  kw_set <- unique(kw_asvs)
+  
+  shared <- intersect(decontam_set, kw_set)
+  decontam_only <- setdiff(decontam_set, kw_set)
+  kw_only <- setdiff(kw_set, decontam_set)
+  
+  list(
+    shared_ASVs = shared,
+    shared_count = length(shared),
+    decontam_only_count = length(decontam_only),
+    kw_only_count = length(kw_only)
+  )
+}
+# Comparisons per niche/dataset
+comparison_VGO2_NP <- compare_contaminants(decontam_VGO2_NP_ASVs, KW_VGO2_NP_ASVs)
+# NO KW test for VGO2 OP
+comparison_VGO3_NP <- compare_contaminants(decontam_VGO3_NP_ASVs, KW_VGO3_NP_ASVs)
+comparison_VGO3_OP <- compare_contaminants(decontam_VGO3_OP_ASVs, KW_VGO3_OP_ASVs)
+
+comparison_VGO2_NP
+comparison_VGO3_NP
+comparison_VGO3_OP
+
+
+# Combine the contaminants identified by decontam with those detected using Kruskall-Wallis test
+# VGO2_NP: both decontam and KW
+contaminants_VGO2_NP_combined <- unique(c(decontam_VGO2_NP_ASVs, KW_VGO2_NP_ASVs))
+length(contaminants_VGO2_NP_combined)# 151
+# VGO2_OP: decontam only
+contaminants_VGO2_OP_combined <- unique(decontam_VGO2_OP_ASVs)
+length(contaminants_VGO2_OP_combined) # 24
+# VGO3_NP: both decontam and KW
+contaminants_VGO3_NP_combined <- unique(c(decontam_VGO3_NP_ASVs, KW_VGO3_NP_ASVs))
+length(contaminants_VGO3_NP_combined)# 299
+# VGO3_OP: both decontam and KW
+contaminants_VGO3_OP_combined <- unique(c(decontam_VGO3_OP_ASVs, KW_VGO3_OP_ASVs))
+length(contaminants_VGO3_OP_combined)# 210 
+
+
+# Sort ASVs in teh list by their ranking (i.e. the number suffix at the end of their name)
+# Sort ASV list by numeric suffix
+sort_asvs_by_index <- function(asvs) {
+  index <- as.numeric(sub(".*_", "", asvs))  # extract suffix
+  asvs[order(index)]
+}
+
+# VGO2 NP
+contaminants_VGO2_NP_combined_sorted <- sort_asvs_by_index(contaminants_VGO2_NP_combined)
+# VGO2 OP
+contaminants_VGO2_OP_combined_sorted <- sort_asvs_by_index(contaminants_VGO2_OP_combined)
+# VGO3 NP
+contaminants_VGO3_NP_combined_sorted <- sort_asvs_by_index(contaminants_VGO3_NP_combined)
+# VGO3 OP
+contaminants_VGO3_OP_combined_sorted <- sort_asvs_by_index(contaminants_VGO3_OP_combined)
+
+
+
+# Create table of contaminants detected by each method and in each dataset 
+# Create a union of all contaminant ASVs from all datasets
+all_contaminants <- unique(c(
+  contaminants_VGO2_NP_combined_sorted,
+  contaminants_VGO2_OP_combined_sorted,
+  contaminants_VGO3_NP_combined_sorted,
+  contaminants_VGO3_OP_combined_sorted
+))
+
+# Initialize data frame
+final_contaminant_df <- data.frame(
+  ASV = all_contaminants,
+  VGO2_NP_decontam = all_contaminants %in% contaminants_VGO2_NP_combined_sorted,
+  VGO2_OP_decontam = all_contaminants %in% contaminants_VGO2_OP_combined_sorted,
+  VGO3_NP_decontam = all_contaminants %in% contaminants_VGO3_NP_combined_sorted,
+  VGO3_OP_decontam = all_contaminants %in% contaminants_VGO3_OP_combined_sorted
+)
+
+# Optional: sort by numeric ASV suffix for readability
+final_contaminant_df <- final_contaminant_df[order(as.numeric(sub(".*_", "", final_contaminant_df$ASV))), ]
+
+# View final table
+head(final_contaminant_df)
+
+# Write to CSV
+write.csv(final_contaminant_df, "../Output/Decontamination/Final_contaminants_combined.csv", row.names = FALSE)
+# Now to do manual checks of ASVs flagged as contaminants
+```
+## Frequency plot of contaminants
+We create a frequency plot of the top 100 identified contaminants. For most of these contaminant ASVs there seems to be a correlation between their relative abundance and the bacterial density (for VGO2 OP the pattern isn't so consistent)
+```{r}
+# Select top 100 ASVs (or fewer if < 100 available)
+top100_VGO2_NP <- head(contaminants_VGO2_NP_combined_sorted, 100)
+top100_VGO2_OP <- head(contaminants_VGO2_OP_combined_sorted, 100)
+top100_VGO3_NP <- head(contaminants_VGO3_NP_combined_sorted, 100)
+top100_VGO3_OP <- head(contaminants_VGO3_OP_combined_sorted, 100)
+
+# Frequency plots for each dataset
+# VGO2 NP
+plot_VGO2_NP <- plot_frequency(subset_samples(VGO2_NP_ps_for_decontam, niche == "NP"), top100_VGO2_NP, 
+               conc="qPCR") +  xlab("Bacterial density (pg/ul)")
+plot_VGO2_NP
+
+# VGO2 OP
+# plot_VGO2_OP <- plot_frequency(subset_samples(VGO2_OP_ps_for_decontam, niche == "OP"), top100_VGO2_OP, 
+#                conc="qPCR") +  xlab("Bacterial density (pg/ul)")
+# plot_VGO2_OP
+# Doesn't work for OP...
+# Subset to OP samples
+ps_op <- subset_samples(VGO2_OP_ps_for_decontam, niche == "OP")
+# Remove samples with zero total counts
+ps_op <- prune_samples(sample_sums(ps_op) > 0, ps_op)
+# Get ASVs present in this filtered OP set
+asvs_in_op <- taxa_names(ps_op)
+# Intersect with top100 ASVs
+top100_present_op <- intersect(top100_VGO2_OP, asvs_in_op)
+# Plot
+plot_VGO2_OP <- plot_frequency(
+  ps_op, 
+  top100_present_op,
+  conc = "qPCR"
+) + 
+  xlab("Bacterial density (pg/µl)") +
+  ggtitle("VGO2 OP")
+
+
+# VGO3 NP
+plot_VGO3_NP <- plot_frequency(subset_samples(ps_vgo3_np_for_decontam, niche == "NP"), top100_VGO3_NP, 
+               conc="qPCR") +  xlab("Bacterial density (pg/ul)")
+
+# VGO3 OP
+plot_VGO3_OP <- plot_frequency(subset_samples(ps_vgo3_op_for_decontam, niche == "OP"), top100_VGO3_OP, 
+               conc="qPCR") +  xlab("Bacterial density (pg/ul)")
+
+
+ggsave("../Output/Decontamination/freqplot_VGO2_NP_top100.svg", plot_VGO2_NP, width=15, height=15)
+ggsave("../Output/Decontamination/freqplot_VGO2_OP_top100.svg", plot_VGO2_OP, width=15, height=15)
+ggsave("../Output/Decontamination/freqplot_VGO3_NP_top100.svg", plot_VGO3_NP, width=15, height=15)
+ggsave("../Output/Decontamination/freqplot_VGO3_OP_top100.svg", plot_VGO3_OP, width=15, height=15)
+
+
+# x-axis: Bacterial load (e.g., qPCR concentration, here pg/μl)
+# y-axis: Frequency (relative abundance) of an individual ASV
+
+## For true contaminants we expect higher relative abundance at lower bacterial loads, and a declining or flat trend as load increases. There should be a negative correlation between ASV abundance and sample bacterial density. If it is a false contaminant, then there will be no clear correlation with bacterial load. 
+```
+## Differences in contaminants between niches 
+```{r}
+# Identify contaminants shared between 
+# Compare NP vs OP for VGO2
+compare_np_op <- function(np_asvs, op_asvs) {
+  shared <- intersect(np_asvs, op_asvs)
+  np_only <- setdiff(np_asvs, op_asvs)
+  op_only <- setdiff(op_asvs, np_asvs)
+  
+  list(
+    shared_ASVs = shared,
+    shared_count = length(shared),
+    np_only_ASVs = np_only,
+    np_only_count = length(np_only),
+    op_only_ASVs = op_only,
+    op_only_count = length(op_only)
+  )
+}
+
+# VGO2: Compare contaminants between NP and OP
+np_op_comparison_VGO2 <- compare_np_op(
+  contaminants_VGO2_NP_combined_sorted,
+  contaminants_VGO2_OP_combined_sorted
+)
+
+# VGO3: Compare contaminants between NP and OP
+np_op_comparison_VGO3 <- compare_np_op(
+  contaminants_VGO3_NP_combined_sorted,
+  contaminants_VGO3_OP_combined_sorted
+)
+
+# View the results
+np_op_comparison_VGO2 # 6 shared, 145 NP only, 18 OP only 
+np_op_comparison_VGO3 # 37 shared, 174 NP only, 150 OP only 
+
+```
+## Check false contaminants
+After screening the list of combined contaminants, we found some that some ASVs may not actually be contaminants.
+```{r}
+# Specifically we see that there are some high abundant common NP ASVs that are flagged as contaminants in the VGO3 OP dataset. But in the VGO3 sequencing, there were some mixed seuqencing runs (i.e. mixing NP and OP niches). Checking in which runs these common NP ASVs appear to see if we can see signs of spill-over from the NP to OP niches.
+
+# Common NP contaminants to check
+# Define the ASVs you want to check for spill-over
+contams_check_vgo3_OP <- c("Dolosigranulum_pigrum_1", "Staphylococcus_2", "Corynebacterium_3", "Moraxella_4")
+# Filter to relevant ASVs in VGO3 OP and keep only non-zero abundance
+df_vgo3_op_contams_present <- df_VGO3_op_pivot %>%
+  filter(ASV %in% contams_check_vgo3_OP, RA > 0)
+# For each ASV, list the unique DI.Runs where it's present
+asv_run_presence_simple <- df_vgo3_op_contams_present %>%
+  group_by(ASV) %>%
+  summarise(
+    Runs_present = paste(sort(unique(DI.Run)), collapse = ", "),
+    .groups = "drop"
+  )
+# View result
+print(asv_run_presence_simple)
+# Optionally write to file
+write.csv(asv_run_presence_simple, "../Output/Decontamination/VGO3_OP_suspect_ASV_run_presence.csv", row.names = FALSE) # The ASVs seem to be present across a selection of different DNA isolation runs - therefore not probably related to spill-over from NP niche
+
+# Extra check: 
+# Check the relative abundance across DNA isolation runs for these suspicious contaminants identified. 
+# Define ASVs of interest
+asvs_to_check <- c("Dolosigranulum_pigrum_1", "Staphylococcus_2", "Corynebacterium_3", "Moraxella_4")
+# Filter dataset for ASVs of interest and ensure DI.Run is ordered
+plot_data <- df_VGO3_op_pivot %>%
+  filter(ASV %in% asvs_to_check) %>%
+  mutate(DI.Run = factor(DI.Run, levels = sort(unique(as.numeric(as.character(DI.Run))))))
+# Plot
+p <- ggplot(plot_data, aes(x = DI.Run, y = RA)) +
+  geom_point(alpha = 0.5, shape = 16, size = 2, position = position_jitter(width = 0.2)) +
+  geom_boxplot(outlier.shape = NA, fill = "grey90", alpha = 0.4) +
+  stat_summary(fun = mean, geom = "point", shape = 8, size = 2, color = "red") +
+  facet_wrap(~ASV, scales = "free_y") +
+  labs(
+    x = "DNA Isolation Run (DI.Run)",
+    y = "Relative Abundance",
+    title = "RA of suspect ASVs across runs (VGO3 OP)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  )
+# Display plot
+print(p)
+# Save plot 
+ggsave("../Output/Decontamination/RA_by_run_VGO3_OP_suspects.svg", p, width = 10, height = 6)# no clear pattern
+
+```
+## Non-contaminants after manual inspection
+```{r}
+# Define non-contaminants manually verified
+non_contam <- c(
+  "Dolosigranulum_pigrum_1", "Staphylococcus_2", "Corynebacterium_3",
+  "Moraxella_4", "Veillonella_140", "Prevotella_7_melaninogenica_165",
+  "Anaerococcus_provencensis_168", "Acinetobacter_lwoffii_177", "Prevotella_7_179",
+  "Cutibacterium_187", "Lactococcus_209", "Actinomyces_225"
+)
+
+# Filter contaminants by removing known non-contaminants
+all_contaminants_combined_filt <- setdiff(all_contaminants_combined, non_contam)
+cat("Number of contaminants after filtering non-contaminants:", length(all_contaminants_combined_filt), "\n") # 415 
+```
+## Exclude all blanks from phyloseq objects 
+```{r}
+# Subset phyloseq object to samples from niches "NP" and "OP"
+ps2_NPOP <- subset_samples(ps2, niche %in% c("NP", "OP"))
+
+# Remove taxa with zero counts after subsetting samples
+ps2_NPOP_f <- prune_taxa(taxa_sums(ps2_NPOP) > 0, ps2_NPOP)
+ps2_NPOP; ps2_NPOP_f # 6980 taxa removed
+```
+## Remove contaminants
+```{r}
+# Remove contaminant taxa from the filtered phyloseq object
+ps2_NPOP_no_contams <- prune_taxa(!(taxa_names(ps2_NPOP_f) %in% all_contaminants_combined_filt), ps2_NPOP_f)
+
+cat("Contaminants removed:", length(taxa_names(ps2_NPOP_f)) - length(taxa_names(ps2_NPOP_no_contams)), "\n") # 415 removed 
+
+# Remove any taxa with zero counts after contaminant removal
+ps2_no_zero_taxa <- prune_taxa(taxa_sums(ps2_NPOP_no_contams) > 0, ps2_NPOP_no_contams)
+
+# Final object: ps2_no_zero_taxa contains no contaminants and no zero-count taxa
+
+# Manual inspection of list - "Salmonella_25", "Listeria_26" seem suspicious - not likely in NP and OP, do not appear in the VGO3 OP data, see where they are in the dataset - looking into these: 
+# Define the ASVs of interest
+asvs_of_interest <- c("Salmonella_25", "Listeria_26")
+# Get the OTU table and transpose so rows are samples
+otu_df <- as.data.frame(t(otu_table(ps2_NPOP_no_contams)))
+# Find samples where either ASV is present (i.e., abundance > 0)
+samples_with_asvs <- rownames(otu_df)[rowSums(otu_df[, asvs_of_interest, drop = FALSE] > 0) > 0]
+# Extract the sample_data for those samples
+sample_data_with_asvs <- sample_data(ps2)[samples_with_asvs, ]
+# View 
+sample_data_with_asvs
+```
+# Final list of ASVs remaining
+```{r}
+# Extract ASV names from phyloseq object
+asv_names <- taxa_names(ps2_no_zero_taxa)
+# Extract numeric suffix (everything after last underscore)
+asv_suffix_numbers <- as.numeric(sub(".*_", "", asv_names))
+# Order ASVs by numeric suffix
+asv_ordered <- asv_names[order(asv_suffix_numbers)]
+# Take only the first 100
+asv_first_100 <- head(asv_ordered, 100)
+# Print
+print(asv_first_100)
+# save final ASV list
+write.csv(asv_first_100, "../Output/Microbiome_descriptives/Ordered_ASV_names_top100.csv")
+```
+
+# Check for duplicated samples
+```{r}
+# Duplicates were already resolved before but check if any were missed
+# Convert sample_data to data.frame
+sample_df <- as.data.frame(sample_data(ps2_no_zero_taxa))
+# Create a new combined key of VGO3_ID and niche
+sample_df$combined_key <- paste(sample_df$VGO3_ID, sample_df$niche, sample_df$study, sep = "_")
+# Count how many times each combined_key appears
+counts <- table(sample_df$combined_key)
+# Keep keys that appear more than once (true duplicates)
+dup_keys <- names(counts[counts > 1])
+# Filter the data.frame for those duplicated keys
+duplicates <- sample_df[sample_df$combined_key %in% dup_keys, ]
+# View duplicates
+duplicates
+```
+
+# Exclude low density samples
+Next, we remove all the samples with low bacterial density (lower than 0.095 pg/ul). This includes 20 samples
+
+```{r}
+ps3 <- prune_samples(sample_data(ps2_no_zero_taxa)$qPCR >= 0.095, ps2_no_zero_taxa)
+ps3 <- prune_taxa(taxa_sums(ps3) > 0, ps3) # Remove taxa with taxa sum of 0
+
+ps2_no_zero_taxa; ps3 # 84 samples were removed 
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 25773 taxa and 2415 samples ]
+# sample_data() Sample Data:       [ 2415 samples by 88 sample variables ]
+# tax_table()   Taxonomy Table:    [ 25773 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 25773 reference sequences ]
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 25537 taxa and 2332 samples ]
+# sample_data() Sample Data:       [ 2332 samples by 88 sample variables ]
+# tax_table()   Taxonomy Table:    [ 25537 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 25537 reference sequences ]
+```
+# Rarefaction curves
+```{r}
+# First we take a look at the distribution of # reads per sample
+read_counts <- sample_sums(ps3) %>% enframe() %>% ggplot(aes(y = 1, x = value)) +
+  ggdist::stat_halfeye( adjust = .5, height = .3, justification = -.3,
+                        .width = 0, point_colour = NA) + 
+  geom_point(size = 1.3, shape = 16, alpha = .2, 
+             position = position_jitter(seed = 1, width = 0, height = .05)) +
+  geom_boxplot(width = .12, alpha = 0.5, outlier.color = NA) +
+  scale_x_log10(breaks = c(1000, 5000, 10000, 30000, 100000, 300000),
+                labels = scales::comma) +
+  coord_cartesian(ylim = c(0.9, NA), clip = "off") +
+  labs(x = "Number of reads/sample", y = NULL) +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+  geom_vline(xintercept = 10000, linetype = "dashed", color = "red")
+read_counts
+ggsave("../Output/Preprocessing/read_counts.svg", read_counts, width = 5, height = 4)
+
+# Rarefaction curves - helps evaluate whether the sequencing depth (i.e., number of reads per sample) was sufficient to capture the diversity of microbial communities in the samples.
+# X-axis: Number of sequencing reads (sampling effort)
+# Y-axis: Number of observed species (or ASVs/OTUs, depending on your level of analysis)
+## Each line on the curve represents a sample.
+otu_tab_rare <- ps3 %>% prune_samples(sample_sums(.) < 30000, .) %>% # only keep samples with <30000 reads
+  otu_table() %>% # extract otu table
+  as(., "matrix") %>% # convert it to a matrix
+  t # transpose the matrix where rows = samples and cols = taxa
+
+saveRDS(otu_tab_rare, "../Output/Preprocessing/otu_tab_rare.rds")
+
+# Generate rarefaction curves
+# rarecurve() (from the vegan package) performs individual-based rarefaction for each sample by randomly subsampling reads without replacement at increasing steps (every 10 reads, here) and calculating the number of unique taxa detected at each step.
+# rare_curve_data <- rarecurve(otu_tab_rare, step = 10)
+
+# rare_curves <- map2_dfr(rare_curve_data, 
+#                         rownames(otu_tab_rare), ~enframe(.x) %>% 
+#                           mutate(sample_id = .y)) %>%
+#   mutate(name = str_remove(name, "N") %>% as.numeric) %>%
+#   ggplot(aes(x = name, y = value, group = sample_id)) +
+#     geom_line(alpha = 0.15) +
+#     scale_y_log10() +
+#     scale_x_continuous(breaks = c(0, 5000, 10000, 15000, 20000, 25000), 
+#                        labels = scales::comma) +
+#     geom_vline(aes(xintercept = 10000),  colour="grey50", linetype="dotted") +
+#     labs(x = "Sample size", y = "Number of species")
+# 
+# ggsave("../Output/Microbiome_descriptives/rarefaction_curves.svg", rare_curves)
+```
+
+# Exclusion of samples with less than 10,000 reads
+```{r}
+# Based on these figures, we chose a read cut-off at 10,000 reads. In the rarefaction curves, this was the point where the curves started flattening. 
+# Remove the samples with <10,000 reads
+ps4 <- prune_samples(sample_sums(ps3) > 10000, ps3)
+ps4 <- prune_samples(!is.na(ps4@sam_data$niche), ps4)
+ps4 <- prune_taxa(taxa_sums(ps4) > 0, ps4)
+
+ps3; ps4
+
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 25537 taxa and 2332 samples ]
+# sample_data() Sample Data:       [ 2332 samples by 88 sample variables ]
+# tax_table()   Taxonomy Table:    [ 25537 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 25537 reference sequences ]
+# 
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 24355 taxa and 2170 samples ]
+# sample_data() Sample Data:       [ 2170 samples by 88 sample variables ]
+# tax_table()   Taxonomy Table:    [ 24355 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 24355 reference sequences ]
+```
+
+# Composition plots per dataset - after pre-processing
+```{r}
+# Subset ps2 for dataset == "VGO3_NP"
+ps_vgo2_np <- subset_samples(ps4, dataset == "VGO2_NP" & niche == "NP")
+ps_vgo2_np_filt <- prune_taxa(taxa_sums(ps_vgo2_np) > 0, ps_vgo2_np)
+ps_vgo2_np_filt <- prune_samples(sample_sums(ps_vgo2_np_filt) > 0, ps_vgo2_np_filt)
+
+# stacked bar plot
+VGO2_NP_stackedbar <- create_ordered_bar_n(ps_vgo2_np, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO2 NP microbiome composition per sample (cleaned)")
+# Save plot
+ggsave("../Output/Microbiome_descriptives/After_preprocessing_composition/VGO2_NP_barplot.svg", VGO2_NP_stackedbar, width = 5, height = 6)
+
+# Subset ps2 for dataset == "VGO3_OP"
+ps_vgo2_op <- subset_samples(ps4, dataset == "VGO2_OP" & niche == "OP")
+ps_vgo2_op_filt <- prune_taxa(taxa_sums(ps_vgo2_op) > 0, ps_vgo2_op)
+ps_vgo2_op_filt <- prune_samples(sample_sums(ps_vgo2_op_filt) > 0, ps_vgo2_op_filt)
+
+# stacked bar plot
+VGO2_OP_stackedbar <- create_ordered_bar_n(ps_vgo2_op_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO2 OP microbiome composition per sample (cleaned)")
+
+# Save plot
+ggsave("../Output/Microbiome_descriptives/After_preprocessing_composition/VGO2_OP_barplot.svg", VGO2_OP_stackedbar, width = 5, height = 6)
+
+
+# Subset ps2 for dataset == "VGO3_NP"
+ps_vgo3_np <- subset_samples(ps2, dataset == "VGO3_NPOP" & niche == "NP")
+ps_vgo3_np_filt <- prune_taxa(taxa_sums(ps_vgo3_np) > 0, ps_vgo3_np)
+ps_vgo3_np_filt <- prune_samples(sample_sums(ps_vgo3_np_filt) > 0, ps_vgo3_np_filt)
+
+# stacked bar plot
+VGO3_NP_stackedbar <- create_ordered_bar_n(ps_vgo3_np_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO3 NP microbiome composition per sample (cleaned)")
+# Save plot
+ggsave("../Output/Microbiome_descriptives/After_preprocessing_composition/VGO3_NP_barplot.svg", VGO3_NP_stackedbar, width = 5, height = 6)
+
+
+# Subset ps2 for dataset == "VGO3_NP"
+ps2@sam_data$dataset
+ps_vgo3_op <- subset_samples(ps2, dataset == "VGO3_NPOP" & niche == "OP")
+ps_vgo3_op_filt <- prune_taxa(taxa_sums(ps_vgo3_op) > 0, ps_vgo3_op)
+ps_vgo3_op_filt <- prune_samples(sample_sums(ps_vgo3_op_filt) > 0, ps_vgo3_op_filt)
+
+# stacked bar plot
+VGO3_OP_stackedbar <- create_ordered_bar_n(ps_vgo3_op_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO3 OP microbiome composition per sample (cleaned)")
+# Save plot
+ggsave("../Output/Microbiome_descriptives/After_preprocessing_composition/VGO3_OP_barplot.svg", VGO3_OP_stackedbar, width = 5, height = 6)
+
+
+
+#### Combine plots: NP on top row, OP on bottom row ####
+composition_combined <- (VGO2_NP_stackedbar | VGO3_NP_stackedbar) / 
+                        (VGO2_OP_stackedbar | VGO3_OP_stackedbar) +
+                        plot_annotation(tag_levels = 'A')  # Optional: add panel tags A, B, C, D
+
+print(composition_combined)
+
+# Save combined figure
+ggsave("../Output/Microbiome_descriptives/After_preprocessing_composition/Combined_composition_barplots.svg", composition_combined, width = 12, height = 12)
+
+```
+
+# Composition plots - average RA per dataset (genus level)
+Make plots which collapse ASVs to genera, calculate mean relative abundances for each genus per dataset, and keep genera that have >10% mean RA, create side-by-side bar plot across the datasets
+```{r}
+get_top_genera_RA <- function(ps_obj, dataset_name) {
+  # Aggregate to genus level
+  ps_genus <- tax_glom(ps_obj, taxrank = "genus")
+  ps_genus_RA <- transform_sample_counts(ps_genus, function(x) x / sum(x))
+  
+  # Convert to data frame
+  genus_df <- psmelt(ps_genus_RA)
+  
+  # Compute mean relative abundance and select top 10 genera
+  genus_summary <- genus_df %>%
+    group_by(genus) %>%
+    summarise(Mean_RA = mean(Abundance, na.rm = TRUE)) %>%
+    arrange(desc(Mean_RA)) %>%
+    slice_head(n = 5) %>%
+    mutate(Dataset = dataset_name)
+  
+  return(genus_summary)
+}
+
+
+# Run for each group
+RA_vgo2_np <- get_top_genera_RA(ps_vgo2_np_filt, "VGO2_NP")
+RA_vgo2_op <- get_top_genera_RA(ps_vgo2_op_filt, "VGO2_OP")
+RA_vgo3_np <- get_top_genera_RA(ps_vgo3_np_filt, "VGO3_NP")
+RA_vgo3_op <- get_top_genera_RA(ps_vgo3_op_filt, "VGO3_OP")
+
+# Combine
+RA_all <- bind_rows(RA_vgo2_np, RA_vgo2_op, RA_vgo3_np, RA_vgo3_op)
+
+# Make Genus a factor ordered by abundance for cleaner plotting
+RA_all <- RA_all %>%
+  mutate(Genus = fct_reorder(genus, Mean_RA, .fun = max, .desc = TRUE))
+
+
+# Add residual to each group to make bars stack to 100%
+RA_all_with_resid <- RA_all %>%
+  group_by(Dataset) %>%
+  mutate(Total_RA = sum(Mean_RA),
+         Residual_RA = 1 - Total_RA) %>%
+  ungroup()
+
+residual_rows <- RA_all_with_resid %>%
+  select(Dataset, Residual_RA) %>%
+  distinct() %>%
+  mutate(genus = "Residual", Mean_RA = Residual_RA) %>%
+  select(genus, Mean_RA, Dataset)
+
+RA_all_final <- RA_all %>%
+  select(genus, Mean_RA, Dataset) %>%
+  bind_rows(residual_rows)
+
+# Reorder genus so Residual is always on top
+RA_all_final <- RA_all_final %>%
+  mutate(Genus = ifelse(genus == "Residual", "Residual", as.character(genus))) %>%
+  mutate(Genus = fct_reorder(Genus, Mean_RA, .fun = max, .desc = TRUE)) %>%
+  mutate(Genus = fct_relevel(Genus, "Residual", after = 0))
+
+# Reorder Dataset manually
+RA_all_final <- RA_all_final %>%
+  mutate(Dataset = factor(Dataset, levels = c("VGO2_NP", "VGO3_NP", "VGO2_OP", "VGO3_OP")))
+
+
+# Assign colors
+genus_levels <- unique(RA_all_final$genus)
+n_non_residual <- length(setdiff(genus_levels, "Residual"))
+palette_colors <- brewer.pal(min(12, n_non_residual), "Paired")
+
+genus_colors <- c(
+  setNames(palette_colors[1:n_non_residual], setdiff(genus_levels, "Residual")),
+  Residual = "grey80"
+)
+
+# plot
+genus_plot_all <- RA_all_final %>%
+  ggplot(aes(x = Dataset, y = Mean_RA, fill = Genus)) +
+  geom_bar(stat = "identity", color = "white", size = 0.3) +  # white lines between stacked genera
+  scale_fill_manual(
+    values = genus_colors,
+    guide = guide_legend(title = "Genus", label.theme = element_text(face = "italic"))
+  ) +
+  labs(
+    title = "Top 5 genera per dataset",
+    y = "Mean relative abundance",
+    x = "Dataset"
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1), expand = c(0, 0)) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.border = element_rect(color = "grey40", size = 0.5),
+    legend.key.size = unit(0.5, "cm")
+  )
+
+# View the plot
+genus_plot_all
+
+ggsave("../Output/Microbiome_descriptives/After_preprocessing_composition/Genus_composition_plot_all.svg", genus_plot_all, height = 5, width =7)
+
+
+```
+
+# Rarefy data and compute alpha diversity indices 
+```{r}
+m <- ps4 %>% meta_to_df()
+gc()
+set.seed(77)
+ps_rarefied <- phyloseq::rarefy_even_depth(ps4, replace = T, trimOTUs = T)
+sample_sums(ps_rarefied)# min library size = 10038    
+
+# 2638OTUs were removed because they are no longer present in any sample after random subsampling
+# Compute alpha diversity indices: Observed, shannon and simpson
+adiv <- data.frame(
+  "Observed" = phyloseq::estimate_richness(ps_rarefied, measures = "Observed"),
+  "Shannon" = phyloseq::estimate_richness(ps_rarefied, measures = "Shannon"),
+  "Simpson" = phyloseq::estimate_richness(ps_rarefied, measures = "Simpson")
+  )
+# sample id have been changed to "." instead of "_"
+adiv$sample_id <- gsub("\\.", "-", rownames(adiv))
+m <- left_join(m, adiv)
+m$qPCR_log <- log2(m$qPCR)
+
+# Add alpha diversity values to phyloseq object
+rownames(m) <- m$sample_id
+m <- select(m, -c("sample_id"))
+sample_data(ps4) <- m
+
+# Add read number metadata
+ps4@sam_data$final_read_nr <- colSums(ps4@otu_table)
+```
+
+# Preprocessing summary
+```{r}
+stats <- tibble(step = character(),
+                samples = numeric(),
+                taxa = numeric(),
+                reads = numeric())
+
+
+stats <- ps_stats(ps, stats, "Raw data")
+stats <- ps_stats(ps2_NPOP_f, stats, "Removal of blanks and zero sum taxa")
+stats <- ps_stats(ps2_no_zero_taxa, stats, "Exclusion of contaminant ASVs")
+stats <- ps_stats(ps3, stats, "Exclusion of samples with bacterial density <0.095 pg/uL")
+stats <- ps_stats(ps4, stats, "Exclusion of samples with reads <10,000")
+stats <- ps_stats(ps_rarefied, stats, "Rarefied for alpha diversity")
+stats
+
+write.csv(stats, "../Output/Preprocessing/Processing_steps.csv")
+```
+# Number samples in each dataset before and after pre-processing
+```{r}
+# Define a helper function to count samples
+count_samples <- function(ps_obj, niche_val, dataset_val) {
+  sample_data(ps_obj) %>%
+    data.frame() %>%
+    filter(niche == niche_val, dataset == dataset_val) %>%
+    nrow()
+}
+
+# Create the summary table
+sample_counts <- tibble(
+  Condition = c("NP - VGO2_NP", "NP - VGO3_OPNP", "OP - VGO2_OP", "OP - VGO3_NPOP"),
+  
+  Before = c(
+    count_samples(ps2_NPOP_f, "NP", "VGO2_NP"),
+    count_samples(ps2_NPOP_f, "NP", "VGO3_NPOP"),
+    count_samples(ps2_NPOP_f, "OP", "VGO2_OP"),
+    count_samples(ps2_NPOP_f, "OP", "VGO3_NPOP")
+  ),
+  
+  After = c(
+    count_samples(ps4, "NP", "VGO2_NP"),
+    count_samples(ps4, "NP", "VGO3_NPOP"),
+    count_samples(ps4, "OP", "VGO2_OP"),
+    count_samples(ps4, "OP", "VGO3_NPOP")
+  )
+)
+
+# View the table
+print(sample_counts)
+
+write.csv(sample_counts, "../Output/Preprocessing/Sample_counts_before_after_preprocessing.csv")
+```
+
+# Metadata additions and fixes
+## Categorise lung function variables
+```{r}
+# Helper functions
+# Categorising lung function
+categorise_lung_function <- function(df) {
+  df$FEV1_category <- cut(df$FEV1_pred,
+    breaks = c(-Inf, 49.9, 69.9, 79.9, Inf),
+    labels = c("Severe","Moderate","Mild","Normal"), right = TRUE)
+
+  df$FVC_category <- cut(df$FVC_pred,
+    breaks = c(-Inf, 80, Inf),
+    labels = c("Severely reduced","Normal"), right = FALSE)
+
+  df$FEV1FVC_category <- cut(df$FEV1FVC_pred,
+    breaks = c(-Inf, 70, Inf),
+    labels = c("Obstructive","Normal"), right = FALSE)
+
+  df$FEF25_75_category <- cut(df$FEF25_75_pred,
+    breaks = c(-Inf, 49.9, 69.9, 79.9, Inf),
+    labels = c("Severe","Moderate","Mild","Normal"), right = TRUE)
+
+  df$FEV1_category     <- factor(df$FEV1_category,
+                                 levels = c("Normal","Mild","Moderate","Severe"), ordered = TRUE)
+  df$FVC_category      <- factor(df$FVC_category,
+                                 levels = c("Normal","Severely reduced"), ordered = TRUE)
+  df$FEV1FVC_category  <- factor(df$FEV1FVC_category,
+                                 levels = c("Normal","Obstructive"), ordered = TRUE)
+  df$FEF25_75_category <- factor(df$FEF25_75_category,
+                                 levels = c("Normal","Mild","Moderate","Severe"), ordered = TRUE)
+  df
+}
+
+# Add your lung-function categories into sam_data (using your function)
+add_lf_categories_to_ps <- function(ps) {
+  sd <- as(phyloseq::sample_data(ps), "data.frame")
+
+  # Ensure the inputs to `cut()` are numeric (quietly)
+  to_num <- function(x) suppressWarnings(as.numeric(as.character(x)))
+  need_num <- intersect(c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred"), names(sd))
+  for (v in need_num) sd[[v]] <- to_num(sd[[v]])
+
+  # Use your function to create categories
+  sd <- categorise_lung_function(sd)
+
+  phyloseq::sample_data(ps) <- sd
+  ps
+}
+
+# Add the lung function categories
+ps4 <- add_lf_categories_to_ps(ps4)
+
+# Visualise the lung-function category distribution across the different databases 
+sd <- as(phyloseq::sample_data(ps4), "data.frame")
+
+# Make a clean facet label
+sd$Dataset <- dplyr::case_when(
+  sd$dataset %in% c("VGO2_NP","VGO2_OP") ~ sd$dataset,
+  sd$dataset == "VGO3_NPOP"              ~ paste0("VGO3_", sd$niche),
+  TRUE                                   ~ paste(sd$dataset, sd$niche, sep = "_")
+)
+
+lung_cat_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+lung_cat_counts <- sd %>%
+  select(any_of(c("Dataset", lung_cat_vars))) %>%
+  # FIX: unify types before pivot (avoid mixing ordered factors)
+  mutate(across(all_of(lung_cat_vars), ~ as.character(.))) %>%
+  pivot_longer(
+    cols = all_of(lung_cat_vars),
+    names_to = "Variable",
+    values_to = "Category",
+    values_drop_na = TRUE
+    # Alternatively: values_transform = list(Category = as.character)
+  ) %>%
+  count(Dataset, Variable, Category, name = "n") %>%
+  mutate(
+    Variable = gsub("_category", "", Variable),
+    Variable = factor(Variable, levels = c("FEV1","FVC","FEV1FVC","FEF25_75")),
+    # Shared order for all possible categories
+    Category = factor(
+      Category,
+      levels = c("Normal","Mild","Moderate","Severe","Severely reduced","Obstructive")
+    )
+  )
+
+cat_cols <- c(
+  "Normal"           = "#2B83BA",
+  "Mild"             = "#ABD9E9",
+  "Moderate"         = "#FDAE61",
+  "Severe"           = "#D7191C",
+  "Severely reduced" = "#8C510A",
+  "Obstructive"      = "#762A83"
+)
+
+p_counts <- ggplot(lung_cat_counts, aes(x = Variable, y = n, fill = Category)) +
+  geom_col(width = 0.85) +
+  facet_wrap(~ Dataset, scales = "free_y") +
+  scale_fill_manual(values = cat_cols, drop = TRUE) +
+  labs(
+    title = "Distribution of Lung Function Categories per Dataset",
+    x = "Lung Function Metric",
+    y = "Number of Samples",
+    fill = "Category"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+
+p_counts
+
+ggsave("../Output/Participant_data/Lung_function_category_barplot.svg",
+       p_counts, width = 8, height = 6)
+```
+
+# Recode gender and smoking status as factors 
+```{r}
+# Recoding gender
+recode_gender <- function(x) {
+  g <- tolower(as.character(x))
+  g <- dplyr::case_when(g %in% c("m","male") ~ "male",
+                        g %in% c("f","female") ~ "female",
+                        TRUE ~ g)
+  factor(g, levels = c("male","female"))
+}
+
+# Recoding smoking status
+recode_smoking <- function(x) {
+  s <- tolower(as.character(x))
+  s <- dplyr::case_when(
+    s %in% c("non","never","no") ~ "never",
+    s %in% c("ex","former","previous","prev") ~ "former",
+    s %in% c("current","smoker") ~ "current",
+    TRUE ~ s
+  )
+  factor(s, levels = c("never","former","current"))
+}
+
+# Recode gender and smoking status inside a phyloseq object's sam_data
+recode_gender_smoking_in_ps <- function(ps) {
+  sd <- as(phyloseq::sample_data(ps), "data.frame")
+
+  if ("gender" %in% names(sd)) {
+    sd$gender <- recode_gender(sd$gender)  # your function
+  }
+  if ("smoke_status" %in% names(sd)) {
+    sd$smoke_status <- recode_smoking(sd$smoke_status)  # your function
+  }
+
+  phyloseq::sample_data(ps) <- sd
+  ps
+}
+
+ps4 <- recode_gender_smoking_in_ps(ps4)
+```
+
+# Add season to phyloseq metadata
+```{r}
+add_season_to_master <- function(ps,
+  vgo2_np_raw_rds = "../Input/Phyloseq/VGO2_NP/Received_Mari_Lee/ps_raw.Rds",
+  vgo2_op_csv     = "../Input/Phyloseq/VGO2_OP/COPD_microbiome_subjectdata.csv") {
+
+  # Pull sam_data as a plain data.frame
+  sd <- data.frame(phyloseq::sample_data(ps), check.names = FALSE, stringsAsFactors = FALSE)
+  if (!"sample_id" %in% names(sd)) sd$sample_id <- rownames(sd)
+
+  # Start clean target column
+  sd$season_microbiome_sampling <- NA_character_
+
+  # Helpers
+  season_from_month <- function(m) {
+    ifelse(m %in% c(3,4,5),  "Spring",
+    ifelse(m %in% c(6,7,8),  "Summer",
+    ifelse(m %in% c(9,10,11),"Autumn", "Winter")))
+  }
+  code_to_label <- function(z) {
+    z <- suppressWarnings(as.integer(as.character(z)))
+    c("Winter","Spring","Summer","Autumn")[match(z, 1:4)]
+  }
+  parse_any_date <- function(x) {
+    x <- as.character(x)
+    suppressWarnings(lubridate::parse_date_time(
+      x, orders = c("Ymd","dmy","mdy","Y-m-d","d/m/Y","m/d/Y"), quiet = TRUE
+    ))
+  }
+
+  # ===== 1) VGO3 (NP & OP): derive from date_spiro =====
+  idx_vgo3 <- sd$dataset == "VGO3_NPOP"
+  if (any(idx_vgo3)) {
+    d <- parse_any_date(sd$date_spiro[idx_vgo3])
+    mo <- as.integer(month(d))
+    labs <- season_from_month(mo)
+    fill_idx <- idx_vgo3 & !is.na(labs)
+    sd$season_microbiome_sampling[fill_idx] <- labs[!is.na(labs)]
+  }
+
+  # ===== 2) VGO2 OP: merge season code from CSV (ID -> VGO3_ID) =====
+  if (file.exists(vgo2_op_csv)) {
+    lk_op <- read.csv(vgo2_op_csv, stringsAsFactors = FALSE) %>%
+      mutate(ID = trimws(as.character(ID)),
+             season_code_op = season) %>%
+      select(ID, season_code_op) %>%
+      distinct(ID, .keep_all = TRUE)
+
+    idx_op <- sd$dataset == "VGO2_OP"
+    if (any(idx_op)) {
+      sd$VGO3_ID_chr <- trimws(as.character(sd$VGO3_ID))
+      # Left join only the OP rows, then map back
+      op_sub <- sd[idx_op, , drop = FALSE] %>%
+        left_join(lk_op, by = c("VGO3_ID_chr" = "ID"))
+      labs <- code_to_label(op_sub$season_code_op)
+      fill <- !is.na(labs)
+      sd$season_microbiome_sampling[idx_op][fill] <- labs[fill]
+      sd$VGO3_ID_chr <- NULL
+    }
+  } else {
+    message("VGO2 OP season CSV not found: ", vgo2_op_csv)
+  }
+
+  # ===== 3) VGO2 NP: lookup from raw PS after T2/T3 drop + de-dup on respnr =====
+  if (file.exists(vgo2_np_raw_rds)) {
+    VGO2_NP_all <- readRDS(vgo2_np_raw_rds)
+    VGO2_NP_t1 <- phyloseq::subset_samples(VGO2_NP_all, !stringr::str_detect(subject_identifier, "T2|T3"))
+
+    meta_all <- data.frame(phyloseq::sample_data(VGO2_NP_t1), stringsAsFactors = FALSE)
+    meta_all$sample_id <- phyloseq::sample_names(VGO2_NP_t1)
+
+    meta_NP    <- meta_all %>% filter(sample_type == "NP")
+    meta_other <- meta_all %>% filter(sample_type != "NP")
+
+    meta_NP_dedup <- meta_NP %>% filter(!is.na(respnr)) %>% distinct(respnr, .keep_all = TRUE)
+    meta_NP_na    <- meta_NP %>% filter(is.na(respnr))
+    keep_ids <- c(meta_NP_dedup$sample_id, meta_NP_na$sample_id, meta_other$sample_id)
+
+    VGO2_NP_dedup <- phyloseq::prune_samples(keep_ids, VGO2_NP_t1)
+    np_sd <- data.frame(phyloseq::sample_data(VGO2_NP_dedup), stringsAsFactors = FALSE)
+    np_sd$sample_id <- rownames(np_sd)
+
+    lk_np <- np_sd %>%
+      transmute(sample_id = as.character(sample_id),
+                season_code_np = season) %>%
+      distinct(sample_id, .keep_all = TRUE)
+
+    # Join the lookup into ALL rows, fill only VGO2_NP
+    sd <- sd %>%
+      left_join(lk_np, by = "sample_id")
+
+    idx_np <- sd$dataset == "VGO2_NP" & !is.na(sd$season_code_np)
+    sd$season_microbiome_sampling[idx_np] <- code_to_label(sd$season_code_np[idx_np])
+
+    sd$season_code_np <- NULL
+  } else {
+    message("VGO2 NP raw phyloseq not found: ", vgo2_np_raw_rds)
+  }
+
+  # Finalise factor & write back
+  sd$season_microbiome_sampling <- factor(sd$season_microbiome_sampling,
+                                          levels = c("Winter","Spring","Summer","Autumn"),
+                                          ordered = FALSE)
+
+  rownames(sd) <- sd$sample_id
+  phyloseq::sample_data(ps) <- sd
+  ps
+}
+
+
+# Use it to add season to the phyloseq metadata
+ps4 <- add_season_to_master(ps4)
+
+# Check season has been added
+ps4@sam_data$season_microbiome_sampling
+
+# Check NAs in season variable
+sum(is.na(ps4@sam_data$season_microbiome_sampling)) # 2 NAs - see where these are
+df <- data.frame(ps4@sam_data)
+print(table(df$dataset, df$season_microbiome_sampling, useNA = "ifany")) # Both NA season values are from the VGO2_NP dataset
+
+# 1 = winter, 2 = spring, 3 = summer, 4 = autumn
+```
+# Save phyloseq
+```{r}
+saveRDS(ps4, "../Output/Phyloseq/ps4.rds")
+```
+
