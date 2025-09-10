@@ -8,7 +8,7 @@ output: html_document
 Firstly we look at the relationship between teh microbiome and lung function cross-sectionally in 2014/15 (VGO2) and 2021/22 (VGO3)
 # Packages
 ```{r}
-library(phyloseq); library(microbiomer); library(ggplot2); library(cowplot); library(patchwork); library(scales); library(tidyverse); library(car); library(lmtest); library(ggsignif); library(forcats); library(rcartocolor); library(broom); library(writexl); library(vegan); library(tibble); library(glue); library(xlsx); library(corrplot); library(reshape2); library(RColorBrewer); library(Hmisc); library(Maaslin2); library(fpc); library(dendextend); library(paletteer); library(ggdendro)
+library(phyloseq); library(microbiomer); library(ggplot2); library(cowplot); library(patchwork); library(scales); library(tidyverse); library(car); library(lmtest); library(ggsignif); library(forcats); library(rcartocolor); library(broom); library(writexl); library(vegan); library(tibble); library(glue); library(xlsx); library(corrplot); library(reshape2); library(RColorBrewer); library(Hmisc); library(Maaslin2); library(fpc); library(dendextend); library(paletteer); library(ggdendro); library(purrr); library(stringr)
 
 # if(!requireNamespace("BiocManager", quietly = TRUE))
 #     install.packages("BiocManager")
@@ -426,7 +426,6 @@ for (nm in names(datasets)) {
 # FEV1FVC_category: baseline = Normal.
 # FEF25_75_category: baseline = Normal.
 # copd_gold: baseline = lowest GOLD stage present in the data (0 if included).
-
 
 # Inputs 
 dataset_list <- list(
@@ -990,12 +989,27 @@ ggplot2::ggsave(
 ## Univariable PERMANOVA functions
 ```{r}
 beta_df <- function(ord, meta, var) { 
-  m_sub <- subset(meta, !is.na(meta[var]))
-  ord_sub <- ord[rownames(ord) %in% m_sub$sample_id, colnames(ord) %in% 
-                   m_sub$sample_id]
+  # 1) Proper NA filter
+  m_sub <- meta[!is.na(meta[[var]]), , drop = FALSE]
+
+  # 2) Ensure the ID key exists
+  if (!"sample_id" %in% names(m_sub)) {
+    m_sub$sample_id <- rownames(m_sub)
+  }
+
+  # 3) Intersect IDs
+  ids <- intersect(rownames(ord), m_sub$sample_id)
+  if (length(ids) < 3) return(list(ord_sub = NULL, m_sub = NULL))  # too few
+
+  ord_sub <- ord[ids, ids, drop = FALSE]
   ord_sub <- as.dist(ord_sub)
+
+  # 4) Match meta rows to the ord_sub order
+  m_sub <- m_sub[match(ids, m_sub$sample_id), , drop = FALSE]
+
   return(list(ord_sub = ord_sub, m_sub = m_sub))
 }
+
 
 do_permanova <- function(ord, meta, var) {
   t <- adonis2(as.formula(glue("ord ~ {var}")), 
@@ -1003,84 +1017,57 @@ do_permanova <- function(ord, meta, var) {
   return(t)
 }
 
+
 do_permanova_com <- function(ord, meta, var) {
-  t <- beta_df(ord, meta, var) %>%
-    { do_permanova(ord = .$ord_sub, meta = .$m_sub, var) }
-
-  t <- broom::tidy(t)
- 
-   # (Optional) You might also want to filter out "Total" or "Model" rows if they appear
-  t <- t %>% filter(!term %in% c("Residual", "Total"))  
-
-  # Add p-value labels
-  t <- t %>% mutate(
-    label_p.value = ifelse(p.value < 0.25, "*", NA),
-    label_p.value = ifelse(p.value < 0.1, "**", label_p.value),
-    label_p.value = ifelse(p.value < 0.05, "***", label_p.value),
-    Var = var
-  )
-
-  return(t)
-}
-
-
-# Dispersiion check function 
-check_dispersion <- function(dist_matrix, meta, var) {
-  if (is.factor(meta[[var]])) {
-    # Categorical variable — use betadisper
-    sub_meta <- meta[!is.na(meta[[var]]), ]
-    d <- dist_matrix[rownames(sub_meta), rownames(sub_meta)]
-    d <- as.dist(d)
-
-    # Skip if <2 groups with ≥2 samples
-    if (length(unique(sub_meta[[var]])) < 2 || any(table(sub_meta[[var]]) < 2)) {
-      return(tibble(disp_p = NA, disp_note = "Skipped: <2 groups with ≥2 samples"))
-    }
-
-    model <- betadisper(d, sub_meta[[var]])
-    perm <- permutest(model)
-    return(tibble(disp_p = perm$tab[1, "Pr(>F)"], disp_note = NA))
-    
-  } else {
-    # Continuous variable — use regression of average distances
-    sub_meta <- meta[!is.na(meta[[var]]), ]
-    d <- dist_matrix[rownames(sub_meta), rownames(sub_meta)]
-    d <- as.matrix(d)
-    dist_avg <- apply(d, 1, mean, na.rm = TRUE)
-
-    mod <- lm(dist_avg ~ sub_meta[[var]])
-    p <- summary(mod)$coefficients[2, 4]
-    return(tibble(disp_p = p, disp_note = NA))
+  parts <- beta_df(ord, meta, var)
+  if (is.null(parts$ord_sub) || is.null(parts$m_sub)) {
+    return(tibble(term = var, p.value = NA_real_, label_p.value = NA_character_, Var = var))
   }
+  t <- do_permanova(ord = parts$ord_sub, meta = parts$m_sub, var = var)
+  t <- broom::tidy(t) %>% filter(!term %in% c("Residual","Total")) %>%
+    mutate(
+      label_p.value = dplyr::case_when(
+        p.value < 0.05 ~ "***",
+        p.value < 0.10 ~ "**",
+        p.value < 0.25 ~ "*",
+        TRUE ~ NA_character_
+      ),
+      Var = var
+    )
+  t
 }
 
-# Dispersion check function
-check_dispersion <- function(dist_matrix, meta, var) {
-  if (is.factor(meta[[var]])) {
-    # Categorical variable — use betadisper
-    sub_meta <- meta[!is.na(meta[[var]]), ]
-    d <- dist_matrix[rownames(sub_meta), rownames(sub_meta)]
-    d <- as.dist(d)
 
+check_dispersion <- function(dist_matrix, meta, var) {
+  sub_meta <- meta[!is.na(meta[[var]]), , drop = FALSE]
+  if (!"sample_id" %in% names(sub_meta)) sub_meta$sample_id <- rownames(sub_meta)
+
+  # Align IDs
+  ids <- intersect(rownames(dist_matrix), sub_meta$sample_id)
+  if (length(ids) < 3) {
+    return(tibble(disp_p = NA, disp_note = "Skipped: <3 overlapping samples"))
+  }
+
+  # Subset dist and meta using the same IDs (and in same order)
+  d <- as.dist(dist_matrix[ids, ids, drop = FALSE])
+  sub_meta <- sub_meta[match(ids, sub_meta$sample_id), , drop = FALSE]
+
+  if (is.factor(sub_meta[[var]])) {
     # Skip if <2 groups with ≥2 samples
-    if (length(unique(sub_meta[[var]])) < 2 || any(table(sub_meta[[var]]) < 2)) {
+    tab <- table(sub_meta[[var]])
+    if (length(tab) < 2L || any(tab < 2L)) {
       return(tibble(disp_p = NA, disp_note = "Skipped: <2 groups with ≥2 samples"))
     }
-
     model <- betadisper(d, sub_meta[[var]])
-    perm <- permutest(model)
-    return(tibble(disp_p = perm$tab[1, "Pr(>F)"], disp_note = NA))
-    
+    perm  <- permutest(model)
+    tibble(disp_p = perm$tab[1, "Pr(>F)"], disp_note = NA)
   } else {
-    # Continuous variable — use regression of average distances
-    sub_meta <- meta[!is.na(meta[[var]]), ]
-    d <- dist_matrix[rownames(sub_meta), rownames(sub_meta)]
-    d <- as.matrix(d)
-    dist_avg <- apply(d, 1, mean, na.rm = TRUE)
-
+    # Continuous — simple regression on mean distances
+    d_mat    <- as.matrix(d)
+    dist_avg <- rowMeans(d_mat, na.rm = TRUE)
     mod <- lm(dist_avg ~ sub_meta[[var]])
-    p <- summary(mod)$coefficients[2, 4]
-    return(tibble(disp_p = p, disp_note = NA))
+    p   <- summary(mod)$coefficients[2, 4]
+    tibble(disp_p = p, disp_note = NA)
   }
 }
 ```
@@ -1114,6 +1101,9 @@ bray_vgo3_op_matrix <- bc_dist_vgo3_op %>% as.matrix()
 ### Continuous and categorical lung function variables
 #### VGO2 NP
 ```{r}
+# Continuous lung function variables don't need to be reversed to show the 'decline' in lung function as R2 and pvalues don't look at 'direction' 
+# Also, for categorical variables, no reference categories need setting for the factor variables for PERMANOVA as it compares the distances between groups to determine differences in community structure. 
+
 # Existing variables and typing
 variables_vgo2_np <- c(
   "age", "gender", "bmi", "season_microbiome_sampling", "smoke_status",
@@ -1121,7 +1111,6 @@ variables_vgo2_np <- c(
   "copd_doc_diag", "pneumo_last3yr", "pneumo_lastyr",
   "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "FEF25_75_pred","FEV1_category", "FVC_category", "FEV1FVC_category", "FEF25_75_category")
 
-# N.B no reference categories need setting for the factor variables for PERMANOVA as it compares the distances between groups to determine differences in community structure. 
 meta_vgo2_np[variables_vgo2_np] <- lapply(meta_vgo2_np[variables_vgo2_np], function(x) {
   if (is.character(x) || is.logical(x)) as.factor(x) else x
 })
@@ -1150,11 +1139,12 @@ final_variable_list_vgo2_np <- unique(c(meta_summary_vgo2_np_filtered_cat$Var,
 
 variable_list_vgo2_np <- tibble(Var = final_variable_list_vgo2_np, fit = NA)
 
-# Run PERMANOVA and dispersion
+#Run PERMANOVA and dispersion
 perm_vgo2_np <- variable_list_vgo2_np %>%
   mutate(fit = map(Var, ~do_permanova_com(bray_vgo2_np_matrix, meta_vgo2_np, .x)),
          disp = map(Var, ~check_dispersion(bray_vgo2_np_matrix, meta_vgo2_np, .x))) %>%
   unnest(cols = c(fit, disp), names_sep = "_")
+
 
 perm_vgo2_np <- perm_vgo2_np %>% select(-fit_Var)
 
@@ -1379,19 +1369,16 @@ pretty_labels <- c(
   "pneumo_last3yr"   = "Pneumonia in last 3 years (number of times)"
 )
 
-# Apply pretty labels
-plot_perm <- perm_all %>%
-  rename(variable = Var, R2 = R2, significance = label_q.value) %>%
-  mutate(variable = dplyr::recode(variable, !!!pretty_labels))
-
 
 # Combine all univariable PERMANOVA results
 perm_all <- bind_rows(perm_vgo2_np, perm_vgo2_op, perm_vgo3_np, perm_vgo3_op) %>%
   mutate(dataset_niche = paste(dataset, niche, sep = "_")) %>%
   filter(term == "Model")
 
+# Apply pretty labels
 plot_perm <- perm_all %>%
-  rename(variable = Var, R2 = R2, significance = label_q.value)
+  rename(variable = Var, R2 = R2, significance = label_q.value)%>%
+  mutate(variable = dplyr::recode(variable, !!!pretty_labels))
 
 # Split into datasets
 plot_vgo2 <- plot_perm %>% filter(dataset %in% c("VGO2_NP", "VGO2_OP"))
@@ -1403,15 +1390,21 @@ ordered_vars <- rev(c(
   "asthma_ever", "copd_gold", "copd_lln", "copd_doc_diag", "pneumo_last3yr", "pneumo_lastyr",
   "FEV1_pred","FEV1_category", "FVC_pred","FVC_category", "FEV1FVC_pred", "FEV1FVC_category", "FEF25_75_pred", "FEF25_75_category"
 ))
+# Convert the code-based order to pretty-label order
+ordered_vars_pretty <- unname(pretty_labels[ordered_vars])
 
-# Format and reorder data
+# Apply ordered factor levels to each dataset
 plot_vgo2 <- plot_vgo2 %>%
-  mutate(variable = factor(variable, levels = ordered_vars),
-         R2 = round(R2, 3))
+  mutate(
+    variable = factor(variable, levels = ordered_vars_pretty),
+    R2 = round(R2, 3)
+  )
 
 plot_vgo3 <- plot_vgo3 %>%
-  mutate(variable = factor(variable, levels = ordered_vars),
-         R2 = round(R2, 3))
+  mutate(
+    variable = factor(variable, levels = ordered_vars_pretty),
+    R2 = round(R2, 3)
+  )
 
 # Plot theme and setup
 base_theme <- theme_minimal(base_size = 12) +
@@ -1419,7 +1412,6 @@ base_theme <- theme_minimal(base_size = 12) +
     axis.text.x = element_text(angle = 30, hjust = 1),
     panel.grid = element_blank()
   )
-
 
 
 #### Heatmap for VGO2 ####
@@ -1490,7 +1482,7 @@ univar_beta_plot <- combined_plot +
 print(univar_beta_plot)
 
 ggsave("../Output/Beta_diversity/Univariable_PERMANOVAS/Univariable_PERMANOVA_R2_heatmap.svg",
-       univar_beta_plot, width = 5, height = 7)
+       univar_beta_plot, width = 6, height = 7)
 ```
 
 # Multivariable PERMANOVAs
@@ -1525,6 +1517,12 @@ mean(ord_vgo2_np)
 mean(ord_vgo2_op)
 mean(ord_vgo3_np)
 mean(ord_vgo3_op)
+
+
+rownames(meta_vgo2_np) <- meta_vgo2_np$sample_id
+rownames(meta_vgo2_op) <- meta_vgo2_op$sample_id
+rownames(meta_vgo3_np) <- meta_vgo3_np$sample_id
+rownames(meta_vgo3_op) <- meta_vgo3_op$sample_id
 ```
 
 ## Multivariable PERMANOVAs for lung function 
@@ -1604,6 +1602,7 @@ perm_FEV1_cat_vgo3_op <- run_permanova(ord_vgo3_op, meta_vgo3_op, covariates_FEV
 # Select required variables
 covariates_FVC <- c("FVC_pred", "age", "season_microbiome_sampling",
                 "gender", "smoke_status")
+
 
 # convert to numeric
 meta_vgo2_np[c("FVC_pred", "age")] <- lapply(meta_vgo2_np[c("FVC_pred", "age")], as.numeric)
@@ -1691,7 +1690,7 @@ perm_FEF25_75_vgo3_op <- run_permanova(ord_vgo3_op, meta_vgo3_op, covariates_FEF
 
 #### FEF25_75_category predicted multivariable PERMANOVA models #### 
 # Select required variables
-covariates_FEF25_75_category <- c("FEF25_75_category_pred", "age", "season_microbiome_sampling",
+covariates_FEF25_75_category <- c("FEF25_75_category", "age", "season_microbiome_sampling",
                          "gender", "smoke_status")
 
 # convert to numeric
@@ -2921,6 +2920,7 @@ plot(stats::dendrapply(dend_14clusters, noLabel))
 cluster_assignments_14 <- cutree(dend_vgo2_np, k = 14)
 cluster_counts_14 <- table(cluster_assignments_14)
 print(cluster_counts_14)
+
 # 15 clusters
 dend_15clusters <- color_branches(dend_vgo2_np, k = 15, groupLabels=T)
 plot(stats::dendrapply(dend_15clusters, noLabel))
@@ -2950,13 +2950,6 @@ otu_vgo2_np <- as(otu_table(ps_vgo2_np_filtered), "matrix")
 
 # Extract sample metadata with cluster information
 sample_data_vgo2_np <- data.frame(ps_vgo2_np_filtered@sam_data)
-
-common_samples <- intersect(rownames(sample_data_vgo2_op), rownames(otu_hc_vgo2_op_order_clust))
-rownames(otu_hc_vgo2_np_order_clust)
-rownames(otu_hc_vgo2_op_order_clust)
-rownames(sample_data_vgo2_np)
-rownames(sample_data_vgo2_np)
-
 
 # Combine the OTU table with the sample cluster data
 otu_vgo2_np_with_clusters <- cbind(cluster = sample_data_vgo2_np$cluster, otu_hc_vgo2_np_order_clust)
@@ -3042,7 +3035,7 @@ colnames(cluster_counts_vgo2_np) <- c("Cluster", "Count")
 # Calculate the relative proportions of each cluster
 cluster_counts_vgo2_np$Proportion <- cluster_counts_vgo2_np$Count / sum(cluster_counts_vgo2_np$Count)
 
-write.csv(cluster_counts_vgo2_np, "../Output/Cluster_analysis/CPall_GF_NP/cluster_counts_vgo2_np.csv")
+write.csv(cluster_counts_vgo2_np, "../Output/Cluster_analysis/VGO2_NP/cluster_counts_vgo2_np.csv")
 
 # Create the plot with geom_bar for vertical stacking
 bar_clusters_vgo2_np <- ggplot(data = cluster_counts_vgo2_np, aes(x = Cluster, y = (Proportion*100), fill = Cluster)) +
@@ -3307,7 +3300,8 @@ bar_clusters_vgo2_op <- ggplot(data = cluster_counts_vgo2_op, aes(x = Cluster, y
         legend.position = "right")
 
 bar_clusters_vgo2_op
-ggsave("../Output/Cluster_analysis/VGO2_op/Bar_plot_cluster_proportions_clusters.svg", bar_clusters_vgo2_op, width = 8, height = 5)
+ggsave("../Output/Cluster_analysis/VGO2_OP/Bar_plot_cluster_proportions_clusters.svg", bar_clusters_vgo2_op, width = 8, height = 5)
+
 ```
 ## VGO3 NP clustering
 ```{r}
@@ -3811,163 +3805,1570 @@ bar_clusters_vgo3_op <- ggplot(data = cluster_counts_vgo3_op, aes(x = Cluster, y
 
 bar_clusters_vgo3_op
 ggsave("../Output/Cluster_analysis/VGO3_OP/Bar_plot_cluster_proportions_clusters.svg", bar_clusters_vgo3_op, width = 8, height = 5)
+
+str(ps_vgo3_op_filtered@sam_data$cluster)
+str(ps_vgo3_np_filtered@sam_data$cluster)
+str(ps_vgo2_np_filtered@sam_data$cluster)
+
 ```
-# Visualisations - CONTINUE HERE!
-## VGO2 NP 
+# Visualisations of clustering
+## VGO2 NP
 ```{r}
+# Visualisations 
+## VGO2 NP 
 #### Visualisations for manuscript
 dendro_vgo2_np <- create_dendro_gg(hc_vgo2_np_clust, size = 0.15)
 
-otu_hm_cpall_gf_np <- as(otu_table(ps_RA_cpall_gf_np), "matrix")
-otu_hm_cpall_gf_np_order <- otu_hm_cpall_gf_np[order(rowMeans(otu_hm_cpall_gf_np), decreasing = T)[1:40], hc_cpall_gf_np_clust$order]
-meta_hm_cpall_gf_np_order <- ps_RA_cpall_gf_np %>% meta_to_df()
-meta_hm_cpall_gf_np_order <- meta_hm_cpall_gf_np_order[hc_cpall_gf_np_clust$order,]
-meta_hm_cpall_gf_np_order$cluster
+otu_hm_vgo2_np <- as(otu_table(ps_vgo2_np_filtered), "matrix")
 
-all(colnames(otu_hm_cpall_gf_np_order) == hc_cpall_gf_np_clust$labels[hc_cpall_gf_np_clust$order])
+# Keep top 40 ASVs by mean abundance; columns ordered by hc
+otu_hm_vgo2_np_order <- otu_hm_vgo2_np[
+  order(rowMeans(otu_hm_vgo2_np), decreasing = TRUE)[1:40],
+  hc_vgo2_np_clust$order
+]
+
+# Metadata ordered by hc (do this once)
+meta_hm_vgo2_np_order <- meta_to_df(ps_vgo2_np_filtered, sample_name = ".row_id")
+meta_hm_vgo2_np_order <- meta_hm_vgo2_np_order[hc_vgo2_np_clust$order, ]
+
+## --- Ensure cluster values are the pretty names, not 1/2/3/4 ---
+cluster_levels <- c(
+  "Cor(3)/Staph(2)/Mor(4) clust",
+  "Cor(3)/Mor(4)/Staph(2) clust",
+  "Staph(2)/Cor(6)/Cor(3) clust",
+  "Staph(2) clust"
+)
+
+if (all(unique(as.character(meta_hm_vgo2_np_order$cluster)) %in% c("1","2","3","4"))) {
+  recode_map <- setNames(cluster_levels, c("1","2","3","4"))
+  meta_hm_vgo2_np_order$cluster <- unname(recode_map[as.character(meta_hm_vgo2_np_order$cluster)])
+}
+
+# Lock factor order for plotting (do this once)
+meta_hm_vgo2_np_order$cluster <- factor(meta_hm_vgo2_np_order$cluster, levels = cluster_levels)
+
+# One named color map used wherever clusters are shown
+cluster_cols <- setNames(
+  paletteer::paletteer_d("pals::stepped")[c(13, 20, 10, 16)],
+  cluster_levels
+)
 
 prep_hm_data <- function(otu_ordered) {
-  # Convert matrix to data frame and move row names to a column called "OTU"
   otu_ordered <- otu_ordered %>%
     as.data.frame() %>%
     tibble::rownames_to_column("OTU")
-  # Format data for heatmap
   hm_data <- otu_ordered %>%
     tidyr::pivot_longer(cols = -OTU, names_to = "sample_id", values_to = "RA") %>%
     dplyr::mutate(
-      RA = dplyr::if_else(RA == "0", NA_real_, as.numeric(RA)),  # Convert "0" to NA for heatmap
-      OTU = format_OTU(OTU) %>% forcats::fct_inorder() %>% forcats::fct_rev(),  # Format OTUs
+      RA = dplyr::if_else(RA == "0", NA_real_, as.numeric(RA)),
+      OTU = format_OTU(OTU) %>% forcats::fct_inorder() %>% forcats::fct_rev(),
       sample_id = forcats::fct_inorder(sample_id)
     )
   return(hm_data)
 }
 
-# Call prep_hm_data with the data frame
-hm_cpall_gf_np_data <- prep_hm_data(otu_hm_cpall_gf_np_order)
+# Long-format data for heatmap
+hm_vgo2_np_data <- prep_hm_data(otu_hm_vgo2_np_order)
 
-# Ensure OTU data is ordered by hierarchical clustering order
-otu_hm_cpall_gf_np_order <- otu_hm_cpall_gf_np[order(rowMeans(otu_hm_cpall_gf_np), decreasing = TRUE), hc_cpall_gf_np_clust$order]
-meta_hm_cpall_gf_np_order <- meta_hm_cpall_gf_np_order[hc_cpall_gf_np_clust$order, ]
-
-# Overall heatmap
-hm_cpall_gf_np <- hm_cpall_gf_np_data %>%
+# Overall heatmap (relative abundance)
+hm_vgo2_np <- hm_vgo2_np_data %>%
   ggplot(aes(x = sample_id, y = OTU, fill = RA)) +
   geom_tile() +
-  scale_fill_gradientn(name="Relative abundance", 
-                       colors = carto_pal(7, "BurgYl"), 
-                       na.value = "white", 
+  scale_fill_gradientn(name = "Relative abundance",
+                       colors = carto_pal(7, "BurgYl"),
+                       na.value = "white",
                        guide = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
-  theme_grey(base_size = 10) + 
-  theme(axis.text.x = element_blank(), 
-        axis.text.y = element_markdown(size = 10),  # Set y-axis text size
-        axis.ticks.x = element_blank(), 
+  theme_grey(base_size = 10) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_markdown(size = 10),
+        axis.ticks.x = element_blank(),
         legend.position = "bottom",
         legend.key.height = grid::unit(0.2, "cm"),
-        legend.key.width = grid::unit(0.8, "cm"),
-        legend.text = element_text(size = 10),      # Set legend text size
+        legend.key.width  = grid::unit(0.8, "cm"),
+        legend.text = element_text(size = 10),
         plot.background = element_blank()) +
   xlab("Sample") + 
   ylab("ASV")
-hm_cpall_gf_np
 
-# Cluster plot
-# Ensure the metadata (meta_hm_cpall_gf_np_order) is also ordered according to the same clustering order
-meta_hm_cpall_gf_np_order <- meta_hm_cpall_gf_np_order[hc_cpall_gf_np_clust$order, ]
-# Reorder the Sample IDs for Consistency
-meta_hm_cpall_gf_np_order$sample_id <- factor(meta_hm_cpall_gf_np_order$sample_id,
-                                               levels = hc_cpall_gf_np_clust$labels[hc_cpall_gf_np_clust$order])
+# Cluster strip (legend will show pretty names)
+# Reorder sample_id to match dendrogram labels
+meta_hm_vgo2_np_order$sample_id <- factor(
+  meta_hm_vgo2_np_order$sample_id,
+  levels = hc_vgo2_np_clust$labels[hc_vgo2_np_clust$order]
+)
 
-# Reorder data for the Cluster Plot
-meta_hm_cpall_gf_np_order$cluster <- factor(meta_hm_cpall_gf_np_order$cluster,
-                                             levels =unique(meta_hm_cpall_gf_np_order$cluster[order(meta_hm_cpall_gf_np_order$cluster)]))
-
-hm_cluster_cpall_gf_np <- meta_hm_cpall_gf_np_order %>%
+hm_cluster_vgo2_np <- meta_hm_vgo2_np_order %>%
   ggplot(aes(x = sample_id, y = "Cluster", fill = cluster)) +
-  theme_void() + 
-  geom_tile() + 
-  scale_fill_manual(values = c(paletteer_d("pals::stepped")[c(13,20,10,16,1,18,21,5,12)])) + 
-  labs(fill = "Cluster") + 
-  theme(axis.text.y = element_text(size = 10),  # Set y-axis text size
+  theme_void() +
+  geom_tile() +
+  labs(fill = "Cluster") +
+  scale_fill_manual(values = cluster_cols,
+                    breaks = cluster_levels,
+                    labels = cluster_levels,
+                    drop   = FALSE) +
+  theme(axis.text.y = element_text(size = 10),
         axis.ticks.length.y = unit(.18, "cm"),
-        legend.direction = "vertical", 
+        legend.direction = "vertical",
         legend.box = "vertical",
         legend.key.size = unit(0.8, "lines"),
-        legend.text = element_text(size = 10))    # Set legend text size
-hm_cluster_cpall_gf_np
+        legend.text = element_text(size = 10))
 
-# Population plot 
-hm_pop_cpall_gf_np <- meta_hm_cpall_gf_np_order %>%
-  ggplot(aes(x = sample_id, y = "Population", fill = population)) +
-  theme_void() + 
-  geom_tile() + 
-  scale_fill_brewer(palette = "Set2") + 
-  labs(fill = "Population") + 
-  theme(axis.text.y = element_text(size = 10),  # Set y-axis text size
-        axis.ticks.length.y = unit(.18, "cm"),
-        legend.direction = "vertical", 
-        legend.box = "vertical",
-        legend.key.size = unit(0.8, "lines"),
-        legend.text = element_text(size = 10))    # Set legend text size
-hm_pop_cpall_gf_np
+# Prevalence plot (unchanged)
+df_pres_vgo2_np <- ps_to_df(microbiome_VGO2_NP, sample_name = ".row_id")
+df_pres_vgo2_np[, colnames(df_pres_vgo2_np)[100:23735]] <- lapply(
+  df_pres_vgo2_np[, colnames(df_pres_vgo2_np)[100:23735]],
+  function(x) ifelse(x > 2, 1, 0)
+)
+df_pres_vgo2_np <- df_pres_vgo2_np[100:23735]
 
-# Prevalence plot
-# Using original phyloseq (not RA)
-df_pres_np <- ps_cpall_gf %>%
-  prune_samples(sample_data(.)$niche == "NP", .) %>%
-  ps_to_df()
+prev <- colMeans(df_pres_vgo2_np)
+prev_vgo2_np <- data.frame(Taxa = colnames(df_pres_vgo2_np), Prevalence = prev)
+prev_vgo2_np$Taxa <- format_OTU(prev_vgo2_np$Taxa)
+prev_vgo2_np <- subset(prev_vgo2_np, Taxa %in% hm_vgo2_np_data$OTU)
+prev_vgo2_np$Taxa <- factor(prev_vgo2_np$Taxa, levels = levels(hm_vgo2_np_data$OTU))
 
-# Check dimensions
-colnames(df_pres_np)
-dim(df_pres_np)
-# Convert counts to binary
-df_pres_np[, colnames(df_pres_np)[700:20728]] <- lapply(df_pres_np[, colnames(df_pres_np)[700:20728]], function(x) ifelse(x > 2, 1, 0))
-df_pres_np <- df_pres_np[700:20728]
-
-prev <- colMeans(df_pres_np)
-prev_np <- data.frame(Taxa = colnames(df_pres_np), Prevalence = prev)
-prev_np$Taxa <- format_OTU(prev_np$Taxa)
-prev_np <- subset(prev_np, Taxa %in% hm_cpall_gf_np_data$OTU)
-prev_np$Taxa <- factor(prev_np$Taxa, levels = levels(hm_cpall_gf_np_data$OTU))
-
-p_prev_np <- ggplot(prev_np, aes(x = Prevalence, y = Taxa)) +
+p_prev_vgo2_np <- ggplot(prev_vgo2_np, aes(x = Prevalence, y = Taxa)) +
   geom_bar(stat = "identity", fill = "azure4", width = 0.5) +
   labs(x = "Prevalence") +
-  theme_minimal() + 
-  theme(axis.text.y = element_blank(), 
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
         axis.title.y = element_blank(),
         axis.ticks.y = element_blank()) +
   scale_x_continuous(breaks = c(0, 0.5, 1),
                      labels = scales::percent_format())
-p_prev_np
 
-
-# Make patchwork of plot
-layout_cp_gf <- "
+# Patchwork
+layout_vgo2_np <- "
 AAAAAA#
 AAAAAA#
 AAAAAA#
 BBBBBB#
-CCCCCC#
-DDDDDDE
-DDDDDDE
-DDDDDDE
-DDDDDDE
-DDDDDDE
-DDDDDDE
-DDDDDDE
-DDDDDDE
-DDDDDDE
-DDDDDDE
-DDDDDDE
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
 "
 
-dendro_cpall_gf_np$plot + hm_pop_cpall_gf_np + hm_cluster_cpall_gf_np + hm_cpall_gf_np + p_prev_np + plot_layout(design = layout_cp_gf, guides = "collect") & theme(legend.position = 'bottom')
+dendro_vgo2_np$plot + hm_cluster_vgo2_np + hm_vgo2_np + p_prev_vgo2_np +
+  plot_layout(design = layout_vgo2_np, guides = "collect") &
+  theme(legend.position = 'bottom')
 
-ggsave("../Output/Cluster_analysis/CPall_GF_NP/heatmap_cluster_cpall_gf_np.svg", height = 10, width = 8)
-ggsave("../Output/Cluster_analysis/CPall_GF_NP/heatmap_cluster_cpall_gf_np.png", height = 10, width = 8)
+ggsave("../Output/Cluster_analysis/VGO2_NP/heatmap_cluster_vgo2_np.svg", height = 10, width = 8)
+ggsave("../Output/Cluster_analysis/VGO2_NP/heatmap_cluster_vgo2_np.png", height = 10, width = 8)
 
+```
+## VGO2 OP
+```{r}
+#### Visualisations for manuscript
+dendro_vgo2_op <- create_dendro_gg(hc_vgo2_op_clust, size = 0.15)
+
+otu_hm_vgo2_op <- as(otu_table(ps_vgo2_op_filtered), "matrix")
+
+# Keep top 40 ASVs by mean abundance; columns ordered by hc
+otu_hm_vgo2_op_order <- otu_hm_vgo2_op[
+  order(rowMeans(otu_hm_vgo2_op), decreasing = TRUE)[1:40],
+  hc_vgo2_op_clust$order
+]
+
+# Metadata ordered by hc (do this once)
+meta_hm_vgo2_op_order <- meta_to_df(ps_vgo2_op_filtered, sample_name = ".row_id")
+meta_hm_vgo2_op_order <- meta_hm_vgo2_op_order[hc_vgo2_op_clust$order, ]
+
+## --- Ensure cluster values are the pretty names, not 1/2/3/4 ---
+cluster_levels <- c(
+  "Strep(5)/Veill(7) clust",
+  "Strep(8)/Strep(5) clust"
+)
+
+if (all(unique(as.character(meta_hm_vgo2_op_order$cluster)) %in% c("1","2"))) {
+  recode_map <- setNames(cluster_levels, c("1","2"))
+  meta_hm_vgo2_op_order$cluster <- unname(recode_map[as.character(meta_hm_vgo2_op_order$cluster)])
+}
+
+# Lock factor order for plotting (do this once)
+meta_hm_vgo2_op_order$cluster <- factor(meta_hm_vgo2_op_order$cluster, levels = cluster_levels)
+
+# One named color map used wherever clusters are shown
+cluster_cols <- setNames(
+  paletteer::paletteer_d("pals::stepped")[c(13, 20)],
+  cluster_levels
+)
+
+prep_hm_data <- function(otu_ordered) {
+  otu_ordered <- otu_ordered %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("OTU")
+  hm_data <- otu_ordered %>%
+    tidyr::pivot_longer(cols = -OTU, names_to = "sample_id", values_to = "RA") %>%
+    dplyr::mutate(
+      RA = dplyr::if_else(RA == "0", NA_real_, as.numeric(RA)),
+      OTU = format_OTU(OTU) %>% forcats::fct_inorder() %>% forcats::fct_rev(),
+      sample_id = forcats::fct_inorder(sample_id)
+    )
+  return(hm_data)
+}
+
+# Long-format data for heatmap
+hm_vgo2_op_data <- prep_hm_data(otu_hm_vgo2_op_order)
+
+# Overall heatmap (relative abundance)
+hm_vgo2_op <- hm_vgo2_op_data %>%
+  ggplot(aes(x = sample_id, y = OTU, fill = RA)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Relative abundance",
+                       colors = carto_pal(7, "BurgYl"),
+                       na.value = "white",
+                       guide = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+  theme_grey(base_size = 10) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_markdown(size = 10),
+        axis.ticks.x = element_blank(),
+        legend.position = "bottom",
+        legend.key.height = grid::unit(0.2, "cm"),
+        legend.key.width  = grid::unit(0.8, "cm"),
+        legend.text = element_text(size = 10),
+        plot.background = element_blank()) +
+  xlab("Sample") + 
+  ylab("ASV")
+
+# Cluster strip (legend will show pretty names)
+# Reorder sample_id to match dendrogram labels
+meta_hm_vgo2_op_order$sample_id <- factor(
+  meta_hm_vgo2_op_order$sample_id,
+  levels = hc_vgo2_op_clust$labels[hc_vgo2_op_clust$order]
+)
+
+hm_cluster_vgo2_op <- meta_hm_vgo2_op_order %>%
+  ggplot(aes(x = sample_id, y = "Cluster", fill = cluster)) +
+  theme_void() +
+  geom_tile() +
+  labs(fill = "Cluster") +
+  scale_fill_manual(values = cluster_cols,
+                    breaks = cluster_levels,
+                    labels = cluster_levels,
+                    drop   = FALSE) +
+  theme(axis.text.y = element_text(size = 10),
+        axis.ticks.length.y = unit(.18, "cm"),
+        legend.direction = "vertical",
+        legend.box = "vertical",
+        legend.key.size = unit(0.8, "lines"),
+        legend.text = element_text(size = 10))
+
+# Prevalence plot (unchanged)
+df_pres_vgo2_op <- ps_to_df(microbiome_VGO2_OP, sample_name = ".row_id")
+dim(df_pres_vgo2_op)
+names(df_pres_vgo2_op)
+df_pres_vgo2_op[, colnames(df_pres_vgo2_op)[100:23735]] <- lapply(
+  df_pres_vgo2_op[, colnames(df_pres_vgo2_op)[100:23735]],
+  function(x) ifelse(x > 2, 1, 0)
+)
+df_pres_vgo2_op <- df_pres_vgo2_op[100:23735]
+
+prev <- colMeans(df_pres_vgo2_op)
+prev_vgo2_op <- data.frame(Taxa = colnames(df_pres_vgo2_op), Prevalence = prev)
+prev_vgo2_op$Taxa <- format_OTU(prev_vgo2_op$Taxa)
+prev_vgo2_op <- subset(prev_vgo2_op, Taxa %in% hm_vgo2_op_data$OTU)
+prev_vgo2_op$Taxa <- factor(prev_vgo2_op$Taxa, levels = levels(hm_vgo2_op_data$OTU))
+
+p_prev_vgo2_op <- ggplot(prev_vgo2_op, aes(x = Prevalence, y = Taxa)) +
+  geom_bar(stat = "identity", fill = "azure4", width = 0.5) +
+  labs(x = "Prevalence") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  scale_x_continuous(breaks = c(0, 0.5, 1),
+                     labels = scales::percent_format())
+
+# Patchwork
+layout_vgo2_op <- "
+AAAAAA#
+AAAAAA#
+AAAAAA#
+BBBBBB#
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+"
+
+dendro_vgo2_op$plot + hm_cluster_vgo2_op + hm_vgo2_op + p_prev_vgo2_op +
+  plot_layout(design = layout_vgo2_op, guides = "collect") &
+  theme(legend.position = 'bottom')
+
+ggsave("../Output/Cluster_analysis/VGO2_OP/heatmap_cluster_vgo2_op.svg", height = 10, width = 8)
 
 ```
 
+## VGO3 NP
+```{r}
+#### Visualisations for manuscript
+dendro_vgo3_np <- create_dendro_gg(hc_vgo3_np_clust, size = 0.15)
+
+otu_hm_vgo3_np <- as(otu_table(ps_vgo3_np_filtered), "matrix")
+
+# Keep top 40 ASVs by mean abundance; columns ordered by hc
+otu_hm_vgo3_np_order <- otu_hm_vgo3_np[
+  order(rowMeans(otu_hm_vgo3_np), decreasing = TRUE)[1:40],
+  hc_vgo3_np_clust$order
+]
+
+# Metadata ordered by hc (do this once)
+meta_hm_vgo3_np_order <- meta_to_df(ps_vgo3_np_filtered, sample_name = ".row_id")
+meta_hm_vgo3_np_order <- meta_hm_vgo3_np_order[hc_vgo3_np_clust$order, ]
+
+## --- Ensure cluster values are the pretty names, not 1/2/3/4 ---
+cluster_levels <- c(
+  "Dolo(1)/Cor(3)/Staph(2) clust",
+  "Dolo(1)/Cor(3) clust",
+  "Cor(3)/Dolo(1)/Staph(2) clust",
+  "Dolo(1)/Staph(2) clust"
+)
+
+if (all(unique(as.character(meta_hm_vgo3_np_order$cluster)) %in% c("1","2","3","4"))) {
+  recode_map <- setNames(cluster_levels, c("1","2","3","4"))
+  meta_hm_vgo3_np_order$cluster <- unname(recode_map[as.character(meta_hm_vgo3_np_order$cluster)])
+}
+
+# Lock factor order for plotting (do this once)
+meta_hm_vgo3_np_order$cluster <- factor(meta_hm_vgo3_np_order$cluster, levels = cluster_levels)
+
+# One named color map used wherever clusters are shown
+cluster_cols <- setNames(
+  paletteer::paletteer_d("pals::stepped")[c(13, 20, 10, 16)],
+  cluster_levels
+)
+
+prep_hm_data <- function(otu_ordered) {
+  otu_ordered <- otu_ordered %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("OTU")
+  hm_data <- otu_ordered %>%
+    tidyr::pivot_longer(cols = -OTU, names_to = "sample_id", values_to = "RA") %>%
+    dplyr::mutate(
+      RA = dplyr::if_else(RA == "0", NA_real_, as.numeric(RA)),
+      OTU = format_OTU(OTU) %>% forcats::fct_inorder() %>% forcats::fct_rev(),
+      sample_id = forcats::fct_inorder(sample_id)
+    )
+  return(hm_data)
+}
+
+# Long-format data for heatmap
+hm_vgo3_np_data <- prep_hm_data(otu_hm_vgo3_np_order)
+
+# Overall heatmap (relative abundance)
+hm_vgo3_np <- hm_vgo3_np_data %>%
+  ggplot(aes(x = sample_id, y = OTU, fill = RA)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Relative abundance",
+                       colors = carto_pal(7, "BurgYl"),
+                       na.value = "white",
+                       guide = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+  theme_grey(base_size = 10) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_markdown(size = 10),
+        axis.ticks.x = element_blank(),
+        legend.position = "bottom",
+        legend.key.height = grid::unit(0.2, "cm"),
+        legend.key.width  = grid::unit(0.8, "cm"),
+        legend.text = element_text(size = 10),
+        plot.background = element_blank()) +
+  xlab("Sample") + 
+  ylab("ASV")
+
+# Cluster strip (legend will show pretty names)
+# Reorder sample_id to match dendrogram labels
+meta_hm_vgo3_np_order$sample_id <- factor(
+  meta_hm_vgo3_np_order$sample_id,
+  levels = hc_vgo3_np_clust$labels[hc_vgo3_np_clust$order]
+)
+
+hm_cluster_vgo3_np <- meta_hm_vgo3_np_order %>%
+  ggplot(aes(x = sample_id, y = "Cluster", fill = cluster)) +
+  theme_void() +
+  geom_tile() +
+  labs(fill = "Cluster") +
+  scale_fill_manual(values = cluster_cols,
+                    breaks = cluster_levels,
+                    labels = cluster_levels,
+                    drop   = FALSE) +
+  theme(axis.text.y = element_text(size = 10),
+        axis.ticks.length.y = unit(.18, "cm"),
+        legend.direction = "vertical",
+        legend.box = "vertical",
+        legend.key.size = unit(0.8, "lines"),
+        legend.text = element_text(size = 10))
+
+# Prevalence plot (unchanged)
+df_pres_vgo3_np <- ps_to_df(microbiome_VGO3_NP, sample_name = ".row_id")
+dim(df_pres_vgo3_np) # 799 by 23735
+names(df_pres_vgo3_np) 
+df_pres_vgo3_np[, colnames(df_pres_vgo3_np)[100:23735]] <- lapply(
+  df_pres_vgo3_np[, colnames(df_pres_vgo3_np)[100:23735]],
+  function(x) ifelse(x > 2, 1, 0)
+)
+df_pres_vgo3_np <- df_pres_vgo3_np[100:23735]
+
+prev <- colMeans(df_pres_vgo3_np)
+prev_vgo3_np <- data.frame(Taxa = colnames(df_pres_vgo3_np), Prevalence = prev)
+prev_vgo3_np$Taxa <- format_OTU(prev_vgo3_np$Taxa)
+prev_vgo3_np <- subset(prev_vgo3_np, Taxa %in% hm_vgo3_np_data$OTU)
+prev_vgo3_np$Taxa <- factor(prev_vgo3_np$Taxa, levels = levels(hm_vgo3_np_data$OTU))
+
+p_prev_vgo3_np <- ggplot(prev_vgo3_np, aes(x = Prevalence, y = Taxa)) +
+  geom_bar(stat = "identity", fill = "azure4", width = 0.5) +
+  labs(x = "Prevalence") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  scale_x_continuous(breaks = c(0, 0.5, 1),
+                     labels = scales::percent_format())
+
+# Patchwork
+layout_vgo3_np <- "
+AAAAAA#
+AAAAAA#
+AAAAAA#
+BBBBBB#
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+"
+
+dendro_vgo3_np$plot + hm_cluster_vgo3_np + hm_vgo3_np + p_prev_vgo3_np +
+  plot_layout(design = layout_vgo3_np, guides = "collect") &
+  theme(legend.position = 'bottom')
+
+ggsave("../Output/Cluster_analysis/VGO3_NP/heatmap_cluster_vgo3_np.svg", height = 10, width = 8)
+
 ```
+## VGO3 OP
+```{r}
+#### Visualisations for manuscript
+dendro_vgo3_op <- create_dendro_gg(hc_vgo3_op_clust, size = 0.15)
+
+otu_hm_vgo3_op <- as(otu_table(ps_vgo3_op_filtered), "matrix")
+
+# Keep top 40 ASVs by mean abundance; columns ordered by hc
+otu_hm_vgo3_op_order <- otu_hm_vgo3_op[
+  order(rowMeans(otu_hm_vgo3_op), decreasing = TRUE)[1:40],
+  hc_vgo3_op_clust$order
+]
+
+# Metadata ordered by hc (do this once)
+meta_hm_vgo3_op_order <- meta_to_df(ps_vgo3_op_filtered, sample_name = ".row_id")
+meta_hm_vgo3_op_order <- meta_hm_vgo3_op_order[hc_vgo3_op_clust$order, ]
+
+## --- Ensure cluster values are the pretty names, not 1/2/3/4 ---
+cluster_levels <- c(
+  "Strep(5)/Veill(7)/Strep(8) clust",
+  "Veill(7)/Strep(5)/Strep(8) clust"
+)
+
+if (all(unique(as.character(meta_hm_vgo3_op_order$cluster)) %in% c("1","2"))) {
+  recode_map <- setNames(cluster_levels, c("1","2"))
+  meta_hm_vgo3_op_order$cluster <- unname(recode_map[as.character(meta_hm_vgo3_op_order$cluster)])
+}
+
+# Lock factor order for plotting (do this once)
+meta_hm_vgo3_op_order$cluster <- factor(meta_hm_vgo3_op_order$cluster, levels = cluster_levels)
+
+# One named color map used wherever clusters are shown
+cluster_cols <- setNames(
+  paletteer::paletteer_d("pals::stepped")[c(13, 20)],
+  cluster_levels
+)
+
+prep_hm_data <- function(otu_ordered) {
+  otu_ordered <- otu_ordered %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("OTU")
+  hm_data <- otu_ordered %>%
+    tidyr::pivot_longer(cols = -OTU, names_to = "sample_id", values_to = "RA") %>%
+    dplyr::mutate(
+      RA = dplyr::if_else(RA == "0", NA_real_, as.numeric(RA)),
+      OTU = format_OTU(OTU) %>% forcats::fct_inorder() %>% forcats::fct_rev(),
+      sample_id = forcats::fct_inorder(sample_id)
+    )
+  return(hm_data)
+}
+
+# Long-format data for heatmap
+hm_vgo3_op_data <- prep_hm_data(otu_hm_vgo3_op_order)
+
+# Overall heatmap (relative abundance)
+hm_vgo3_op <- hm_vgo3_op_data %>%
+  ggplot(aes(x = sample_id, y = OTU, fill = RA)) +
+  geom_tile() +
+  scale_fill_gradientn(name = "Relative abundance",
+                       colors = carto_pal(7, "BurgYl"),
+                       na.value = "white",
+                       guide = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+  theme_grey(base_size = 10) +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_markdown(size = 10),
+        axis.ticks.x = element_blank(),
+        legend.position = "bottom",
+        legend.key.height = grid::unit(0.2, "cm"),
+        legend.key.width  = grid::unit(0.8, "cm"),
+        legend.text = element_text(size = 10),
+        plot.background = element_blank()) +
+  xlab("Sample") + 
+  ylab("ASV")
+
+# Cluster strip (legend will show pretty names)
+# Reorder sample_id to match dendrogram labels
+meta_hm_vgo3_op_order$sample_id <- factor(
+  meta_hm_vgo3_op_order$sample_id,
+  levels = hc_vgo3_op_clust$labels[hc_vgo3_op_clust$order]
+)
+
+hm_cluster_vgo3_op <- meta_hm_vgo3_op_order %>%
+  ggplot(aes(x = sample_id, y = "Cluster", fill = cluster)) +
+  theme_void() +
+  geom_tile() +
+  labs(fill = "Cluster") +
+  scale_fill_manual(values = cluster_cols,
+                    breaks = cluster_levels,
+                    labels = cluster_levels,
+                    drop   = FALSE) +
+  theme(axis.text.y = element_text(size = 10),
+        axis.ticks.length.y = unit(.18, "cm"),
+        legend.direction = "vertical",
+        legend.box = "vertical",
+        legend.key.size = unit(0.8, "lines"),
+        legend.text = element_text(size = 10))
+
+# Prevalence plot (unchanged)
+df_pres_vgo3_op <- ps_to_df(microbiome_VGO3_OP, sample_name = ".row_id")
+dim(df_pres_vgo3_op)
+names(df_pres_vgo3_op)
+df_pres_vgo3_op[, colnames(df_pres_vgo3_op)[100:23735]] <- lapply(
+  df_pres_vgo3_op[, colnames(df_pres_vgo3_op)[100:23735]],
+  function(x) ifelse(x > 2, 1, 0)
+)
+df_pres_vgo3_op <- df_pres_vgo3_op[100:23735]
+
+prev <- colMeans(df_pres_vgo3_op)
+prev_vgo3_op <- data.frame(Taxa = colnames(df_pres_vgo3_op), Prevalence = prev)
+prev_vgo3_op$Taxa <- format_OTU(prev_vgo3_op$Taxa)
+prev_vgo3_op <- subset(prev_vgo3_op, Taxa %in% hm_vgo3_op_data$OTU)
+prev_vgo3_op$Taxa <- factor(prev_vgo3_op$Taxa, levels = levels(hm_vgo3_op_data$OTU))
+
+p_prev_vgo3_op <- ggplot(prev_vgo3_op, aes(x = Prevalence, y = Taxa)) +
+  geom_bar(stat = "identity", fill = "azure4", width = 0.5) +
+  labs(x = "Prevalence") +
+  theme_minimal() +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  scale_x_continuous(breaks = c(0, 0.5, 1),
+                     labels = scales::percent_format())
+
+# Patchwork
+layout_vgo3_op <- "
+AAAAAA#
+AAAAAA#
+AAAAAA#
+BBBBBB#
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+CCCCCCD
+"
+
+dendro_vgo3_op$plot + hm_cluster_vgo3_op + hm_vgo3_op + p_prev_vgo3_op +
+  plot_layout(design = layout_vgo3_op, guides = "collect") &
+  theme(legend.position = 'bottom')
+
+ggsave("../Output/Cluster_analysis/VGO3_OP/heatmap_cluster_vgo3_op.svg", height = 10, width = 8)
+
+```
+# Logistic regression analysis of cluster membership
+## Functions for logistic regressions
+```{r}
+# Function for running logistic regression models for CONTINUOUS variables
+fit_continuous <- function(dat, cl, pred, additional_vars) {
+  # dat$cluster <- as.factor(dat$cluster)  # Convert cluster column to factor
+  dat$in_cluster <- as.integer(dat$cluster == cl)
+  n_cases <- sum(dat$in_cluster == 1, na.rm = TRUE)
+  n_controls <- sum(dat$in_cluster == 0, na.rm = TRUE)
+  # Creates a binary outcome variable specifically for this cluster
+  # Converts the cluster membership to 1 if in the target cluster, 0 otherwise
+  if (n_cases < 10 | n_controls < 10) return(NULL)
+  # Check if either group has fewer than 10 subjects 
+  model_formula <- paste("in_cluster ~ I(-", pred, ") + ", # The I(-pred) part flips the sign  of the continuous lung function variables so higher values mean worse lung function
+                        paste(additional_vars, collapse = " + "))
+  fit <- glm(model_formula, data = dat, family = binomial) # fit the logistic regression model
+  
+  results <- broom::tidy(fit, conf.int = TRUE, exponentiate = TRUE) # Extract results (expononentiate = TRUE means that we convert log-odds to Odds Ratios (more interpretable))
+  coefficient_row <- results[results$term == paste0("I(-", pred, ")"), ] # Extract the row which shows the coefficients we are interested in and want to present
+  
+  if (nrow(coefficient_row) == 1) {
+    return(data.frame(
+      cluster = cl,        # Which cluster we analyzed
+      predictor = pred,    # Which lung function variable we used
+      mode = "continuous", # Type of analysis
+      term = "per 1%-point decrease", # How to interpret the Odds Ratio
+      OR = coefficient_row$estimate,  # Odds Ratio value
+      CI_low = coefficient_row$conf.low,   # Lower confidence interval
+      CI_high = coefficient_row$conf.high, # Upper confidence interval
+      p_value = coefficient_row$p.value,   # Statistical significance
+      n = nobs(fit),       # Total number of subjects in analysis
+      cases = n_cases,     # Number in target cluster
+      controls = n_controls # Number not in target cluster
+    ))
+  }
+  
+  return(NULL) # If we didn't find the results (shouldn't happen normally), return nothing
+
+}
+
+# # Function for running logistic regression models for CATEGORICAL variables
+# fit_categorical <- function(dat, cl, pred, additional_vars) {
+#   # dat$cluster <- as.factor(dat$cluster)  # Convert cluster column to factor
+#   dat$in_cluster <- as.integer(dat$cluster == cl)
+#   n_cases <- sum(dat$in_cluster == 1, na.rm = TRUE)
+#   n_controls <- sum(dat$in_cluster == 0, na.rm = TRUE)
+#   # Create binary outcome: 1 if in target cluster, 0 otherwise
+#   if (n_cases < 10 | n_controls < 10) return(NULL)
+#   # Skip analysis if insufficient sample size (<10)
+#   # Build model formula: outcome ~ predictor + covariates
+#   model_formula <- paste("in_cluster ~", pred, "+", 
+#                         paste(additional_vars, collapse = " + "))
+#   # Run logistic regression model
+#   fit <- glm(model_formula, data = dat, family = binomial)
+#   # Extract tidy results with odds ratios and confidence intervals
+#   results <- broom::tidy(fit, conf.int = TRUE, exponentiate = TRUE)
+#   # Find the linear trend coefficient (ends with .L for ordered factors)
+#   coefficient_row <- results[grepl(paste0("^", pred, ".*\\.L$"), results$term), ]
+#   # If found, return formatted results
+#   if (nrow(coefficient_row) == 1) {
+#     return(data.frame(
+#       cluster = cl, predictor = pred, mode = "ordinal_trend",
+#       term = "per 1-step increase in severity", OR = coefficient_row$estimate,
+#       CI_low = coefficient_row$conf.low, CI_high = coefficient_row$conf.high,
+#       p_value = coefficient_row$p.value, n = nobs(fit),
+#       cases = n_cases, controls = n_controls
+#     ))
+#   }
+#   return(NULL) # Return nothing if coefficient not found
+# }
+
+fit_categorical <- function(dat, cl, pred, additional_vars = NULL, use_firth = FALSE, wide_ci_threshold = 1e4) {
+  # Create binary outcome
+  dat$in_cluster <- as.integer(dat$cluster == cl)
+  n_cases <- sum(dat$in_cluster == 1, na.rm = TRUE)
+  n_controls <- sum(dat$in_cluster == 0, na.rm = TRUE)
+
+  # Skip if sample size too small
+  if (n_cases < 10 | n_controls < 10) return(NULL)
+
+  # Helper to check for sparse levels
+  has_sparse_levels <- function(predictor, outcome) {
+    tab <- table(predictor, outcome)
+    any(rowSums(tab == 0) > 0)
+  }
+
+  # Skip if ordinal/categorical predictor has sparse levels
+  if ((is.factor(dat[[pred]]) || is.ordered(dat[[pred]])) &&
+      has_sparse_levels(dat[[pred]], dat$in_cluster)) {
+    return(NULL)
+  }
+
+  # Build model formula
+  model_formula <- as.formula(paste("in_cluster ~", pred, 
+                                    if (!is.null(additional_vars)) paste("+", paste(additional_vars, collapse = " + ")) else ""))
+
+  # Try GLM first
+  fit <- tryCatch(
+    glm(model_formula, data = dat, family = binomial),
+    error = function(e) return(NULL),
+    warning = function(w) {
+      if (grepl("fitted probabilities numerically 0 or 1", w$message)) {
+        return(NULL)
+      } else {
+        invokeRestart("muffleWarning")
+      }
+    }
+  )
+
+  # If GLM failed or returned NULL, optionally try logistf
+  if (is.null(fit) && use_firth) {
+    if (!requireNamespace("logistf", quietly = TRUE)) stop("Package 'logistf' is required for Firth regression.")
+    fit <- tryCatch(
+      logistf::logistf(model_formula, data = dat),
+      error = function(e) return(NULL)
+    )
+    if (is.null(fit)) return(NULL)
+    results <- broom::tidy(fit, conf.int = TRUE, exponentiate = TRUE)
+  } else if (!is.null(fit)) {
+    results <- broom::tidy(fit, conf.int = TRUE, exponentiate = TRUE)
+  } else {
+    return(NULL)
+  }
+
+  # Try to find the linear trend coefficient
+  coefficient_row <- results[grepl(paste0("^", pred, ".*\\.L$"), results$term), ]
+
+  # If linear trend not found, try exact match (for non-ordinal factors or numeric)
+  if (nrow(coefficient_row) == 0) {
+    coefficient_row <- results[results$term == pred, ]
+  }
+
+  # Return if still not found
+  if (nrow(coefficient_row) != 1) return(NULL)
+
+  # Check for extremely wide confidence intervals
+  if (!is.na(coefficient_row$conf.low) && !is.na(coefficient_row$conf.high)) {
+    if ((coefficient_row$conf.high / coefficient_row$conf.low) > wide_ci_threshold) {
+      # Optionally log this
+      message(sprintf("⚠️ Wide CI detected for %s in cluster %s", pred, cl))
+      return(NULL)
+    }
+  }
+
+  # Return results
+  return(data.frame(
+    cluster = cl,
+    predictor = pred,
+    mode = "ordinal_trend",
+    term = "per 1-step increase in severity",
+    OR = coefficient_row$estimate,
+    CI_low = coefficient_row$conf.low,
+    CI_high = coefficient_row$conf.high,
+    p_value = coefficient_row$p.value,
+    n = n_cases + n_controls,
+    cases = n_cases,
+    controls = n_controls
+  ))
+}
+
+```
+
+## VGO2 NP 
+```{r}
+#### Logistic regression for continuous and ordinal categorical variables ####
+# We conduct logistic regression to determine whether the probability of belonging to a specific cluster increases with worse lung function.
+# For continuous variables: OR > 1 means higher odds per 1%-point DECREASE in % predicted (i.e., worse lung function).
+# For ordinal categorical variables: OR > 1 means higher odds per 1-step INCREASE in severity (e.g., from Mild to Moderate).
+
+# Convert sample data to a dataframe
+sam_data_vgo2_np <- data.frame(ps_vgo2_np_filtered@sam_data)
+sam_data_vgo2_np <- sam_data_vgo2_np %>%
+   distinct(VGO3_ID, .keep_all = TRUE) # drops duplicate VGO3_IDs
+
+# Initialize an empty data frame to store logistic regression results
+logistic_results_df_vgo2_np <- data.frame()
+
+# Define the additional variables for the multivariable model
+additional_vars <- c("age", "gender", "smoke_status", "season_microbiome_sampling")
+
+# --- Data Preprocessing ---
+# Preferred orders for the requested variables only 
+ord_levels_vgo2_np <- list(
+  smoke_status               = c("never","former","current"),
+  season_microbiome_sampling = c("Winter","Spring","Summer","Autumn"),
+  FEV1_category              = c("Normal","Mild","Moderate","Severe"),
+  FVC_category               = c("Normal","Severely reduced"), # This is binary, but we can still treat it as ordered (Normal=0, Severe=1)
+  FEV1FVC_category           = c("Normal","Obstructive"),      # Binary, ordered (Normal=0, Obstructive=1)
+  FEF25_75_category          = c("Normal","Mild","Moderate","Severe")
+)
+
+# Numeric
+if ("age" %in% names(sam_data_vgo2_np)) {
+  sam_data_vgo2_np$age <- suppressWarnings(as.numeric(as.character(sam_data_vgo2_np$age)))
+}
+# Binary (gender) - Ensure it's a factor with sensible reference level
+if ("gender" %in% names(sam_data_vgo2_np)) {
+  sam_data_vgo2_np$gender <- factor(sam_data_vgo2_np$gender)
+  sam_data_vgo2_np$gender <- relevel(sam_data_vgo2_np$gender, ref = "male") # Set 'male' as reference
+}
+# Ordered factors for covariates
+if ("smoke_status" %in% names(sam_data_vgo2_np)) {
+  sam_data_vgo2_np$smoke_status <- ordered(sam_data_vgo2_np$smoke_status,
+                                           levels = ord_levels_vgo2_np$smoke_status)
+}
+if ("season_microbiome_sampling" %in% names(sam_data_vgo2_np)) {
+  sam_data_vgo2_np$season_microbiome_sampling <- ordered(
+    sam_data_vgo2_np$season_microbiome_sampling,
+    levels = ord_levels_vgo2_np$season_microbiome_sampling
+  )
+}
+# Convert lung function categories to ORDERED factors
+for (v in c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")) {
+  if (v %in% names(sam_data_vgo2_np)) {
+    sam_data_vgo2_np[[v]] <- ordered(sam_data_vgo2_np[[v]], levels = ord_levels_vgo2_np[[v]])
+  }
+}
+
+# Ensure cluster is a factor variable
+sam_data_vgo2_np$cluster <- as.factor(sam_data_vgo2_np$cluster)  # Convert cluster column to factor
+
+# Specify predictor variables
+continuous_vars  <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+categorical_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+
+# Run the logistic regression models for the continuous variables
+results_continuous <- purrr::map_dfr(
+  levels(sam_data_vgo2_np$cluster),
+  function(cl) {
+    purrr::map_dfr(continuous_vars, ~ fit_continuous(sam_data_vgo2_np, cl, .x, additional_vars))
+  }
+)
+
+
+# Run the logistic regression models for the categorical variables
+results_categorical <- purrr::map_dfr(
+  levels(sam_data_vgo2_np$cluster),
+  function(cl) {
+    purrr::map_dfr(categorical_vars, ~ fit_categorical(sam_data_vgo2_np, cl, .x, additional_vars))
+  }
+)
+
+# Combine results
+logistic_results_df_vgo2_np <- bind_rows(results_continuous, results_categorical)
+
+# Adjust p-values within each predictor across clusters
+logistic_results_df_vgo2_np <- logistic_results_df_vgo2_np %>%
+  dplyr::group_by(predictor) %>%
+  dplyr::mutate(q_value = p.adjust(p_value, method = "BH")) %>%
+  dplyr::ungroup()
+
+# Save the results
+write.csv(logistic_results_df_vgo2_np, "../Output/Cluster_analysis/VGO2_NP/Logistic_regression_results_vgo2_np.csv", row.names = FALSE)
+```
+## VGO2 NP Heatmap
+```{r}
+### Heatmap
+# Predictor groups
+continuous_vars  <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+categorical_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+# Label variables 
+pretty_labels_vgo2_np <- c(
+  "FEV1_pred"         = "FEV1 % predicted (decline)",
+  "FEV1_category"     = "FEV1 category",
+  "FVC_pred"          = "FVC % predicted (decline)",
+  "FVC_category"      = "FVC category",
+  "FEV1FVC_pred"      = "FEV1/FVC % predicted (decline)",
+  "FEV1FVC_category"  = "FEV1/FVC category",
+  "FEF25_75_pred"     = "FEF 25%-75% % predicted (decline)",
+  "FEF25_75_category" = "FEF 25%-75% category"
+)
+
+# Alternating order
+predictor_order <- c(
+  "FEV1_pred","FEV1_category",
+  "FVC_pred","FVC_category",
+  "FEV1FVC_pred","FEV1FVC_category",
+  "FEF25_75_pred","FEF25_75_category"
+)
+
+# Get the actual cluster order from your data (important for y-axis order)
+cluster_order <- levels(sam_data_vgo2_np$cluster)
+
+# Grid
+grid <- tidyr::expand_grid(
+  cluster   = cluster_order,  # Use the actual cluster order
+  predictor = predictor_order
+) %>%
+  dplyr::mutate(
+    pred_label = dplyr::recode(predictor, !!!as.list(pretty_labels_vgo2_np), .default = predictor)
+  )
+
+heat_core <- logistic_results_df_vgo2_np %>%
+  dplyr::filter(mode %in% c("continuous", "ordinal_trend")) %>%  # Changed "trend" to "ordinal_trend"
+  dplyr::select(cluster, predictor, OR, q_value)
+
+pred_label_levels <- dplyr::recode(predictor_order,
+                                   !!!as.list(pretty_labels_vgo2_np),
+                                   .default = predictor_order)
+
+heat_df <- grid %>%
+  dplyr::left_join(heat_core, by = c("cluster", "predictor")) %>%
+  dplyr::mutate(
+    sig       = !is.na(q_value) & q_value < 0.10,
+    logOR     = log(OR),
+    log_low   = log(0.5),
+    log_high  = log(4),
+    logOR_c   = ifelse(is.na(logOR), NA_real_,
+                       pmax(pmin(logOR, log_high), log_low)),
+    pred_label = factor(pred_label, levels = pred_label_levels),
+    cluster    = factor(cluster, levels = cluster_order)  # Ensure cluster order is preserved
+  )
+
+# ---- Plot on log(OR) scale, centered at 0 ----
+log_rng  <- range(heat_df$logOR, na.rm = TRUE)
+L        <- max(abs(log_rng))                 
+lims_log <- c(-L, L)
+
+breaks_log <- scales::pretty_breaks(n = 5)(lims_log)
+if (!any(abs(breaks_log) < 1e-8)) breaks_log <- sort(unique(c(breaks_log, 0)))
+
+lab_log <- scales::label_number(accuracy = 0.01)
+
+p_heat_vgo2_np <- ggplot(heat_df, aes(x = pred_label, y = cluster, fill = logOR)) +
+  geom_tile(color = "white", size = 0.25, na.rm = FALSE) +
+  geom_text(data = subset(heat_df, sig), label = "*", size = 3, vjust = 0.9) +
+  # Removed: geom_text for non-monotonic flags
+  scale_fill_gradient2(
+    low  = carto_pal(7, "Geyser")[1],
+    mid  = carto_pal(7, "Geyser")[4],
+    high = carto_pal(7, "Geyser")[7],
+    midpoint = 0,                 
+    limits   = lims_log,          
+    breaks   = breaks_log,        
+    labels   = lab_log,           
+    na.value = "grey90",
+    name = "log(OR)"              
+  ) +
+  labs(x = NULL, y = "Cluster") +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 38, hjust = 1, vjust = 1),
+        legend.position = "right")
+
+p_heat_vgo2_np
+ggsave("../Output/Cluster_analysis/VGO2_NP/Logistic_regr_heatmap_vgo2_np.svg", p_heat_vgo2_np, width = 5, height = 3) 
+```
+## Check Dolo prevalence in VGO2 NP samples
+```{r}
+microbiome_VGO2_NP
+
+ps <- microbiome_VGO2_NP
+taxon <- "Dolosigranulum_pigrum_1"
+
+# Get an abundance matrix with samples as rows
+mat <- as(otu_table(ps), "matrix")
+if (taxa_are_rows(ps)) mat <- t(mat)
+
+# If the exact taxon name isn't found, show close matches
+if (!taxon %in% colnames(mat)) {
+  candidates <- grep(taxon, colnames(mat), value = TRUE, ignore.case = FALSE)
+  stop(paste0("Taxon '", taxon, "' not found. Close matches: ",
+              if (length(candidates)) paste(candidates, collapse = ", ") else "none"))
+}
+
+N  <- nrow(mat)
+x  <- mat[, taxon]
+
+# Heuristic: is this relative abundance (rows sum to ~1)?
+is_RA <- median(abs(rowSums(mat) - 1)) < 1e-3
+
+# Prevalence with any detection (>0)
+prev_any_n <- sum(x > 0, na.rm = TRUE)
+prev_any_p <- prev_any_n / N
+
+# Prevalence at 0.5% RA threshold if RA; else use >0 for counts data
+thresh <- if (is_RA) 0.005 else 0
+prev_thr_n <- sum(x > thresh, na.rm = TRUE)
+prev_thr_p <- prev_thr_n / N
+
+cat("\nTaxon: ", taxon,
+    "\nSamples: ", N,
+    "\nDetected (>0): ", prev_any_n, sprintf(" (%.1f%%)", 100*prev_any_p),
+    if (is_RA) sprintf("\nDetected (>= 0.5%% RA): %d (%.1f%%)", prev_thr_n, 100*prev_thr_p) else
+      sprintf("\nDetected (>0; counts table): %d (%.1f%%)", prev_thr_n, 100*prev_thr_p),
+    "\n", sep = "")
+```
+## VGO2 OP 
+```{r}
+#### Logistic regression for continuous and ordinal categorical variables ####
+# We conduct logistic regression to determine whether the probability of belonging to a specific cluster increases with worse lung function.
+# For continuous variables: OR > 1 means higher odds per 1%-point DECREASE in % predicted (i.e., worse lung function).
+# For ordinal categorical variables: OR > 1 means higher odds per 1-step INCREASE in severity (e.g., from Mild to Moderate).
+
+# Convert sample data to a dataframe
+sam_data_vgo2_op <- data.frame(ps_vgo2_op_filtered@sam_data)
+sam_data_vgo2_op <- sam_data_vgo2_op %>%
+  distinct(VGO3_ID, .keep_all = TRUE) # drops duplicate VGO3_IDs
+
+# Initialize an empty data frame to store logistic regression results
+logistic_results_df_vgo2_op <- data.frame()
+
+# Define the additional variables for the multivariable model
+additional_vars <- c("age", "gender", "smoke_status", "season_microbiome_sampling")
+
+# --- Data Preprocessing ---
+# Preferred orders for the requested variables only 
+ord_levels_vgo2_op <- list(
+  smoke_status               = c("never","former","current"),
+  season_microbiome_sampling = c("Winter","Spring","Summer","Autumn"),
+  FEV1_category              = c("Normal","Mild","Moderate","Severe"),
+  FVC_category               = c("Normal","Severely reduced"), # This is binary, but we can still treat it as ordered (Normal=0, Severe=1)
+  FEV1FVC_category           = c("Normal","Obstructive"),      # Binary, ordered (Normal=0, Obstructive=1)
+  FEF25_75_category          = c("Normal","Mild","Moderate","Severe")
+)
+
+# Numeric
+if ("age" %in% names(sam_data_vgo2_op)) {
+  sam_data_vgo2_op$age <- suppressWarnings(as.numeric(as.character(sam_data_vgo2_op$age)))
+}
+# Binary (gender) - Ensure it's a factor with sensible reference level
+if ("gender" %in% names(sam_data_vgo2_op)) {
+  sam_data_vgo2_op$gender <- factor(sam_data_vgo2_op$gender)
+  sam_data_vgo2_op$gender <- relevel(sam_data_vgo2_op$gender, ref = "male") # Set 'male' as reference
+}
+# Ordered factors for covariates
+if ("smoke_status" %in% names(sam_data_vgo2_op)) {
+  sam_data_vgo2_op$smoke_status <- ordered(sam_data_vgo2_op$smoke_status,
+                                           levels = ord_levels_vgo2_op$smoke_status)
+}
+if ("season_microbiome_sampling" %in% names(sam_data_vgo2_op)) {
+  sam_data_vgo2_op$season_microbiome_sampling <- ordered(
+    sam_data_vgo2_op$season_microbiome_sampling,
+    levels = ord_levels_vgo2_op$season_microbiome_sampling
+  )
+}
+# Convert lung function categories to ORDERED factors
+for (v in c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")) {
+  if (v %in% names(sam_data_vgo2_op)) {
+    sam_data_vgo2_op[[v]] <- ordered(sam_data_vgo2_op[[v]], levels = ord_levels_vgo2_op[[v]])
+  }
+}
+
+# Ensure cluster is a factor variable
+sam_data_vgo2_op$cluster <- as.factor(sam_data_vgo2_op$cluster)  # Convert cluster column to factor
+
+
+# Specify predictor variables
+continuous_vars  <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+categorical_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+# Run the logistic regression models for the continuous variables
+results_continuous_vgo2_op <- purrr::map_dfr(
+  levels(sam_data_vgo2_op$cluster),
+  function(cl) {
+    purrr::map_dfr(continuous_vars, ~ fit_continuous(sam_data_vgo2_op, cl, .x, additional_vars))
+  }
+)
+
+# Run the logistic regression models for the categorical variables
+results_categorical_vgo2_op <- purrr::map_dfr(
+  levels(sam_data_vgo2_op$cluster),
+  function(cl) {
+    purrr::map_dfr(categorical_vars, ~ fit_categorical(sam_data_vgo2_op, cl, .x, additional_vars))
+  }
+)
+
+# Combine results
+logistic_results_df_vgo2_op <- bind_rows(results_continuous_vgo2_op, results_categorical_vgo2_op)
+
+# Adjust p-values within each predictor across clusters
+logistic_results_df_vgo2_op <- logistic_results_df_vgo2_op %>%
+  dplyr::group_by(predictor) %>%
+  dplyr::mutate(q_value = p.adjust(p_value, method = "BH")) %>%
+  dplyr::ungroup()
+
+# Save the results
+write.csv(logistic_results_df_vgo2_op, "../Output/Cluster_analysis/VGO2_OP/Logistic_regression_results_vgo2_op.csv", row.names = FALSE)
+```
+## VGO2 OP Heatmap
+```{r}
+### Heatmap
+# Predictor groups
+continuous_vars  <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+categorical_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+# Label variables 
+pretty_labels_vgo2_op <- c(
+  "FEV1_pred"         = "FEV1 % predicted (decline)",
+  "FEV1_category"     = "FEV1 category",
+  "FVC_pred"          = "FVC % predicted (decline)",
+  "FVC_category"      = "FVC category",
+  "FEV1FVC_pred"      = "FEV1/FVC % predicted (decline)",
+  "FEV1FVC_category"  = "FEV1/FVC category",
+  "FEF25_75_pred"     = "FEF 25%-75% % predicted (decline)",
+  "FEF25_75_category" = "FEF 25%-75% category"
+)
+
+# Alternating order
+predictor_order <- c(
+  "FEV1_pred","FEV1_category",
+  "FVC_pred","FVC_category",
+  "FEV1FVC_pred","FEV1FVC_category",
+  "FEF25_75_pred","FEF25_75_category"
+)
+
+# Get the actual cluster order from your data (important for y-axis order)
+cluster_order <- levels(sam_data_vgo2_op$cluster)
+
+# Grid
+grid <- tidyr::expand_grid(
+  cluster   = cluster_order,  # Use the actual cluster order
+  predictor = predictor_order
+) %>%
+  dplyr::mutate(
+    pred_label = dplyr::recode(predictor, !!!as.list(pretty_labels_vgo2_op), .default = predictor)
+  )
+
+heat_core <- logistic_results_df_vgo2_op %>%
+  dplyr::filter(mode %in% c("continuous", "ordinal_trend")) %>%  # Changed "trend" to "ordinal_trend"
+  dplyr::select(cluster, predictor, OR, q_value)
+
+pred_label_levels <- dplyr::recode(predictor_order,
+                                   !!!as.list(pretty_labels_vgo2_op),
+                                   .default = predictor_order)
+
+heat_df <- grid %>%
+  dplyr::left_join(heat_core, by = c("cluster", "predictor")) %>%
+  dplyr::mutate(
+    sig       = !is.na(q_value) & q_value < 0.10,
+    logOR     = log(OR),
+    log_low   = log(0.5),
+    log_high  = log(4),
+    logOR_c   = ifelse(is.na(logOR), NA_real_,
+                       pmax(pmin(logOR, log_high), log_low)),
+    pred_label = factor(pred_label, levels = pred_label_levels),
+    cluster    = factor(cluster, levels = cluster_order)  # Ensure cluster order is preserved
+  )
+
+# ---- Plot on log(OR) scale, centered at 0 ----
+log_rng  <- range(heat_df$logOR, na.rm = TRUE)
+L        <- max(abs(log_rng))                 
+lims_log <- c(-L, L)
+
+breaks_log <- scales::pretty_breaks(n = 5)(lims_log)
+if (!any(abs(breaks_log) < 1e-8)) breaks_log <- sort(unique(c(breaks_log, 0)))
+
+lab_log <- scales::label_number(accuracy = 0.01)
+
+p_heat_vgo2_op <- ggplot(heat_df, aes(x = pred_label, y = cluster, fill = logOR)) +
+  geom_tile(color = "white", size = 0.25, na.rm = FALSE) +
+  geom_text(data = subset(heat_df, sig), label = "*", size = 3, vjust = 0.9) +
+  scale_fill_gradient2(
+    low  = carto_pal(7, "Geyser")[1],
+    mid  = carto_pal(7, "Geyser")[4],
+    high = carto_pal(7, "Geyser")[7],
+    midpoint = 0,                 
+    limits   = lims_log,          
+    breaks   = breaks_log,        
+    labels   = lab_log,           
+    na.value = "grey90",
+    name = "log(OR)"              
+  ) +
+  labs(x = NULL, y = "Cluster") +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 38, hjust = 1, vjust = 1),
+        legend.position = "right")
+
+p_heat_vgo2_op
+ggsave("../Output/Cluster_analysis/VGO2_OP/Logistic_regr_heatmap_vgo2_op.svg", p_heat_vgo2_op, width = 5, height = 3)
+```
+## VGO3 NP 
+```{r}
+#### Logistic regression for continuous and ordinal categorical variables ####
+# We conduct logistic regression to determine whether the probability of belonging to a specific cluster increases with worse lung function.
+# For continuous variables: OR > 1 means higher odds per 1%-point DECREASE in % predicted (i.e., worse lung function).
+# For ordinal categorical variables: OR > 1 means higher odds per 1-step INCREASE in severity (e.g., from Mild to Moderate).
+# Convert sample data to a dataframe
+sam_data_vgo3_np <- data.frame(ps_vgo3_np_filtered@sam_data)
+sam_data_vgo3_np <- sam_data_vgo3_np %>%
+  distinct(VGO3_ID, .keep_all = TRUE) # drops duplicate VGO3_IDs
+
+summary(sam_data_vgo2_np$FVC_pred)
+summary(sam_data_vgo3_np$FVC_pred)
+#PROBLEM WITH VGO3 FVC_PRED VALUES...NEED TO CHECK ALL
+
+
+# Initialize an empty data frame to store logistic regression results
+logistic_results_df_vgo3_np <- data.frame()
+
+# Define the additional variables for the multivariable model
+additional_vars <- c("age", "gender", "smoke_status", "season_microbiome_sampling")
+
+# --- Data Preprocessing ---
+# Preferred orders for the requested variables only 
+ord_levels_vgo3_np <- list(
+  smoke_status               = c("never","former","current"),
+  season_microbiome_sampling = c("Winter","Spring","Summer","Autumn"),
+  FEV1_category              = c("Normal","Mild","Moderate","Severe"),
+  FVC_category               = c("Normal","Severely reduced"), # This is binary, but we can still treat it as ordered (Normal=0, Severe=1)
+  FEV1FVC_category           = c("Normal","Obstructive"),      # Binary, ordered (Normal=0, Obstructive=1)
+  FEF25_75_category          = c("Normal","Mild","Moderate","Severe")
+)
+
+# Numeric
+if ("age" %in% names(sam_data_vgo3_np)) {
+  sam_data_vgo3_np$age <- suppressWarnings(as.numeric(as.character(sam_data_vgo3_np$age)))
+}
+# Binary (gender) - Ensure it's a factor with sensible reference level
+if ("gender" %in% names(sam_data_vgo3_np)) {
+  sam_data_vgo3_np$gender <- factor(sam_data_vgo3_np$gender)
+  sam_data_vgo3_np$gender <- relevel(sam_data_vgo3_np$gender, ref = "male") # Set 'male' as reference
+}
+# Ordered factors for covariates
+if ("smoke_status" %in% names(sam_data_vgo3_np)) {
+  sam_data_vgo3_np$smoke_status <- ordered(sam_data_vgo3_np$smoke_status,
+                                           levels = ord_levels_vgo3_np$smoke_status)
+}
+if ("season_microbiome_sampling" %in% names(sam_data_vgo3_np)) {
+  sam_data_vgo3_np$season_microbiome_sampling <- ordered(
+    sam_data_vgo3_np$season_microbiome_sampling,
+    levels = ord_levels_vgo3_np$season_microbiome_sampling
+  )
+}
+# Convert lung function categories to ORDERED factors
+for (v in c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")) {
+  if (v %in% names(sam_data_vgo3_np)) {
+    sam_data_vgo3_np[[v]] <- ordered(sam_data_vgo3_np[[v]], levels = ord_levels_vgo3_np[[v]])
+  }
+}
+
+# Ensure cluster is a factor variable
+sam_data_vgo3_np$cluster <- as.factor(sam_data_vgo3_np$cluster)  # Convert cluster column to factor
+
+# Specify predictor variables
+continuous_vars  <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+categorical_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+
+# Run the logistic regression models for the continuous variables
+results_continuous_vgo3_np <- purrr::map_dfr(
+  levels(sam_data_vgo3_np$cluster),
+  function(cl) {
+    purrr::map_dfr(continuous_vars, ~ fit_continuous(sam_data_vgo3_np, cl, .x, additional_vars))
+  }
+)
+
+# Run the logistic regression models for the categorical variables
+results_categorical_vgo3_np <- purrr::map_dfr(
+  levels(sam_data_vgo3_np$cluster),
+  function(cl) {
+    purrr::map_dfr(categorical_vars, ~ fit_categorical(sam_data_vgo3_np, cl, .x, additional_vars))
+  }
+)
+
+# Combine results
+logistic_results_df_vgo3_np <- bind_rows(results_continuous_vgo3_np, results_categorical_vgo3_np)
+
+# Adjust p-values within each predictor across clusters
+logistic_results_df_vgo3_np <- logistic_results_df_vgo3_np %>%
+  dplyr::group_by(predictor) %>%
+  dplyr::mutate(q_value = p.adjust(p_value, method = "BH")) %>%
+  dplyr::ungroup()
+
+# Save the results
+write.csv(logistic_results_df_vgo3_np, "../Output/Cluster_analysis/VGO3_NP/Logistic_regression_results_vgo3_np.csv", row.names = FALSE)
+```
+## VGO3 NP Heatmap
+```{r}
+### Heatmap
+# Predictor groups
+continuous_vars  <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+categorical_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+# Label variables 
+pretty_labels_vgo3_np <- c(
+  "FEV1_pred"         = "FEV1 % predicted (decline)",
+  "FEV1_category"     = "FEV1 category",
+  "FVC_pred"          = "FVC % predicted (decline)",
+  "FVC_category"      = "FVC category",
+  "FEV1FVC_pred"      = "FEV1/FVC % predicted (decline)",
+  "FEV1FVC_category"  = "FEV1/FVC category",
+  "FEF25_75_pred"     = "FEF 25%-75% % predicted (decline)",
+  "FEF25_75_category" = "FEF 25%-75% category"
+)
+
+# Alternating order
+predictor_order <- c(
+  "FEV1_pred","FEV1_category",
+  "FVC_pred","FVC_category",
+  "FEV1FVC_pred","FEV1FVC_category",
+  "FEF25_75_pred","FEF25_75_category"
+)
+
+# Get the actual cluster order from your data (important for y-axis order)
+cluster_order <- levels(sam_data_vgo3_np$cluster)
+
+# Grid
+grid <- tidyr::expand_grid(
+  cluster   = cluster_order,  # Use the actual cluster order
+  predictor = predictor_order
+) %>%
+  dplyr::mutate(
+    pred_label = dplyr::recode(predictor, !!!as.list(pretty_labels_vgo3_np), .default = predictor)
+  )
+
+heat_core <- logistic_results_df_vgo3_np %>%
+  dplyr::filter(mode %in% c("continuous", "ordinal_trend")) %>%  # Changed "trend" to "ordinal_trend"
+  dplyr::select(cluster, predictor, OR, q_value)
+
+pred_label_levels <- dplyr::recode(predictor_order,
+                                   !!!as.list(pretty_labels_vgo3_np),
+                                   .default = predictor_order)
+
+heat_df <- grid %>%
+  dplyr::left_join(heat_core, by = c("cluster", "predictor")) %>%
+  dplyr::mutate(
+    sig       = !is.na(q_value) & q_value < 0.10,
+    logOR     = log(OR),
+    log_low   = log(0.5),
+    log_high  = log(4),
+    logOR_c   = ifelse(is.na(logOR), NA_real_,
+                       pmax(pmin(logOR, log_high), log_low)),
+    pred_label = factor(pred_label, levels = pred_label_levels),
+    cluster    = factor(cluster, levels = cluster_order)  # Ensure cluster order is preserved
+  )
+
+# ---- Plot on log(OR) scale, centered at 0 ----
+log_rng  <- range(heat_df$logOR, na.rm = TRUE)
+L        <- max(abs(log_rng))                 
+lims_log <- c(-L, L)
+
+breaks_log <- scales::pretty_breaks(n = 5)(lims_log)
+if (!any(abs(breaks_log) < 1e-8)) breaks_log <- sort(unique(c(breaks_log, 0)))
+
+lab_log <- scales::label_number(accuracy = 0.01)
+
+p_heat_vgo3_np <- ggplot(heat_df, aes(x = pred_label, y = cluster, fill = logOR)) +
+  geom_tile(color = "white", size = 0.25, na.rm = FALSE) +
+  geom_text(data = subset(heat_df, sig), label = "*", size = 3, vjust = 0.9) +
+  scale_fill_gradient2(
+    low  = carto_pal(7, "Geyser")[1],
+    mid  = carto_pal(7, "Geyser")[4],
+    high = carto_pal(7, "Geyser")[7],
+    midpoint = 0,                 
+    limits   = lims_log,          
+    breaks   = breaks_log,        
+    labels   = lab_log,           
+    na.value = "grey90",
+    name = "log(OR)"              
+  ) +
+  labs(x = NULL, y = "Cluster") +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 38, hjust = 1, vjust = 1),
+        legend.position = "right")
+
+p_heat_vgo3_np
+ggsave("../Output/Cluster_analysis/VGO3_NP/Logistic_regr_heatmap_vgo3_np.svg", p_heat_vgo3_np, width = 5, height = 3) 
+```
+
+
+## VGO3 OP 
+```{r}
+#### Logistic regression for continuous and ordinal categorical variables ####
+# We conduct logistic regression to determine whether the probability of belonging to a specific cluster increases with worse lung function.
+# For continuous variables: OR > 1 means higher odds per 1%-point DECREASE in % predicted (i.e., worse lung function).
+# For ordinal categorical variables: OR > 1 means higher odds per 1-step INCREASE in severity (e.g., from Mild to Moderate).
+
+# Convert sample data to a dataframe
+sam_data_vgo3_op <- data.frame(ps_vgo3_op_filtered@sam_data)
+sam_data_vgo3_op <- sam_data_vgo3_op %>%
+  distinct(VGO3_ID, .keep_all = TRUE) # drops duplicate VGO3_IDs
+
+# Initialize an empty data frame to store logistic regression results
+logistic_results_df_vgo3_op <- data.frame()
+
+# Define the additional variables for the multivariable model
+additional_vars <- c("age", "gender", "smoke_status", "season_microbiome_sampling")
+
+# --- Data Preprocessing ---
+# Preferred orders for the requested variables only 
+ord_levels_vgo3_op <- list(
+  smoke_status               = c("never","former","current"),
+  season_microbiome_sampling = c("Winter","Spring","Summer","Autumn"),
+  FEV1_category              = c("Normal","Mild","Moderate","Severe"),
+  FVC_category               = c("Normal","Severely reduced"), # This is binary, but we can still treat it as ordered (Normal=0, Severe=1)
+  FEV1FVC_category           = c("Normal","Obstructive"),      # Binary, ordered (Normal=0, Obstructive=1)
+  FEF25_75_category          = c("Normal","Mild","Moderate","Severe")
+)
+
+# Numeric
+if ("age" %in% names(sam_data_vgo3_op)) {
+  sam_data_vgo3_op$age <- suppressWarnings(as.numeric(as.character(sam_data_vgo3_op$age)))
+}
+# Binary (gender) - Ensure it's a factor with sensible reference level
+if ("gender" %in% names(sam_data_vgo3_op)) {
+  sam_data_vgo3_op$gender <- factor(sam_data_vgo3_op$gender)
+  sam_data_vgo3_op$gender <- relevel(sam_data_vgo3_op$gender, ref = "male") # Set 'male' as reference
+}
+# Ordered factors for covariates
+if ("smoke_status" %in% names(sam_data_vgo3_op)) {
+  sam_data_vgo3_op$smoke_status <- ordered(sam_data_vgo3_op$smoke_status,
+                                           levels = ord_levels_vgo3_op$smoke_status)
+}
+if ("season_microbiome_sampling" %in% names(sam_data_vgo3_op)) {
+  sam_data_vgo3_op$season_microbiome_sampling <- ordered(
+    sam_data_vgo3_op$season_microbiome_sampling,
+    levels = ord_levels_vgo3_op$season_microbiome_sampling
+  )
+}
+# Convert lung function categories to ORDERED factors
+for (v in c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")) {
+  if (v %in% names(sam_data_vgo3_op)) {
+    sam_data_vgo3_op[[v]] <- ordered(sam_data_vgo3_op[[v]], levels = ord_levels_vgo3_op[[v]])
+  }
+}
+
+# Ensure cluster is a factor variable
+sam_data_vgo3_op$cluster <- as.factor(sam_data_vgo3_op$cluster)  # Convert cluster column to factor
+
+# Specify predictor variables
+continuous_vars  <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+categorical_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+# Run the logistic regression models for the continuous variables
+results_continuous_vgo3_op <- purrr::map_dfr(
+  levels(sam_data_vgo3_op$cluster),
+  function(cl) {
+    purrr::map_dfr(continuous_vars, ~ fit_continuous(sam_data_vgo3_op, cl, .x, additional_vars))
+  }
+)
+
+# Run the logistic regression models for the categorical variables
+results_categorical_vgo3_op <- purrr::map_dfr(
+  levels(sam_data_vgo3_op$cluster),
+  function(cl) {
+    purrr::map_dfr(categorical_vars, ~ fit_categorical(sam_data_vgo3_op, cl, .x, additional_vars))
+  }
+)
+
+# Combine results
+logistic_results_df_vgo3_op <- bind_rows(results_continuous_vgo3_op, results_categorical_vgo3_op)
+
+# Adjust p-values within each predictor across clusters
+logistic_results_df_vgo3_op <- logistic_results_df_vgo3_op %>%
+  dplyr::group_by(predictor) %>%
+  dplyr::mutate(q_value = p.adjust(p_value, method = "BH")) %>%
+  dplyr::ungroup()
+
+# Save the results
+write.csv(logistic_results_df_vgo3_op, "../Output/Cluster_analysis/VGO3_OP/Logistic_regression_results_vgo3_op.csv", row.names = FALSE)
+```
+## VGO3 OP Heatmap
+```{r}
+### Heatmap
+# Predictor groups
+continuous_vars  <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+categorical_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+
+# Label variables 
+pretty_labels_vgo3_op <- c(
+  "FEV1_pred"         = "FEV1 % predicted (decline)",
+  "FEV1_category"     = "FEV1 category",
+  "FVC_pred"          = "FVC % predicted (decline)",
+  "FVC_category"      = "FVC category",
+  "FEV1FVC_pred"      = "FEV1/FVC % predicted (decline)",
+  "FEV1FVC_category"  = "FEV1/FVC category",
+  "FEF25_75_pred"     = "FEF 25%-75% % predicted (decline)",
+  "FEF25_75_category" = "FEF 25%-75% category"
+)
+
+# Alternating order
+predictor_order <- c(
+  "FEV1_pred","FEV1_category",
+  "FVC_pred","FVC_category",
+  "FEV1FVC_pred","FEV1FVC_category",
+  "FEF25_75_pred","FEF25_75_category"
+)
+
+# Get the actual cluster order from data
+cluster_order <- levels(sam_data_vgo3_op$cluster)
+
+# Grid
+grid <- tidyr::expand_grid(
+  cluster   = cluster_order,  # Use the actual cluster order
+  predictor = predictor_order
+) %>%
+  dplyr::mutate(
+    pred_label = dplyr::recode(predictor, !!!as.list(pretty_labels_vgo3_op), .default = predictor)
+  )
+
+heat_core <- logistic_results_df_vgo3_op %>%
+  dplyr::filter(mode %in% c("continuous", "ordinal_trend")) %>%  # Changed "trend" to "ordinal_trend"
+  dplyr::select(cluster, predictor, OR, q_value)
+
+pred_label_levels <- dplyr::recode(predictor_order,
+                                   !!!as.list(pretty_labels_vgo3_op),
+                                   .default = predictor_order)
+
+heat_df <- grid %>%
+  dplyr::left_join(heat_core, by = c("cluster", "predictor")) %>%
+  dplyr::mutate(
+    sig       = !is.na(q_value) & q_value < 0.10,
+    logOR     = log(OR),
+    log_low   = log(0.5),
+    log_high  = log(4),
+    logOR_c   = ifelse(is.na(logOR), NA_real_,
+                       pmax(pmin(logOR, log_high), log_low)),
+    pred_label = factor(pred_label, levels = pred_label_levels),
+    cluster    = factor(cluster, levels = cluster_order)  # Ensure cluster order is preserved
+  )
+
+# ---- Plot on log(OR) scale, centered at 0 ----
+log_rng  <- range(heat_df$logOR, na.rm = TRUE)
+L        <- max(abs(log_rng))                 
+lims_log <- c(-L, L)
+
+breaks_log <- scales::pretty_breaks(n = 5)(lims_log)
+if (!any(abs(breaks_log) < 1e-8)) breaks_log <- sort(unique(c(breaks_log, 0)))
+
+lab_log <- scales::label_number(accuracy = 0.01)
+
+p_heat_vgo3_op <- ggplot(heat_df, aes(x = pred_label, y = cluster, fill = logOR)) +
+  geom_tile(color = "white", size = 0.25, na.rm = FALSE) +
+  geom_text(data = subset(heat_df, sig), label = "*", size = 3, vjust = 0.9) +
+  scale_fill_gradient2(
+    low  = carto_pal(7, "Geyser")[1],
+    mid  = carto_pal(7, "Geyser")[4],
+    high = carto_pal(7, "Geyser")[7],
+    midpoint = 0,                 
+    limits   = lims_log,          
+    breaks   = breaks_log,        
+    labels   = lab_log,           
+    na.value = "grey90",
+    name = "log(OR)"              
+  ) +
+  labs(x = NULL, y = "Cluster") +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 38, hjust = 1, vjust = 1),
+        legend.position = "right")
+
+p_heat_vgo3_op
+ggsave("../Output/Cluster_analysis/VGO3_OP/Logistic_regr_heatmap_vgo3_op.svg", p_heat_vgo3_op, width = 5, height = 3)
+
+table(sam_data_vgo3_op$FEV1_category)
+table(sam_data_vgo3_op$FVC_category)
+table(sam_data_vgo3_op$FEV1FVC_category)
+table(sam_data_vgo3_op$FEF25_75_category)
+
+```
+
+
 
