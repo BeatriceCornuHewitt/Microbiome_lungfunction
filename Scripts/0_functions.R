@@ -259,6 +259,31 @@ create_ordered_bar_n <- function(ps, n) {
 }
 
 
+create_ordered_bar_n <- function(ps, n){
+  ps_RA <- to_RA(ps)
+  
+  # remove existing sample_id so prep_bar can safely create it from rownames
+  md <- as.data.frame(sample_data(ps_RA))
+  if ("sample_id" %in% names(md)) {
+    md$sample_id <- NULL
+    sample_data(ps_RA) <- sample_data(md)
+  }
+  
+  otu_RA_m <- as(otu_table(ps_RA), "matrix")
+  bc <- vegdist(t(otu_RA_m), "bray")
+  hc <- hclust(bc, method = "average")
+  
+  ps_RA %>%
+    prep_bar(n = n) %>%
+    dplyr::mutate(sample_id = forcats::fct_relevel(sample_id, hc$labels[hc$order])) %>%
+    create_bar(df_topn = ., n = n, ncol_legend = 1, name_legend = "ASV") +
+    coord_flip() +
+    theme(legend.position = "right") +
+    scale_fill_manual(values = c("#F0F0F0", paletteer_d("pals::stepped")[2:(n+1)])) +
+    labs(fill = "ASV")
+}
+
+
 
 
 # Plot contaminants from decontam
