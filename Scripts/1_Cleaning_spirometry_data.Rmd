@@ -6,7 +6,7 @@ output: html_document
 ---
 # Load packages
 ```{r}
-library(dplyr); library(labelled); library(gt); library(openxlsx); library(haven); library(lubridate)
+library(dplyr); library(labelled); library(gt); library(openxlsx); library(haven); library(lubridate); library(table1); library(rspiro)
 ```
 
 # Load datasets from VGO2 and VGO3
@@ -1255,5 +1255,39 @@ var_label(VGO_combined_final$new_obstr) <- "Obstruction trajectory: 0=never, 1=i
 
 # OPTIONAL: Save to disk
 write.csv(VGO_combined_final, "../Output/Participant_data/Datasets/VGO_combined.csv", row.names = FALSE)
+
+
+
+
+# Checking FVC pred values
+# Create a filtered data frame (without altering the original)
+vgo3_table <- data.frame(
+  ID = VGO_combined_final$ID[VGO_combined_final$study == "VGO3"],
+  FVC_pred = VGO_combined_final$FVC_pred[VGO_combined_final$study == "VGO3"]
+)
+# Sort by ID
+vgo3_table <- vgo3_table[order(vgo3_table$ID), ]
+# Show first rows
+head(vgo3_table)
+# Open full table in RStudio viewer
+View(vgo3_table)
+
+
+vgo3_table <- data.frame(
+  ID = VGO_combined_final$ID[VGO_combined_final$study == "VGO3"],
+  FEV1_pred = VGO_combined_final$FEV1_pred[VGO_combined_final$study == "VGO3"]
+)
+# Sort by ID
+vgo3_table <- vgo3_table[order(vgo3_table$ID), ]
+# Show first rows
+head(vgo3_table)
+# Open full table in RStudio viewer
+View(vgo3_table)
+
+
+summary(VGO_combined_final$FVC_pred)
+str(VGO_combined_final$FVC_pred)
+str(VGO_combined_final$FEV1_pred)
+
 ```
 
