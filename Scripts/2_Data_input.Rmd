@@ -7,9 +7,10 @@ output: html_document
 
 # Load packages 
 ```{r}
-library(phyloseq); library(vegan); library(tidyr); library(dplyr); library(ggplot2);library(tidyverse); library(microbiomer); library(paletteer);library(microbiome); library(devtools); library(forcats); library(haven); library(openxlsx); library(vegan); library(ggsignif); library(patchwork); library(decontam); library(RColorBrewer); library(forcats); library(lubridate)
+library(phyloseq); library(vegan); library(tidyr); library(dplyr); library(ggplot2);library(tidyverse); library(microbiomer); library(paletteer);library(microbiome); library(devtools); library(forcats); library(haven); library(openxlsx); library(vegan); library(ggsignif); library(patchwork); library(decontam); library(RColorBrewer); library(forcats); library(lubridate); library(stringr); library(forcats); library(janitor); library(gtsummary); library(gt)
 
-source("functions.R")
+
+source("0_functions.R")
 
 # Theme for plots in script
 theme_set(theme_bw())
@@ -472,6 +473,7 @@ ps
 # Load metadata
 metadata_VGO2 <- read.csv("../Output/Participant_data/Datasets/VGO2_data.csv")
 metadata_VGO3 <- read.csv("../Output/Participant_data/Datasets/VGO3_data.csv")
+
 # Combine metadata into one table (optional, only if needed)
 metadata_all <- bind_rows(metadata_VGO2, metadata_VGO3)
 colnames(metadata_all)[colnames(metadata_all) == "ID"] <- "VGO3_ID"
@@ -575,7 +577,6 @@ ggsave("../Output/Microbiome_descriptives/Before_preprocessing_composition/VGO3_
 
 
 # Subset ps2 for dataset == "VGO3_NP"
-ps2@sam_data$dataset
 ps_vgo3_op <- subset_samples(ps2, dataset == "VGO3_NPOP" & niche == "OP")
 ps_vgo3_op_filt <- prune_taxa(taxa_sums(ps_vgo3_op) > 0, ps_vgo3_op)
 ps_vgo3_op_filt <- prune_samples(sample_sums(ps_vgo3_op_filt) > 0, ps_vgo3_op_filt)
@@ -661,7 +662,7 @@ table(zero_samples, sample_data(ps2)$decontam_group)
 
 table(sample_data(ps2)$decontam_group)
 # VGO2_NP   VGO2_OP  VGO3_combined 
-# 288       336      2036 
+# 288       340      2362 
 
 # Split phyloseq by group
 # Get the unique group names
@@ -1401,6 +1402,7 @@ samples_with_asvs <- rownames(otu_df)[rowSums(otu_df[, asvs_of_interest, drop = 
 sample_data_with_asvs <- sample_data(ps2)[samples_with_asvs, ]
 # View 
 sample_data_with_asvs
+
 ```
 # Final list of ASVs remaining
 ```{r}
@@ -1453,6 +1455,8 @@ ps2_no_zero_taxa; ps3 # 84 samples were removed
 # sample_data() Sample Data:       [ 2332 samples by 88 sample variables ]
 # tax_table()   Taxonomy Table:    [ 25537 taxa by 9 taxonomic ranks ]
 # refseq()      DNAStringSet:      [ 25537 reference sequences ]
+
+
 ```
 # Rarefaction curves
 ```{r}
@@ -1753,6 +1757,7 @@ stats <- ps_stats(ps_rarefied, stats, "Rarefied for alpha diversity")
 stats
 
 write.csv(stats, "../Output/Preprocessing/Processing_steps.csv")
+
 ```
 # Number samples in each dataset before and after pre-processing
 ```{r}
@@ -1904,6 +1909,7 @@ p_counts
 
 ggsave("../Output/Participant_data/Lung_function_category_barplot.svg",
        p_counts, width = 8, height = 6)
+
 ```
 
 # Recode gender and smoking status as factors 
@@ -2069,9 +2075,139 @@ df <- data.frame(ps4@sam_data)
 print(table(df$dataset, df$season_microbiome_sampling, useNA = "ifany")) # Both NA season values are from the VGO2_NP dataset
 
 # 1 = winter, 2 = spring, 3 = summer, 4 = autumn
+
 ```
 # Save phyloseq
 ```{r}
 saveRDS(ps4, "../Output/Phyloseq/ps4.rds")
+
 ```
+# Population summary table
+```{r}
+# Build participant-level dataset (one row per person per population) ---
+sd <- sample_data(ps4) %>%
+  data.frame(check.names = FALSE) %>%
+  filter(niche %in% c("NP","OP")) %>%
+  mutate(
+    Study = case_when(
+      dataset %in% c("VGO2_NP","VGO2_OP") ~ "VGO2",
+      dataset == "VGO3_NPOP"              ~ "VGO3",
+      TRUE ~ as.character(dataset)
+    ),
+    VGO3_ID = as.character(VGO3_ID),
+    final_read_nr = suppressWarnings(as.numeric(final_read_nr))
+  )
+
+sd_participant <- sd %>%
+  mutate(niche_rank = if_else(niche == "NP", 1L, 2L)) %>%
+  arrange(Study, VGO3_ID, niche_rank, desc(final_read_nr)) %>%
+  group_by(Study, VGO3_ID) %>%
+  slice(1) %>%
+  ungroup()
+
+# Prepare clean analysis variables and harmonise COPD per Study ---
+df_tab <- sd_participant %>%
+  mutate(
+    # COPD per your rule
+    COPD_raw = case_when(
+      Study == "VGO2" ~ suppressWarnings(as.numeric(copd_lln)),
+      Study == "VGO3" ~ case_when(
+        tolower(as.character(copd_doc_diag)) == "yes" ~ 1,
+        tolower(as.character(copd_doc_diag)) == "no"  ~ 0,
+        TRUE ~ NA_real_
+      ),
+      TRUE ~ NA_real_
+    ),
+    COPD = case_when(COPD_raw == 1 ~ "Yes",
+                     COPD_raw == 0 ~ "No",
+                     TRUE ~ NA_character_),
+
+    # other variables (light, robust recodes)
+    age = suppressWarnings(as.numeric(age)),
+    bmi = suppressWarnings(as.numeric(bmi)),
+    gender = case_when(
+      tolower(as.character(gender)) %in% c("m","male") ~ "Male",
+      tolower(as.character(gender)) %in% c("f","female") ~ "Female",
+      TRUE ~ NA_character_
+    ),
+    smoke_status = case_when(
+      tolower(as.character(smoke_status)) %in% c("never","non","no") ~ "Never",
+      tolower(as.character(smoke_status)) %in% c("former","ex","previous","prev") ~ "Former",
+      tolower(as.character(smoke_status)) %in% c("current","smoker") ~ "Current",
+      TRUE ~ NA_character_
+    ),
+    asthma_ever = case_when(
+      tolower(as.character(asthma_ever)) %in% c("yes","1","true") ~ "Yes",
+      tolower(as.character(asthma_ever)) %in% c("no","0","false") ~ "No",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(Study, age, gender, bmi, smoke_status, asthma_ever, COPD)
+
+# Summary helpers 
+cont_summary <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA_character_)
+  m  <- mean(x); s <- sd(x)
+  q  <- quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
+  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]", m, s, q[2], q[1], q[3])
+}
+
+cat_summary <- function(x) {
+  x <- factor(x)
+  if (all(is.na(x))) return(character(0))
+  n_tot <- sum(!is.na(x))
+  levs <- levels(x)
+  if (is.null(levs)) levs <- sort(unique(na.omit(x)))
+  out <- sapply(levs, function(lv) {
+    n <- sum(x == lv, na.rm = TRUE)
+    pct <- if (n_tot > 0) 100 * n / n_tot else NA_real_
+    sprintf("%s: %d (%.1f%%)", lv, n, pct)
+  }, USE.NAMES = FALSE)
+  paste(out, collapse = "\n")
+}
+
+
+# Compute summaries for each Study
+summ_VGO2 <- df_tab %>% filter(Study == "VGO2")
+summ_VGO3 <- df_tab %>% filter(Study == "VGO3")
+
+rows <- tibble::tibble(
+  Variable = c("Age (years)", "Gender", "BMI (kg/m²)", "Smoking status", "Asthma (ever)", "COPD"),
+  VGO2 = c(
+    cont_summary(summ_VGO2$age),
+    cat_summary(summ_VGO2$gender),
+    cont_summary(summ_VGO2$bmi),
+    cat_summary(summ_VGO2$smoke_status),
+    cat_summary(summ_VGO2$asthma_ever),
+    cat_summary(summ_VGO2$COPD)
+  ),
+  VGO3 = c(
+    cont_summary(summ_VGO3$age),
+    cat_summary(summ_VGO3$gender),
+    cont_summary(summ_VGO3$bmi),
+    cat_summary(summ_VGO3$smoke_status),
+    cat_summary(summ_VGO3$asthma_ever),
+    cat_summary(summ_VGO3$COPD)
+  )
+)
+
+# Render a neat table with gt 
+tbl <- rows %>%
+  gt(rowname_col = "Variable") %>%
+  tab_header(title = md("**Participant Characteristics**")) %>%
+  cols_label(VGO2 = md("**VGO2**"), VGO3 = md("**VGO3**")) %>%
+  tab_options(table.font.size = "small") %>%
+  fmt_markdown(columns = everything())
+
+# View in RStudio viewer
+tbl
+
+# Save (optional)
+gtsave(tbl, "../Output/Participant_data/Table1_VGO2_vs_VGO3.html")
+```
+
+
+
 
