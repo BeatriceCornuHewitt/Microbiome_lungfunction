@@ -6,13 +6,12 @@ output: html_document
 ---
 # Load packages
 ```{r}
-library(dplyr); library(labelled); library(gt); library(openxlsx); library(haven); library(lubridate); library(table1); library(rspiro)
+library(dplyr); library(labelled); library(gt); library(openxlsx); library(haven); library(lubridate); library(table1); library(rspiro); library(stringr); library(tidyr)
 ```
 
 # Load datasets from VGO2 and VGO3
 ```{r}
 #### VGO3 data ####
-getwd()
 # Merged spirometry
 ds <- read.csv2("O:/DGK/IRAS/EEPI/Projects/VGO/VGO3_2tm3_4__gezondheid/Data/controle_populatie/Data_analyse/VGO3_CP_R_project/Cleaned data/VGO_3_cleaned_spirometry.csv", row.names = NULL) %>% select(-any_of("X"))
 
@@ -28,14 +27,13 @@ field_q <- read.csv("O:/DGK/IRAS/EEPI/Projects/VGO/VGO3_2tm3_4__gezondheid/Data/
 # Field form
 field_f <- read.csv("O:/DGK/IRAS/EEPI/Projects/VGO/VGO3_2tm3_4__gezondheid/Data/controle_populatie/Data_analyse/VGO3_CP_R_project/Cleaned data/VGO-3_CP_fieldform_20220909.csv")
 
-
 #### VGO2 data ####
 # Full dataset
 old <- read_sas("O:/DGK/IRAS/EEPI/Projects/VGO/VGO I en II/VGO gezondheid/Overdracht VGO gezondheid/Sas dataset/lung_sero_scr_longq_emr_09052017.sas7bdat")
-    
+
 # Intake file for test dates - in full dataset 12 dates (test_date_pre) are missing
 old_intake <- read_sas("O:/DGK/IRAS/EEPI/Projects/VGO/VGO I en II/VGO gezondheid/Data intake + medicijngebruik/vgointake.sas7bdat")
-    
+
 # Spirometry
 old_spiro <- read_sas("O:/DGK/IRAS/EEPI/Projects/VGO/VGO I en II/VGO gezondheid/Longfuncties/Dataset analyse/vgo_lf_12feb2016_n2439.sas7bdat")
 
@@ -47,7 +45,7 @@ old_endo <- read.csv("O:/DGK/IRAS/EEPI/Projects/VGO-COPD/Microbiome/Warner_R_pro
 # Old complete (for continuous exposure proxies)
 old_full <- read_sas("O:/DGK/IRAS/EEPI/Projects/VGO/VGO I en II/VGO gezondheid/Overdracht VGO gezondheid/Sas dataset/datasetmyrna18072017.sas7bdat")
 
-#Farm child variables
+# Farm child variables
 # farmchild,farmchtotyr,farmchanim,farmchcrop,farmchdairy,farmchveal,farmchgoat,farmchsheep,farmchpig,farmchpoultry,farmchhorse,farmchother,farmchothertxt,farmchholiday,farmnone,farmchanim,farmchmanure,farmchstraw,farmchcropcare
     
 # 2021 and 2022 air pollutant data from national air quality monitoring network
@@ -69,16 +67,33 @@ NH_diff <- readRDS("O:/DGK/IRAS/EEPI/Projects/VGO/VGO3_2tm3_4__gezondheid/Data/c
 ### Prep cleaned spirometry data for analysis
 ```{r}
 #### VGO3 spirometry ####  
-# Check for duplicate records and rempove any 
-ds1 <- ds %>% distinct(ID, DateOfBirth, Test.Date, FEV1, FVC, .keep_all =T )
+# We see that for the FVC values there is an issue in the later samples that the decimal point it missing, 
+# How many FVC values are "digits only" (no decimal) right now?
+n_bad_before <- sum(!grepl("\\.", ds$FVC) & grepl("^\\d{2,}$", ds$FVC, perl = TRUE), na.rm = TRUE)
+message("FVC values with missing decimal BEFORE fix: ", n_bad_before)
+# Keep a backup column for audit
+ds <- ds %>% mutate(FVC_raw = FVC)
+# Normalise decimal commas to dots (if any)
+ds <- ds %>% mutate(FVC = gsub(",", ".", FVC, fixed = TRUE))
+# Insert a decimal after the first digit where it's clearly missing
+needs_dot <- !grepl("\\.", ds$FVC) & grepl("^\\d{2,}$", ds$FVC, perl = TRUE)
+ds$FVC[needs_dot] <- sub("^(\\d)(\\d+)$", "\\1.\\2", ds$FVC[needs_dot], perl = TRUE)
+# Parse to numeric (drops stray non-numeric chars if any)
+ds$FVC <- readr::parse_number(ds$FVC, locale = readr::locale(decimal_mark = "."))
+# Quick sanity checks + small audit table
+n_bad_after <- sum(!is.na(ds$FVC) & ds$FVC > 20)  # >20 L is implausible
+message("FVC values still implausible AFTER fix (>20 L): ", n_bad_after)
+# List rows that were changed
+fixed_rows <- which(needs_dot)
+audit_FVC <- ds[fixed_rows, c("ID", "FVC_raw", "FVC")]
+print(audit_FVC)  # show the fixes made
 
+
+
+# Check for duplicate records and remove any 
+ds1 <- ds %>% distinct(ID, DateOfBirth, Test.Date, FEV1, FVC, .keep_all = T)
 # Turn measurement values presented as character strings to numeric
 str(ds1)
-# ds2 <- ds1 %>% mutate_if(is.character,as.numeric) %>%
-#     mutate(Gender=ds1$Gender,
-#            DateOfBirth=ds1$DateOfBirth,
-#            Ethnicity=ds1$Ethnicity,
-#            Test.Date=ds1$Test.Date)
 
 ds2 <- ds1 %>%
   mutate(across(where(is.character) & !any_of(c("Gender", "Ethnicity", "DateOfBirth", "Test.Date")), as.numeric))
@@ -352,7 +367,6 @@ table1(~Quality|lf_repr150,d_repro_t,caption = "Quality grades and FEV<sub>1</su
 ```
 
 ## Spirometry - reproducibility continued with PEF
-
 ```{r}
 var_label(d_repro_t$pef_d670) <- "PEF diff."
 
@@ -399,6 +413,8 @@ table1(~FEV1+FVC+FEV25+FEV5+FEV75+FEV3+FEV6,data = ds_prep_forced,caption = "Sum
 
 
 table1(~FEV1+FVC+FEV25+FEV5+FEV75+FEV3+FEV6+FEV1_FVC,data = ds_prep_forced,caption = "Summary of FEV and FVC variables") 
+
+
 ```
 ## Creating the “flow” variables analysis dataset
 ```{r}
@@ -503,7 +519,7 @@ table1(~FEF10+FEF25+FEF25_75+FEF40+FEF50+FEF60,data = ds_prep_flow,caption = "Su
 table1(~FEF75+FEF75_85+FEF80+FEF25_75+PEF+PEF_Lmin,data = ds_prep_flow,caption = "Summary of flow variables - continued")
 ```
 
-# Metadata cleaning - VGO2 and VGO3
+# Metadata cleaning 
 Cleans and prepares the spirometry data:
 - Handles missing values in quality grades
 - Calculates number of acceptable trials
@@ -514,154 +530,227 @@ Processes questionnaire data:
 - Handles missing values
 - Creates derived variables
 ```{r}
-#### VGO3 ####
+#### VGO3: metadata and spirometry #### 
 # Merge cleaned VGO3 spirometry datasets
-# ds_prep_forced - the volume-based dataset - contains lung function volume measurements per individual (ID) - also includes demographics like ID, spirometrist, ethnicity, date...
-# ds_prep_flow - the flow-based dataset - contains lung function flow measurements per individual (ID) e.g. FEF & PEF variables 
-# Merge analysis datasets
-ds_prep <- left_join(ds_prep_forced, ds_prep_flow, by="ID")  %>% 
-  select(-any_of(c("Trial_rank","Height","Weight","Gender"))) 
-names(ds_prep)
+# ds_prep_forced - volume-based dataset (FEV1, FVC etc.)
+# ds_prep_flow   - flow-based dataset (FEF/PEF etc.)
 
-# Process VGO3 online questionnaire
+ds_prep <- left_join(ds_prep_forced, ds_prep_flow, by = "ID") %>%
+  select(-any_of(c("Trial_rank", "Height", "Weight", "Gender")))
+
+
+## Online questionnaire (OQ) - VGO3
 OQ_clean <- OQ %>%
-  select(ID, fuquestdate, fugender, fuage, fuasever, fuasdd, ful3mdailycough, ful3mdailyphlegm, 
-         fudoctoldcopd, fusmokeever, fuwheezly, fufarmvstfam, fufarmvstjob, fufarmvstoth, 
-         fufarmvstpet, fufarmvstshop, fufarmvstno) %>%
+  select(
+    ID, fuquestdate, fugender, fuage,
+    fuasever, fuasdd, fuas12m, fuascurmed,
+    ful12mdailtycortinhaler, fulyantibiotic,
+    fuwheezly, ful3mdailycough, ful3mdailyphlegm,
+    fudoctoldcopd, fusmokeever,
+    fufarmvstfam, fufarmvstjob, fufarmvstoth,
+    fufarmvstpet, fufarmvstshop, fufarmvstno
+  )
+
+OQ_clean <- OQ_clean %>%
   mutate(
-    fuquestdate = ymd(fuquestdate), # Convert date to standard format
-    fugender = factor(fugender, levels = c(1, 2), labels = c("male", "female")), # Recode gender to "male"/"female"
-    fuage = as.numeric(fuage), # Ensure age is numeric
-    # Recode binary variables (0 = no, 1 = yes)
-    fuwheezly = factor(fuwheezly, levels = c(0, 1), labels = c("no", "yes")), 
-    fuasever = factor(fuasever, levels = c(0, 1), labels = c("no", "yes")),
-    fuasdd = factor(fuasdd, levels = c(0, 1), labels = c("no", "yes")),
-    ful3mdailycough = factor(ful3mdailycough, levels = c(0, 1), labels = c("no", "yes")),
+    fuquestdate = ymd(fuquestdate),
+    fugender    = factor(fugender, levels = c(1, 2), labels = c("male", "female")),
+    fuage       = suppressWarnings(as.numeric(fuage)),
+
+    # binary recodes
+    fuasever         = factor(fuasever, levels = c(0, 1), labels = c("no", "yes")),
+    fuwheezly        = factor(fuwheezly, levels = c(0, 1), labels = c("no", "yes")),
+    fuasdd           = factor(fuasdd,   levels = c(0, 1), labels = c("no", "yes")),
+    fuas12m          = factor(fuas12m,  levels = c(0, 1), labels = c("no", "yes")),
+    fuascurmed       = factor(fuascurmed, levels = c(0, 1), labels = c("no", "yes")),
+    ful12mdailtycortinhaler = factor(ful12mdailtycortinhaler, levels = c(0, 1), labels = c("no", "yes")),
+    fulyantibiotic   = factor(fulyantibiotic, levels = c(0, 1), labels = c("no", "yes")),
+    ful3mdailycough  = factor(ful3mdailycough, levels = c(0, 1), labels = c("no", "yes")),
     ful3mdailyphlegm = factor(ful3mdailyphlegm, levels = c(0, 1), labels = c("no", "yes")),
-    fudoctoldcopd = factor(fudoctoldcopd, levels = c(0, 1), labels = c("no", "yes")),
-    # Recode smoking history into categories
-    fusmokeever = factor(fusmokeever, levels = c("no", "yes", "yesstop"), 
-                         labels = c("non", "current", "former")),
-    # Create a new farm visit flag (yes/no based on any reason)
-    fufarmvst = factor(case_when(
-      fufarmvstfam == 1 | fufarmvstoth == 1 | fufarmvstpet == 1 | 
-        fufarmvstshop == 1 | fufarmvstjob == 1 ~ 1,
-      fufarmvstno == 1 ~ 0), levels = c(0, 1), labels = c("no", "yes"))
+    fudoctoldcopd    = factor(fudoctoldcopd, levels = c(0, 1), labels = c("no", "yes")),
+
+    # smoking
+    fusmokeever = factor(
+      fusmokeever,
+      levels = c("no", "yes", "yesstop"),
+      labels = c("non", "current", "former")
+    ),
+
+    # farm visit flag
+    fufarmvst = factor(
+      case_when(
+        fufarmvstfam == 1 | fufarmvstoth == 1 | fufarmvstpet == 1 |
+          fufarmvstshop == 1 | fufarmvstjob == 1 ~ 1,
+        fufarmvstno == 1 ~ 0,
+        TRUE ~ NA_real_
+      ),
+      levels = c(0, 1),
+      labels = c("no", "yes")
+    )
   ) %>%
-  # Add a variable to capture multiple reasons for visiting a farm - to distinguish between people just visiting once vs multiple times
   mutate(
-    fufarmvstmult = as.numeric(fufarmvstfam) + as.numeric(fufarmvstoth) + 
+    fufarmvstmult = as.numeric(fufarmvstfam) + as.numeric(fufarmvstoth) +
       as.numeric(fufarmvstpet) + as.numeric(fufarmvstshop) + as.numeric(fufarmvstjob),
-    fufarmvstmult = factor(case_when(
-      fufarmvstmult > 1 ~ "yes",
-      fufarmvstmult == 1 ~ "no, single reason",
-      fufarmvst == "no" ~ "no, did not visit"))
+    fufarmvstmult = factor(
+      case_when(
+        fufarmvst == "no"   ~ "no, did not visit",
+        fufarmvstmult == 1  ~ "no, single reason",
+        fufarmvstmult > 1   ~ "yes",
+        TRUE ~ NA_character_
+      ),
+      levels = c("no, did not visit", "no, single reason", "yes")
+    )
   )
 
-# Process field questionnaire
+## Field questionnaire - VGO3
 field_q_clean <- field_q %>%
-  select(fuhbid, fuhbgender, fuhbdate, fuhbbdate, fuhblungmed, fuhbcovidinf, 
-         fuhbcovposdate, fuhbcovsusdate, fuhbpneumonialy, fuhbtestdiff) %>%
-  rename(ID = fuhbid) %>% # rename ID variable 
-  mutate(
-    fuhbdate = ymd(fuhbdate), # Visit date to Date format (YMD)
-    fuhbcovposdate = format(ymd(fuhbcovposdate)), # Convert positive COVID test date to Date, then string
-    fuhbcovidinf = factor(fuhbcovidinf, levels = c(0, 1, 2), 
-                         labels = c("no", "yes, tested", "yes, suspected")), # Recode COVID infection status
-    fuhbcovsusdate = dmy(fuhbcovsusdate) # Suspected COVID date to Date format (DMY)
+  select(
+    fuhbid, fuhbgender, fuhbdate, fuhbbdate, fuhblungmed, fuhbcovidinf,
+    fuhbcovposdate, fuhbcovsusdate, fuhbpneumonialy, fuhbtestdiff,
+    fuhbantiblydate
   ) %>%
-  filter(!(ID == 13852 & fuhbdate == "2022-04-26")) %>% # Remove one known duplicate (participant 13852, specific visit date).
+  rename(ID = fuhbid) %>%
   mutate(
-    fuhbcovdate = coalesce(ymd(fuhbcovposdate), ymd(fuhbcovsusdate)), # Take the first available non-missing COVID date, using positive test if present, otherwise suspected - this should be the variable used in analyses (unified variable) 
-    fuhbcovinterval = interval(fuhbcovdate, fuhbdate) %/% months(1), # Calculate months between COVID and visit date
-    fuhbcovl2m = case_when(
-      fuhbcovidinf == "no" ~ 0,
-      fuhbcovinterval <= 1 ~ 1,
-      TRUE ~ 0)  # Flag if COVID occurred in the last 2 months
-  )
+    fuhbdate        = lubridate::ymd(fuhbdate),
+    fuhbantiblydate = lubridate::ymd(fuhbantiblydate, quiet = TRUE),
+    fuhbcovposdate  = lubridate::ymd(fuhbcovposdate),
+    fuhbcovidinf    = factor(
+      fuhbcovidinf,
+      levels = c(0, 1, 2),
+      labels = c("no", "yes, tested", "yes, suspected")
+    ),
+    fuhbcovsusdate  = lubridate::dmy(fuhbcovsusdate)
+  ) %>%
+  # remove known data anomaly
+  filter(!(ID == 13852 & fuhbdate == as.Date("2022-04-26"))) %>%
+  mutate(
+    fuhbcovdate     = coalesce(fuhbcovposdate, fuhbcovsusdate),
+    fuhbcovinterval = lubridate::interval(fuhbcovdate, fuhbdate) %/% months(1),
+    covid_lastmonth = dplyr::case_when(
+      fuhbcovidinf == "no" ~ 0L,
+      fuhbcovinterval <= 1 ~ 1L,
+      TRUE ~ 0L
+    ),
+    # antibiotics within last 4 weeks (28 days)
+    abx_days = as.numeric(difftime(fuhbdate, fuhbantiblydate, units = "days")),
+    antibiotics_lastmonth = factor(
+      dplyr::if_else(
+        !is.na(abx_days) & abx_days >= 0 & abx_days <= 28,
+        "Yes", "No"
+      ),
+      levels = c("No", "Yes")
+    )
+  ) %>%
+  # drop intermediate and requested date fields
+  select(-any_of(c(
+    "abx_days",
+    "fuhbcovposdate", "fuhbcovsusdate", "fuhbcovdate", "fuhbantiblydate"
+  )))
 
-
-# Process field form measurements
+## Field measurements (height/weight) - VGO3
 field_f_clean <- field_f %>%
   select(fuhbid, fuhbfheight1, fuhbfheight2, fuhbfweigth) %>%
-  rename(ID = fuhbid, fuhbfweight = fuhbfweigth) %>%
+  rename(ID = fuhbid, weight = fuhbfweigth) %>%
   mutate(
-    fuhbheight = (fuhbfheight1 + fuhbfheight2)/2, # Average the two height measurements
-    fuhbbmi = fuhbfweight/((fuhbheight/100)^2) # Calculate BMI
+    height = (fuhbfheight1 + fuhbfheight2) / 2,  # average height
+    bmi    = weight / ((height / 100) ^ 2)       # BMI
   ) %>%
-  filter(!(ID == 13852 & fuhbfweight == 100.0)) # remove a known data anomaly
+  # remove known data anomaly
+  filter(!(ID == 13852 & weight == 100.0)) %>%
+  # drop intermediates
+  select(-any_of(c("fuhbfheight1", "fuhbfheight2")))
 
-# Handle missing heights
-sum(is.na(field_f_clean$fuhbheight))# 4 missing heights from field_f_clean
-missing_heights <- ds %>% 
-  select(ID, Height, Weight) %>% 
-  filter(ID %in% field_f_clean$ID[is.na(field_f_clean$fuhbheight)]) %>% #  Identify records with missing height and from dataset ds, extract IDs, Height, and Weight only for those participants who have NA height in field_f_clean.
+# Handle missing heights via spirometry dataset 'ds'
+missing_heights <- ds %>%
+  select(ID, Height, Weight) %>%
+  filter(ID %in% field_f_clean$ID[is.na(field_f_clean$height)]) %>%
   distinct() %>%
-  mutate(BMI = Weight/((Height/100)^2)) # Calculate BMI for these entries
+  mutate(BMI = Weight / ((Height / 100) ^ 2))
 
-# Manually fill in each missing value
 for (i in missing_heights$ID) {
-  field_f_clean$fuhbheight[field_f_clean$ID == i] <- missing_heights$Height[missing_heights$ID == i]
-  field_f_clean$fuhbfweight[field_f_clean$ID == i] <- missing_heights$Weight[missing_heights$ID == i]
-  field_f_clean$fuhbbmi[field_f_clean$ID == i] <- missing_heights$BMI[missing_heights$ID == i]
+  field_f_clean$height[field_f_clean$ID == i] <- missing_heights$Height[missing_heights$ID == i]
+  field_f_clean$weight[field_f_clean$ID == i] <- missing_heights$Weight[missing_heights$ID == i]
+  field_f_clean$bmi[field_f_clean$ID == i]    <- missing_heights$BMI[missing_heights$ID == i]
 }
 
-# Handle extreme values
+# Correct extreme height/weight values using VGO2 data (old_full)
 field_f_clean <- field_f_clean %>%
   mutate(
-    fuhbheight = ifelse(ID == 37532, old_full$Height[old_full$respnr == 37532]*100, fuhbheight), # Correct height for one participant (ID 37532)
-    fuhbfweight = case_when(
-      ID == 37532 ~ old_full$Weight[old_full$respnr == 37532], # Replaces weight from external data
-      ID == 35258 ~ 168,  # Correct extreme BMI
-      TRUE ~ fuhbfweight),
-    fuhbbmi = fuhbfweight/((fuhbheight/100)^2) # Recalculate BMI using the updated values
+    height = ifelse(
+      ID == 37532,
+      old_full$Height[old_full$respnr == 37532] * 100,  # m -> cm
+      height
+    ),
+    weight = case_when(
+      ID == 37532 ~ old_full$Weight[old_full$respnr == 37532],
+      ID == 35258 ~ 168,    # correct extreme BMI
+      TRUE ~ weight
+    ),
+    bmi = weight / ((height / 100) ^ 2)
   )
 
 
+#### VGO2 baseline (old_full, old_intake, old_spiro) – shared pieces ####
+# VGO2 questionnaire baseline data
+old_full_clean <- old_full %>%
+  select(
+    respnr, educationlevel, gender, age, Height, Weight, bmi, Ethnicity, Atopisch,
+    copd_gold, copd_lln, sq13, reversibility, smokeever, packyears, asever, ascurmed, as12m, asdd,
+    pneumonia3y, farmchild, mindist_bvb12, mindist50geiten_bvb12, mindistpluimvee_bvb12,
+    mindistvarkens_bvb12, mindistpaarden_bvb12, mindistrundvee_bvb12,
+    geiten_500_bvb12, geiten_1000_bvb12, geiten_5km_bvb12,
+    pluimvee_500_bvb12, pluimvee_1000_bvb12,
+    varkens_500_bvb12, varkens_1000_bvb12,
+    rundvee_500_bvb12, rundvee_1000_bvb12
+  )
 
-
-#### VGO2 Data Processing ####
-old_full_clean <- old_full %>% 
-  select(respnr, educationlevel, gender, age, Height, Weight, bmi, Ethnicity, Atopisch, 
-         copd_gold, copd_lln, reversibility, smokeever, packyears, asever, pneumonia3y, 
-         mindist_bvb12, mindist50geiten_bvb12, mindistpluimvee_bvb12, 
-         mindistvarkens_bvb12, mindistpaarden_bvb12, mindistrundvee_bvb12,
-         geiten_500_bvb12, geiten_1000_bvb12, geiten_5km_bvb12,
-         pluimvee_500_bvb12, pluimvee_1000_bvb12,
-         varkens_500_bvb12, varkens_1000_bvb12,
-         rundvee_500_bvb12, rundvee_1000_bvb12) %>%
-  rename(ID = respnr)
-
-# this part processes intake (enrolment) dates and birthdates from the old_intake dataset
+# VGO2 intake dates / birthdates
 old_intake_clean <- old_intake %>%
   rename(T0_bdate = gebdatum) %>%
   mutate(T0_date = ymd(intakedatum)) %>%
   select(ID, T0_date, T0_bdate)
 
-# This block cleans and processes baseline spirometry data
-old_spiro_clean <- old_spiro %>% 
-  select(respnr, lf_analist, test_date_pre, FEV1_pre, FVC_pre, fev1_fvc_pre, 
-         PEF_pre, FEF25_75_pre, QualityGrade_pre,
-         FEV1_pre_pred, FVC_pre_pred, FEV1FVC_pre_pred, FEF25_75_pre_pred) %>%
-  rename(ID = respnr, Spirometrist = lf_analist, date = test_date_pre, 
-         FEV1 = FEV1_pre, FVC = FVC_pre, FEV1_FVC = fev1_fvc_pre, 
-         PEF = PEF_pre, FEF25_75 = FEF25_75_pre, Quality_grade = QualityGrade_pre) %>% 
+# VGO2 baseline spirometry
+old_spiro_clean <- old_spiro %>%
+  select(
+    respnr, lf_analist, test_date_pre, FEV1_pre, FVC_pre, fev1_fvc_pre,
+    PEF_pre, FEF25_75_pre, QualityGrade_pre,
+    FEV1_pre_pred, FVC_pre_pred, FEV1FVC_pre_pred, FEF25_75_pre_pred
+  ) %>%
+  rename(
+    ID          = respnr,
+    Spirometrist = lf_analist,
+    date         = test_date_pre,
+    FEV1         = FEV1_pre,
+    FVC          = FVC_pre,
+    FEV1_FVC     = fev1_fvc_pre,
+    PEF          = PEF_pre,
+    FEF25_75     = FEF25_75_pre,
+    Quality_grade = QualityGrade_pre
+  ) %>%
   mutate(timepoint = "T0") %>%
   filter(!is.na(FEV1))
 
-### AGE VERIFICATION ###
-# Compare age between VGO2 and VGO3 
-# Calculate expected age at VGO3 visit based on VGO2 data
+
+## AGE VERIFICATION: VGO2 vs VGO3
+old_full_clean <- old_full_clean %>%
+  mutate(ID = respnr)
+
 age_check <- old_intake_clean %>%
   mutate(ID = as.character(ID)) %>%
-  left_join(select(old_full_clean, ID, age) %>% mutate(ID = as.character(ID)), by = "ID") %>%
-  left_join(select(field_q_clean, ID, fuhbdate, fuhbbdate) %>% mutate(ID = as.character(ID)), by = "ID") %>%
+  left_join(
+    select(old_full_clean, ID, age) %>% mutate(ID = as.character(ID)),
+    by = "ID"
+  ) %>%
+  left_join(
+    select(field_q_clean, ID, fuhbdate, fuhbbdate) %>% mutate(ID = as.character(ID)),
+    by = "ID"
+  ) %>%
   mutate(
-    age_T0 = age,
-    age_T1 = interval(ymd(T0_bdate), ymd(fuhbdate)) / years(1),
+    age_T0          = age,
+    age_T1          = interval(ymd(T0_bdate), ymd(fuhbdate)) / years(1),
     expected_age_T1 = age_T0 + interval(ymd(T0_date), ymd(fuhbdate)) / years(1),
     age_discrepancy = age_T1 - expected_age_T1,
-    
     age_check_status = case_when(
       is.na(age_T1) ~ "Missing VGO3 data",
       abs(age_discrepancy) <= 1 ~ "Consistent (≤1 year)",
@@ -670,624 +759,654 @@ age_check <- old_intake_clean %>%
     )
   )
 
-# Print discrepancy summary - for any participant with a major discrepancy (>2 years)
-age_check %>% 
-  count(age_check_status) %>% 
-  mutate(percent = round(n/nrow(age_check)*100, 1)) %>% 
-  print()
-
 # Correct major discrepancies in birth dates
-major_discrepancies <- age_check %>% 
+major_discrepancies <- age_check %>%
   filter(age_check_status == "Major discrepancy (>2 years)")
 
-if(nrow(major_discrepancies) > 0) {
+if (nrow(major_discrepancies) > 0) {
   message("\nCorrecting birth dates for ", nrow(major_discrepancies), " participants:")
-  
-  for(id in major_discrepancies$ID) {
-    original_dob <- major_discrepancies$fuhbbdate[major_discrepancies$ID == id]
+
+  for (id in major_discrepancies$ID) {
+    original_dob  <- major_discrepancies$fuhbbdate[major_discrepancies$ID == id]
     corrected_dob <- major_discrepancies$T0_bdate[major_discrepancies$ID == id]
-    
-    message("ID ", id, ": ", original_dob, " → ", corrected_dob)
-    
-    # Update in field_q_clean
+
+    message("ID ", id, ": ", original_dob, " \u2192 ", corrected_dob)
+
     field_q_clean$fuhbbdate[field_q_clean$ID == id] <- corrected_dob
   }
 }
-# Replaces their VGO3 birthdate (fuhbbdate) with the correct baseline birthdate (T0_bdate)
 
-# Now update the age in the VGO3 dataset
+# Obvious typo in one birth date
+field_q_clean$fuhbbdate[field_q_clean$ID == "16504"] <- as.Date("1950-05-18")
+
+# Update age in VGO3 dataset
 field_q_clean <- field_q_clean %>%
   mutate(
-    fuhbbdate = ymd(fuhbbdate, quiet = TRUE),  # Parse birth date again after corrections
-    age_VGO3 = interval(fuhbbdate, fuhbdate) / years(1)
+    fuhbbdate = ymd(fuhbbdate, quiet = TRUE),
+    age_VGO3  = interval(fuhbbdate, fuhbdate) / years(1)
   )
 
-#### GENDER CHECK AND CORRECTION ####
-# Convert IDs to character for safety
+## GENDER CHECK AND CORRECTION
 old_full_clean$ID <- as.character(old_full_clean$ID)
-field_q_clean$ID <- as.character(field_q_clean$ID)
-ds_prep$ID <- as.character(ds_prep$ID)
+field_q_clean$ID  <- as.character(field_q_clean$ID)
+ds_prep$ID        <- as.character(ds_prep$ID)
 
-# Filter IDs present in both VGO2 and VGO3
 common_IDs <- intersect(old_full_clean$ID, field_q_clean$ID)
 
-# Prepare VGO2 gender data for common IDs
-gender_vgo2 <- old_full_clean %>% 
+# VGO2: gender (0=m, 1=f)
+gender_vgo2 <- old_full_clean %>%
   filter(ID %in% common_IDs) %>%
-  select(ID, gender_vgo2 = gender)
+  transmute(
+    ID,
+    gender_vgo2 = if_else(gender == 1, "female", "male")
+  )
 
-# Prepare VGO3 gender data for common IDs
+# VGO3: fuhbgender, numeric 0/1 or text
 gender_vgo3 <- field_q_clean %>%
   filter(ID %in% common_IDs) %>%
-  select(ID, gender_vgo3 = fuhbgender)
+  transmute(
+    ID,
+    gender_vgo3 = case_when(
+      is.numeric(fuhbgender) ~ if_else(fuhbgender == 1, "female", "male"),
+      TRUE ~ tolower(trimws(as.character(fuhbgender)))
+    )
+  )
 
-# Spirometry gender for common IDs
+# Spirometry dataset (ds): Gender as text
 ds_gender <- ds %>%
   filter(ID %in% common_IDs) %>%
-  select(ID, Gender) %>%
-  mutate(Gender = factor(Gender, levels = c(0,1), labels = c("male", "female")))
-
-# Combine for comparison
-gender_vgo2 <- gender_vgo2 %>% mutate(ID = as.character(ID))
-gender_vgo3 <- gender_vgo3 %>% mutate(ID = as.character(ID))
-ds_gender  <- ds_gender  %>% mutate(ID = as.character(ID))
+  transmute(
+    ID = as.character(ID),
+    gender_spiro = tolower(trimws(as.character(Gender)))
+  ) %>%
+  distinct(ID, .keep_all = TRUE)
 
 gender_compare <- gender_vgo2 %>%
   left_join(gender_vgo3, by = "ID") %>%
-  left_join(ds_gender, by = "ID") %>%
-  filter(!is.na(gender_vgo2) & !is.na(gender_vgo3) & gender_vgo2 != gender_vgo3) %>%
-  mutate(match_spiro_vgo2 = (Gender == gender_vgo2))
+  left_join(ds_gender,  by = "ID") %>%
+  filter(!is.na(gender_vgo2), !is.na(gender_vgo3), gender_vgo2 != gender_vgo3) %>%
+  mutate(match_spiro_vgo2 = (gender_spiro == gender_vgo2))
 
+to01 <- function(lbl) ifelse(lbl == "female", 1L, 0L)
 
-# Correct VGO3 gender when spirometry gender matches VGO2
+# Correct VGO3 when spiro matches VGO2
 for (id in gender_compare$ID[gender_compare$match_spiro_vgo2]) {
-  pos <- match(id, gender_vgo2$ID)
-  if (!is.na(pos)) {
-    field_q_clean$fuhbgender[field_q_clean$ID == id] <- gender_vgo2$gender_vgo2[pos]
-    message(paste("Corrected VGO3 gender for ID:", id))
-  }
-}# VGO3 gender variable field_q_clean$fuhbgender is updated (corrected) to the VGO2 gender only for those participants where the spirometry gender agrees with VGO2, resolving likely errors in VGO3 gender.
+  code01 <- to01(gender_vgo2$gender_vgo2[gender_vgo2$ID == id])
+  field_q_clean$fuhbgender[field_q_clean$ID == id] <- code01
+  message("Corrected VGO3 gender for ID: ", id)
+}
 
-# Check remaining mismatches after correction
 remaining_mismatches <- gender_vgo2 %>%
-  filter(ID %in% common_IDs) %>%
   left_join(field_q_clean %>% select(ID, fuhbgender), by = "ID") %>%
-  filter(gender_vgo2 != fuhbgender)
+  mutate(
+    fuhbgender_lbl = case_when(
+      is.numeric(fuhbgender) ~ if_else(fuhbgender == 1, "female", "male"),
+      TRUE ~ tolower(trimws(as.character(fuhbgender)))
+    )
+  ) %>%
+  filter(gender_vgo2 != fuhbgender_lbl)
 
-message(paste("Remaining gender mismatches after correction:", nrow(remaining_mismatches))) # 19 mismatches
+message("Remaining gender mismatches after correction: ", nrow(remaining_mismatches))
 
+## -----------------------------------------------------------
+## CREATE FINAL VGO3 DATASET
+## -----------------------------------------------------------
 
-####### CREATE FINAL DATASETS #######
-### 1. VGO3 Standalone Dataset ###
-# Ensure ID is character in all datasets used in joins
-ds_prep <- ds_prep %>% mutate(ID = as.character(ID))
+# Ensure ID is character
+ds_prep      <- ds_prep      %>% mutate(ID = as.character(ID))
 field_q_clean <- field_q_clean %>% mutate(ID = as.character(ID))
-OQ_clean <- OQ_clean %>% mutate(ID = as.character(ID))
+OQ_clean     <- OQ_clean     %>% mutate(ID = as.character(ID))
 field_f_clean <- field_f_clean %>% mutate(ID = as.character(ID))
+NH_diff      <- NH_diff      %>% mutate(ID = as.character(ID))
 
 ds_prep$date <- as.Date(ds_prep$date)
 
+# Keep relevant columns in each component
+ds_prep <- ds_prep %>%
+  select(any_of(c("ID", "Spirometrist", "Ethnicity", "date",
+                  "FEV1", "FVC", "FEV1_FVC", "FEF25_75")))
+
+field_q_clean <- field_q_clean %>%
+  select(any_of(c("ID", "fuhbgender", "fuhbdate", "fuhblungmed",
+                  "fuhbpneumonialy", "covid_lastmonth",
+                  "antibiotics_lastmonth", "age_VGO3")))
+
+OQ_clean <- OQ_clean %>%
+  select(any_of(c("ID", "fuasever", "fuas12m", "fuasdd", "fuascurmed",
+                  "ful12mdailtycortinhaler", "fulyantibiotic",
+                  "fudoctoldcopd", "fusmokeever", "fufarmvst")))
+
+field_f_clean <- field_f_clean %>%
+  select(any_of(c("ID", "weight", "height", "bmi")))
+
+NH_diff <- NH_diff %>%
+  select(any_of(c("ID", "T0_wkprior_NH3", "T1_wkprior_NH3", "T1_T0_NH3_diff")))
+
+# Merge all into VGO3_metadata (long, T1 only)
 VGO3_metadata <- ds_prep %>%
   left_join(field_q_clean, by = "ID") %>%
-  left_join(OQ_clean, by = "ID") %>%
+  left_join(OQ_clean,     by = "ID") %>%
   left_join(field_f_clean, by = "ID") %>%
+  left_join(NH_diff,      by = "ID") %>%
   mutate(
-    study = "VGO3",
-    timepoint = "T1",
-    date_spiro = date,
-    birth_date = ymd(fuhbbdate, quiet = TRUE),
-    gender = factor(fuhbgender, levels = c(0, 1), labels = c("male", "female")),
-    age = age_VGO3,
-    height = as.numeric(fuhbheight),
-    weight = as.numeric(fuhbfweight),
-    bmi = as.numeric(fuhbbmi),
-  
-    # Only mutate if raw codes (0/1) are present
-    lung_medication = if (!is.factor(fuhblungmed)) factor(fuhblungmed, levels = c(0, 1), labels = c("no", "yes")) else fuhblungmed,
-    pneumo_lastyr = if (!is.factor(fuhbpneumonialy)) factor(fuhbpneumonialy, levels = c(0, 1), labels = c("no", "yes")) else fuhbpneumonialy,
-    test_difficulty = if (!is.factor(fuhbtestdiff)) factor(fuhbtestdiff, levels = c(0, 1), labels = c("no", "yes")) else fuhbtestdiff,
-    wheeze_lastyr = if (!is.factor(fuwheezly)) factor(fuwheezly, levels = c(0, 1), labels = c("no", "yes")) else fuwheezly,
-    covid_date = ymd(fuhbcovdate, quiet = TRUE),
-    covid_last2mth = if (!is.factor(fuhbcovl2m)) factor(fuhbcovl2m, levels = c(0, 1), labels = c("no", "yes")) else fuhbcovl2m,
-    asthma_ever = if (!is.factor(fuasever)) factor(fuasever, levels = c(0, 1), labels = c("no", "yes")) else fuasever,
-    asthma_doc_diag = if (!is.factor(fuasdd)) factor(fuasdd, levels = c(0, 1), labels = c("no", "yes")) else fuasdd,
-    daily_cough_3mth = if (!is.factor(ful3mdailycough)) factor(ful3mdailycough, levels = c(0, 1), labels = c("no", "yes")) else ful3mdailycough,
-    daily_phlegm_3mth = if (!is.factor(ful3mdailyphlegm)) factor(ful3mdailyphlegm, levels = c(0, 1), labels = c("no", "yes")) else ful3mdailyphlegm,
-    copd_doc_diag = if (!is.factor(fudoctoldcopd)) factor(fudoctoldcopd, levels = c(0, 1), labels = c("no", "yes")) else fudoctoldcopd,
-    # Assume these are already cleaned up earlier, or preserve as-is
-    smoke_status = fusmokeever,
-    farm_visit = fufarmvst,
-    farm_visit_multiple = fufarmvstmult
+    Study     = "VGO3",
+    Timepoint = "T1",
+    Date      = date,
+
+    # NOTE: make labels lower-case for consistency and GLI derivation later
+    Gender = if (!is.factor(fuhbgender)) {
+      factor(fuhbgender, levels = c(0, 1), labels = c("male", "female"))
+    } else {
+      fuhbgender
+    },
+
+    Lung_med = if (!is.factor(fuhblungmed)) {
+      factor(fuhblungmed, levels = c(0, 1), labels = c("no", "yes"))
+    } else {
+      fuhblungmed
+    },
+
+    Pneumonia_lastyr = if (!is.factor(fuhbpneumonialy)) {
+      factor(fuhbpneumonialy, levels = c(0, 1), labels = c("no", "yes"))
+    } else {
+      fuhbpneumonialy
+    },
+
+    Covid_lastmonth = if (!is.factor(covid_lastmonth)) {
+      factor(covid_lastmonth, levels = c(0, 1), labels = c("no", "yes"))
+    } else {
+      covid_lastmonth
+    },
+
+    Antibiotics_lastmonth = antibiotics_lastmonth,
+    Age          = age_VGO3,
+    Asthma_ever  = fuasever,
+    Asthma_doc_diag = fuasdd,
+    Asthma_attk_lastyr = fuas12m,
+    Asthma_med_current = fuascurmed,
+    Cortinhal_lastyr   = ful12mdailtycortinhaler,
+    Antibiotics_lastyr = fulyantibiotic,
+    COPD_emphy_doc_diag = fudoctoldcopd,
+    Smoking_status     = fusmokeever,
+    Farm_visit_lastyr  = fufarmvst,
+    Weight = weight,
+    Height = height,
+    BMI    = bmi
   ) %>%
-  # Remove unused or duplicate variables
-  select(
-    -fuhbgender, -fuhbdate, -fuhbbdate, -age_VGO3, -fuhblungmed, -fuhbpneumonialy, -fuwheezly,
-    -fuhbheight, -fuhbfweight, -fuhbbmi, -fuhbfheight1, -fuhbfheight2,
-    -fugender, -fuage, -fuhbcovidinf, -fuhbcovposdate, -fuhbcovsusdate,
-    -fuhbcovinterval, -fuquestdate,
-    -fufarmvstfam, -fufarmvstjob, -fufarmvstoth, -fufarmvstpet, -fufarmvstno, -fufarmvstshop, -fuhbtestdiff, -fuhbcovdate, -fuhbcovl2m, -fuasever, -fuasdd, -ful3mdailycough, -ful3mdailyphlegm, -fudoctoldcopd, -fusmokeever, -fufarmvst,  -fufarmvstmult, -fuhbdate, -date
-  ) %>% 
-  ungroup()
+  # drop source columns
+  select(-any_of(c(
+    "date", "fuhbgender", "fuhblungmed", "fuhbpneumonialy",
+    "covid_lastmonth", "antibiotics_lastmonth", "age_VGO3",
+    "fuasever", "fuas12m", "fuascurmed",
+    "ful12mdailtycortinhaler", "fulyantibiotic", "fudoctoldcopd",
+    "fusmokeever", "fufarmvst",
+    "weight", "height", "bmi", "fuasdd", "farmchild"
+  )))
 
-names(VGO3_metadata)
-str(VGO3_metadata)
+# Fill missing Asthma_ever and Smoking_status from VGO2 (old_full)
+old_full <- old_full %>%
+  mutate(respnr = as.character(respnr))
 
-# Check NAs for asthma and smokiung status
-sum(is.na(VGO3_metadata$asthma_ever)) # 9 missing asthma status
-sum(is.na(VGO3_metadata$smoke_status)) # 11 missing smoking status
+VGO3_metadata <- VGO3_metadata %>%
+  mutate(ID = as.character(ID))
 
-# Apply corrections of asthma and smoking status from old_full where needed
-# Ensure IDs are character for safe matching
-old_full <- old_full %>% mutate(respnr = as.character(respnr))
-VGO3_metadata <- VGO3_metadata %>% mutate(ID = as.character(ID))
-
-# Apply corrections from old_full where needed
-for (i in VGO3_metadata$ID[is.na(VGO3_metadata$asthma_ever)]) {
+# Asthma_ever
+for (i in VGO3_metadata$ID[is.na(VGO3_metadata$Asthma_ever)]) {
   val <- old_full$asever[old_full$respnr == i]
-  VGO3_metadata$asthma_ever[VGO3_metadata$ID == i] <- factor(val, levels = c(0, 1), labels = c("no", "yes"))
+  VGO3_metadata$Asthma_ever[VGO3_metadata$ID == i] <-
+    factor(val, levels = c(0, 1), labels = c("no", "yes"))
 }
 
-for (i in VGO3_metadata$ID[is.na(VGO3_metadata$smoke_status)]) {
+# Smoking_status
+for (i in VGO3_metadata$ID[is.na(VGO3_metadata$Smoking_status)]) {
   val <- old_full$smokeever[old_full$respnr == i]
-  VGO3_metadata$smoke_status[VGO3_metadata$ID == i] <- factor(val, levels = c(0, 1, 2), labels = c("non", "former", "current"))
+  VGO3_metadata$Smoking_status[VGO3_metadata$ID == i] <-
+    factor(val, levels = c(0, 1, 2), labels = c("non", "former", "current"))
 }
 
-sum(is.na(VGO3_metadata$asthma_ever)) # 0missing asthma status - not in VGO2 data
-sum(is.na(VGO3_metadata$smoke_status)) # 0 missing smoking status
+# Check missingness (corrected variable names)
+sum(is.na(VGO3_metadata$Asthma_ever))      # should be 0
+sum(is.na(VGO3_metadata$Smoking_status))   # should be 0
 
-# Calculate percentage predicted values for VGO3 (already got the VGO2 % predicted)
-# Turn measurement values presented as character strings to numeric
-T1 <- VGO3_metadata %>% 
-  select(ID, age, Ethnicity, gender, height, FEV1, FVC, FEV1_FVC, FEF25_75)
+## -----------------------------------------------------------
+## Calculate GLI % predicted values for VGO3
+## -----------------------------------------------------------
 
-T1 <- T1 %>%
+T1 <- VGO3_metadata %>%
+  select(ID, Age, Ethnicity, Gender, Height, FEV1, FVC, FEV1_FVC, FEF25_75) %>%
   mutate(
-    gender_num = ifelse(gender == "male", 1, 2)
-  )
-
-T1 <- T1 %>%
-  mutate(
+    gender_num = ifelse(Gender == "male", 1, 2),
     ethnic_code = case_when(
-      Ethnicity == "Caucasian" ~ 1,
+      Ethnicity == "Caucasian"        ~ 1,
       Ethnicity == "African-American" ~ 2,
-      Ethnicity == "NE Asian" ~ 3,
-      Ethnicity == "SE Asian" ~ 4,
-      TRUE ~ 5  # all others = Other/mixed
-    )
+      Ethnicity == "NE Asian"         ~ 3,
+      Ethnicity == "SE Asian"         ~ 4,
+      TRUE                            ~ 5  # Other/mixed
+    ),
+    height_m = Height / 100
   )
 
-# Convert height from cm to m
-T1 <- T1 %>%
-  mutate(height_m = height / 100)
-
-#FEV1
+# FEV1 %pred
 T1$FEV1_pred <- pctpred_GLI(
-    age= T1$age,
-    height= T1$height_m,
-    gender = T1$gender_num,
-    ethnicity = T1$ethnic_code,
-    FEV1 = T1$FEV1
-    )
+  age      = T1$Age,
+  height   = T1$height_m,
+  gender   = T1$gender_num,
+  ethnicity = T1$ethnic_code,
+  FEV1     = T1$FEV1
+)
 
-# FVC
+# FVC %pred
 T1$FVC_pred <- pctpred_GLI(
-    age = T1$age,
-    height= T1$height_m,
-    gender = T1$gender_num,
-    ethnicity = T1$ethnic_code,
-    FVC = T1$FVC
-    )
+  age      = T1$Age,
+  height   = T1$height_m,
+  gender   = T1$gender_num,
+  ethnicity = T1$ethnic_code,
+  FVC      = T1$FVC
+)
 
-# FEV1 FVC ratio
+# FEV1/FVC %pred
 T1$FEV1FVC_pred <- pctpred_GLI(
-    age = T1$age,
-    height= T1$height_m,
-    gender = T1$gender_num,
-    ethnicity = T1$ethnic_code,
-    FEV1FVC = T1$FEV1_FVC
-    )
+  age      = T1$Age,
+  height   = T1$height_m,
+  gender   = T1$gender_num,
+  ethnicity = T1$ethnic_code,
+  FEV1FVC  = T1$FEV1_FVC
+)
 
-# FEF25_75 (Forced Expiratory Flow between 25% and 75% of FVC (lt/s))
+# FEF25-75 %pred (mid-flow)
 T1$FEF25_75_pred <- pctpred_GLI(
-    age = T1$age,
-    height= T1$height_m,
-    gender = T1$gender_num,
-    ethnicity = T1$ethnic_code,
-    FEF2575 = T1$FEF25_75
-    ) 
+  age      = T1$Age,
+  height   = T1$height_m,
+  gender   = T1$gender_num,
+  ethnicity = T1$ethnic_code,
+  FEF2575  = T1$FEF25_75
+)
 
-str(T1)
+T1_vars <- T1 %>%
+  select(ID, FEV1_pred, FVC_pred, FEV1FVC_pred, FEF25_75_pred)
 
-T1 <- as.data.frame(T1)
-
-T1_vars <- T1  %>% select(ID, FEV1_pred, FVC_pred, FEV1FVC_pred, FEF25_75_pred)
-
-# Join predicted values to the VGO3_metadata
-VGO3_metadata <- VGO3_metadata  %>% 
+# Join %pred back to VGO3_metadata
+VGO3_metadata <- VGO3_metadata %>%
   left_join(T1_vars, by = "ID")
 
+## -----------------------------------------------------------
+## Add farmchild / atopy / education from VGO2 baseline
+## -----------------------------------------------------------
 
-str(VGO3_metadata)
+old_full_subset <- old_full_clean %>%
+  select(respnr, farmchild, Atopisch, educationlevel) %>%
+  distinct(respnr, .keep_all = TRUE) %>%
+  mutate(ID = as.character(respnr))
 
-# Reorder dataframe
 VGO3_metadata <- VGO3_metadata %>%
-  relocate(ID, study, timepoint, date_spiro, birth_date, age, gender, height, weight, bmi, lung_medication, pneumo_lastyr, test_difficulty, wheeze_lastyr, covid_date, covid_last2mth, asthma_ever, asthma_doc_diag, daily_cough_3mth, daily_phlegm_3mth, copd_doc_diag, smoke_status, farm_visit, farm_visit_multiple)
+  mutate(ID = as.character(ID)) %>%
+  left_join(
+    old_full_subset %>%
+      select(ID, farmchild, Atopisch, educationlevel),
+    by = "ID"
+  ) %>%
+  mutate(
+    Atopic = if (!is.factor(Atopisch))
+      factor(Atopisch, levels = c(0, 1), labels = c("no", "yes"))
+    else Atopisch,
 
-names(VGO3_metadata)
-str(VGO3_metadata)
+    Farm_childhood = if (!is.factor(farmchild))
+      factor(farmchild, levels = c(0, 1), labels = c("no", "yes"))
+    else farmchild,
 
-# Assign variable labels
-var_label(VGO3_metadata$ID) <- "VGO participant identifier"
-var_label(VGO3_metadata$study) <- "VGO study (VGO2 or VGO3)"
-var_label(VGO3_metadata$timepoint) <- "Sample collection timepoint (T0 or T1)"
-var_label(VGO3_metadata$date_spiro) <- "Date of VGO3 spirometry"
-var_label(VGO3_metadata$birth_date) <- "Date of birth"
-var_label(VGO3_metadata$age) <- "Age at visit"
-var_label(VGO3_metadata$gender) <- "Participant gender"
-var_label(VGO3_metadata$height) <- "Height (cm)"
-var_label(VGO3_metadata$bmi) <- "Body Mass Index"
-var_label(VGO3_metadata$lung_medication) <- "Use of lung medication"
-var_label(VGO3_metadata$pneumo_lastyr) <- "Pneumonia in the last year"
-var_label(VGO3_metadata$test_difficulty) <- "Difficulty doing the spirometry test?"
-var_label(VGO3_metadata$wheeze_lastyr) <- "Wheezing in the last year"
-var_label(VGO3_metadata$covid_date) <- "Date of covid infection (confirmed or suspected)"
-var_label(VGO3_metadata$covid_last2mth) <- "Covid infection in the last 2 months?"
-var_label(VGO3_metadata$asthma_ever) <- "Ever had asthma"
-var_label(VGO3_metadata$asthma_doc_diag) <- "Doctor diagnosed asthma"
-var_label(VGO3_metadata$daily_cough_3mth) <- "Daily cough for >3 months"
-var_label(VGO3_metadata$daily_phlegm_3mth) <- "Daily phlegm for >3 months"
-var_label(VGO3_metadata$copd_doc_diag) <- "Doctor diagnosed COPD"
-var_label(VGO3_metadata$smoke_status) <- "Smoking status (non, former, current)"
-var_label(VGO3_metadata$farm_visit) <- "Visited a farm in the last year"
-var_label(VGO3_metadata$farm_visit_multiple) <- "Multiple visits to a farm in the last year (none, single, multiple)"
-# Label spirometry variables
+    Education_level = if (!is.factor(educationlevel))
+      factor(educationlevel, levels = c(0, 1, 2), labels = c("low", "medium", "high"))
+    else educationlevel
+  )
+
+## -----------------------------------------------------------
+## Asthma composite variables (VGO3)
+## -----------------------------------------------------------
+
+VGO3_metadata <- VGO3_metadata %>%
+  mutate(
+    # Asthma_doc_diag -> normalise to 0/1 then factor
+    Asthma_doc_diag = dplyr::case_when(
+      Asthma_doc_diag %in% c(1, "1", "yes", "Yes", "YES", TRUE)  ~ 1L,
+      Asthma_doc_diag %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ 0L,
+      TRUE ~ NA_integer_
+    ),
+    Asthma_doc_diag = dplyr::case_when(
+      is.na(Asthma_doc_diag) &
+        Asthma_ever %in% c(0, "0", "no", "No", "NO", FALSE) ~ 0L,
+      TRUE ~ Asthma_doc_diag
+    ),
+    Asthma_doc_diag = factor(
+      Asthma_doc_diag,
+      levels = c(0, 1),
+      labels = c("no", "yes")
+    ),
+
+    # Asthma_attk_lastyr
+    Asthma_attk_lastyr = dplyr::case_when(
+      Asthma_attk_lastyr %in% c(1, "1", "yes", "Yes", "YES", TRUE)  ~ "yes",
+      Asthma_attk_lastyr %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ "no",
+      TRUE ~ NA_character_
+    ),
+    Asthma_attk_lastyr = dplyr::case_when(
+      is.na(Asthma_attk_lastyr) &
+        Asthma_ever %in% c(0, "0", "no", "No", "NO", FALSE) ~ "no",
+      TRUE ~ Asthma_attk_lastyr
+    ),
+    Asthma_attk_lastyr = factor(
+      Asthma_attk_lastyr,
+      levels = c("no", "yes")
+    ),
+
+    # Asthma_med_current
+    Asthma_med_current = dplyr::case_when(
+      Asthma_med_current %in% c(1, "1", "yes", "Yes", "YES", TRUE)  ~ "yes",
+      Asthma_med_current %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ "no",
+      TRUE ~ NA_character_
+    ),
+    Asthma_med_current = dplyr::case_when(
+      is.na(Asthma_med_current) &
+        Asthma_ever %in% c(0, "0", "no", "No", "NO", FALSE) ~ "no",
+      TRUE ~ Asthma_med_current
+    ),
+    Asthma_med_current = factor(
+      Asthma_med_current,
+      levels = c("no", "yes")
+    ),
+
+    # Asthma_current composite
+    Asthma_current = factor(
+      dplyr::case_when(
+        Asthma_doc_diag == "yes" &
+          (Asthma_attk_lastyr == "yes" | Asthma_med_current == "yes") ~ "yes",
+        TRUE ~ "no"
+      ),
+      levels = c("no", "yes")
+    )
+  )
+
+# Drop unnecessary source columns
+VGO3_metadata <- VGO3_metadata %>%
+  select(-any_of(c("Atopisch", "educationlevel", "farmchild")))
+
+# Reorder columns
+VGO3_metadata <- VGO3_metadata %>%
+  relocate(
+    ID, Study, Timepoint, Date, Spirometrist, Age, Ethnicity, Gender,
+    Height, Weight, BMI, Education_level, Smoking_status,
+    Pneumonia_lastyr, COPD_emphy_doc_diag,
+    Asthma_current, Asthma_ever, Asthma_doc_diag,
+    Covid_lastmonth, Asthma_attk_lastyr, Lung_med, Atopic,
+    Asthma_med_current, Cortinhal_lastyr,
+    Antibiotics_lastmonth, Antibiotics_lastyr,
+    Farm_childhood, Farm_visit_lastyr,
+    T0_wkprior_NH3, T1_wkprior_NH3, T1_T0_NH3_diff,
+    FEV1, FVC, FEV1_FVC, FEF25_75,
+    FEV1_pred, FVC_pred, FEV1FVC_pred, FEF25_75_pred
+  )
+
+# Labels for VGO3_metadata
+var_label(VGO3_metadata$ID)         <- "VGO participant identifier"
+var_label(VGO3_metadata$Study)      <- "VGO study (VGO2 or VGO3)"
+var_label(VGO3_metadata$Timepoint)  <- "Sample collection timepoint (T0 or T1)"
+var_label(VGO3_metadata$Date)       <- "Date of VGO3 spirometry"
+var_label(VGO3_metadata$Age)        <- "Age at visit"
+var_label(VGO3_metadata$Ethnicity)  <- "Ethnicity for lung function test"
 var_label(VGO3_metadata$Spirometrist) <- "Spirometrist initials"
-var_label(VGO3_metadata$Ethnicity) <- "Ethnicity for lung function test"
-var_label(VGO3_metadata$lf_repr150) <- "Acceptable test, grade C or better"
-var_label(VGO3_metadata$FEV1) <- "FEV1 (L)"
-var_label(VGO3_metadata$FEV25) <- "FEV 0.25 sec (L) "
-var_label(VGO3_metadata$FEV5) <- "FEV 0.5 sec (L)"
-var_label(VGO3_metadata$FEV75) <- "FEV 0.75 sec (L)"
-var_label(VGO3_metadata$FEV3) <- "FEV 3 sec (L)"
-var_label(VGO3_metadata$FEV6) <- "FEV 6 sec (L)"
-var_label(VGO3_metadata$FEV1_FVC) <- "FEV1/FVC (Tiffenau index)"
-var_label(VGO3_metadata$FVC) <- "FVC (L)"
-var_label(VGO3_metadata$FEF10) <-  "FEF at 10% of FVC (L/sec)"
-var_label(VGO3_metadata$FEF25) <- "FEF at 25% of FVC (L/sec)"
-var_label(VGO3_metadata$FEF25_75) <- "FEF average between 25% and 75% of FVC (L/sec)"
-var_label(VGO3_metadata$FET25_75) <- "Forced expiratory time between 25% and 75% of FVC,  (sec)"
-var_label(VGO3_metadata$FEF40) <- "FEF at 40% of FVC (L/sec)"
-var_label(VGO3_metadata$FEF50) <- "FEF at 50% of FVC (L/sec)"
-var_label(VGO3_metadata$FEF60) <- "FEF at 60% of FVC (L/sec)"
-var_label(VGO3_metadata$FEF75) <- "FEF at 70% of FVC (L/sec)"
-var_label(VGO3_metadata$FEF75_85) <- "FEF average between 75% and 85% of FVC,  (L/sec)"
-var_label(VGO3_metadata$FEF80) <- "FEF at 80% of FVC (L/sec)"
-var_label(VGO3_metadata$PEF) <- "Peak expiratory flow (L/sec)"
-var_label(VGO3_metadata$PEF_Lmin) <- "Peak expiratory flow (L/min)"
-var_label(VGO3_metadata$FEV1_pred) <- "Percent predicted FEV1 (25-75% midflow)"
-var_label(VGO3_metadata$FVC_pred) <- "Percent predicted FVC (25-75% midflow)"
-var_label(VGO3_metadata$FEV1FVC_pred) <- "Percent predicted FEV1/FVC ratio (25-75% midflow)"
-var_label(VGO3_metadata$FEF25_75_pred) <- "Percent predicted FEF (25-75% midflow)"
+var_label(VGO3_metadata$Gender)     <- "Participant gender"
+var_label(VGO3_metadata$Height)     <- "Height (cm)"
+var_label(VGO3_metadata$Weight)     <- "Weight (kg)"
+var_label(VGO3_metadata$BMI)        <- "Body Mass Index"
+var_label(VGO3_metadata$Education_level) <- "Education level (low, medium, high)"
+var_label(VGO3_metadata$Smoking_status)  <- "Smoking status (non, former, current)"
+var_label(VGO3_metadata$Pneumonia_lastyr) <- "Pneumonia in the last year"
+var_label(VGO3_metadata$COPD_emphy_doc_diag) <- "Doctor diagnosed COPD/emphysema"
+var_label(VGO3_metadata$Asthma_current)  <- "Current asthma (doc diag + attack/medication)"
+var_label(VGO3_metadata$Asthma_ever)     <- "Ever had asthma"
+var_label(VGO3_metadata$Asthma_doc_diag) <- "Doctor diagnosed asthma"
+var_label(VGO3_metadata$Covid_lastmonth) <- "Covid infection in the last month"
+var_label(VGO3_metadata$Asthma_attk_lastyr) <- "Asthma attack in the last year"
+var_label(VGO3_metadata$Lung_med)        <- "Use of lung medication"
+var_label(VGO3_metadata$Asthma_med_current) <- "Use of asthma medication"
+var_label(VGO3_metadata$Cortinhal_lastyr)   <- "Use of corticosteroid inhaler in the last year"
+var_label(VGO3_metadata$Antibiotics_lastmonth) <- "Use of antibiotics in the last month"
+var_label(VGO3_metadata$Antibiotics_lastyr) <- "Use of antibiotics in the last year"
+var_label(VGO3_metadata$Farm_visit_lastyr)  <- "Visited a farm in the last year"
 
-write.csv(VGO3_metadata,"../Output/Participant_data/Datasets/VGO3_data.csv" )
+# Spirometry labels
+var_label(VGO3_metadata$FEV1)          <- "FEV1 (L)"
+var_label(VGO3_metadata$FVC)           <- "FVC (L)"
+var_label(VGO3_metadata$FEV1_FVC)      <- "FEV1/FVC (Tiffenau index)"
+var_label(VGO3_metadata$FEF25_75)      <- "FEF 25–75% (L/sec)"
+var_label(VGO3_metadata$FEV1_pred)     <- "Percent predicted FEV1"
+var_label(VGO3_metadata$FVC_pred)      <- "Percent predicted FVC"
+var_label(VGO3_metadata$FEV1FVC_pred)  <- "Percent predicted FEV1/FVC ratio"
+var_label(VGO3_metadata$FEF25_75_pred) <- "Percent predicted FEF (25–75% midflow)"
+var_label(VGO3_metadata$Atopic)        <- "Atopy (>1 positive specific IgE)"
+var_label(VGO3_metadata$Farm_childhood) <- "Childhood on farm (no, yes)"
+var_label(VGO3_metadata$T0_wkprior_NH3)  <- "T0 (2014/2015) week prior avg NH3 (µg/m3)"
+var_label(VGO3_metadata$T1_wkprior_NH3)  <- "T1 (2021/2022) week prior avg NH3 (µg/m3)"
+var_label(VGO3_metadata$T1_T0_NH3_diff)  <- "Change in week prior avg NH3 (µg/m3) (T1-T0)"
+
+VGO3_metadata <- VGO3_metadata %>% 
+  rename(
+    MMEF = FEF25_75,
+    MMEF_pred = FEF25_75_pred,
+    age = Age,
+    spirometrist  = Spirometrist,
+    study = Study, 
+    timepoint = Timepoint,
+    date_spiro = Date,
+    gender = Gender,
+    height = Height,
+    weight = Weight,
+    bmi = BMI, 
+    ethnicity = Ethnicity,
+    educationlevel = Education_level,
+    smoke_status = Smoking_status,
+    pneumo_lastyr = Pneumonia_lastyr,
+    copd_doc_diag = COPD_emphy_doc_diag,
+    asthma_current = Asthma_current,
+    asthma_ever = Asthma_ever,
+    asthma_doc_diag = Asthma_doc_diag,
+    covid_lastmonth = Covid_lastmonth, 
+    asthma_attk_lastyr = Asthma_attk_lastyr,
+    lung_med = Lung_med,
+    atopic = Atopic,
+    asthma_med_current = Asthma_med_current,
+    cortinhal_lastyr = Cortinhal_lastyr,
+    antibiotics_lastmonth = Antibiotics_lastmonth,
+    antibiotics_lastyr = Antibiotics_lastyr, 
+    farm_childhood = Farm_childhood,
+    farm_visit_lastyr = Farm_visit_lastyr
+  )
 
 
+VGO3_metadata <- VGO3_metadata %>%
+  select(
+    ID, study, timepoint, date_spiro, age, ethnicity, spirometrist, gender,
+    height, weight, bmi, educationlevel, smoke_status, pneumo_lastyr,
+    copd_doc_diag, asthma_current, asthma_ever, asthma_doc_diag,
+    covid_lastmonth, asthma_attk_lastyr, lung_med, atopic,
+    asthma_med_current, cortinhal_lastyr, antibiotics_lastmonth,
+    antibiotics_lastyr, farm_childhood, farm_visit_lastyr,
+    T0_wkprior_NH3, T1_wkprior_NH3, T1_T0_NH3_diff,
+    FEV1, FVC, FEV1_FVC, MMEF,
+    FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  )
 
-### 2. VGO2 Standalone Dataset ###
-old_full_clean <- old_full_clean %>% mutate(ID = as.character(ID))
+# Save VGO3 dataset
+write.csv(
+  VGO3_metadata,
+  "../Output/Cross_sectional/Participant_data/VGO3_data.csv",
+  row.names = FALSE
+)
+
+## -----------------------------------------------------------
+## VGO2: metadata and spirometry  (with Asthma_current)
+## -----------------------------------------------------------
+old_full_clean   <- old_full_clean   %>% mutate(ID = as.character(ID))
 old_intake_clean <- old_intake_clean %>% mutate(ID = as.character(ID))
-old_spiro_clean <- old_spiro_clean %>% mutate(ID = as.character(ID))
-
-old_spiro_clean$date
+old_spiro_clean  <- old_spiro_clean  %>% mutate(ID = as.character(ID))
 
 VGO2_metadata <- old_full_clean %>%
   left_join(old_intake_clean, by = "ID") %>%
-  left_join(old_spiro_clean, by = "ID") %>%
+  left_join(old_spiro_clean,  by = "ID") %>%
   mutate(
-    study = "VGO2",
-    timepoint = "T0",
+    study      = "VGO2",
+    timepoint  = "T0",
     date_spiro = T0_date,
     birth_date = T0_bdate,
+
     gender = case_when(
-    gender == 0 ~ "male",
-    gender == 1 ~ "female",
-    TRUE ~ NA_character_
-  ),
-  gender = factor(gender, levels = c("male", "female")),    
-  educationlevel = factor(educationlevel, levels = c(0, 1, 2), 
-                           labels = c("low", "medium", "high")),
-  smoke_status = factor(smokeever, levels = c(0, 1, 2), labels = c("non", "former", "current")),
-  asthma_ever = factor(asever, levels = c(0, 1), labels = c("no", "yes")),
-  copd_gold = factor(copd_gold, levels = c(0, 1), labels = c("no", "yes"))
+      gender == 0 ~ "male",
+      gender == 1 ~ "female",
+      TRUE        ~ NA_character_
+    ),
+    gender = factor(gender, levels = c("male", "female")),
+
+    educationlevel = factor(
+      educationlevel,
+      levels = c(0, 1, 2),
+      labels = c("low", "medium", "high")
+    ),
+
+    smoke_status = factor(
+      smokeever,
+      levels = c(0, 1, 2),
+      labels = c("non", "former", "current")
+    ),
+
+    asthma_ever = factor(asever, levels = c(0, 1), labels = c("no", "yes")),
+    copd_gold   = factor(copd_gold, levels = c(0, 1), labels = c("no", "yes")),
+
+    ## ---- Asthma_doc_diag (VGO2: asdd) ----
+    Asthma_doc_diag = dplyr::case_when(
+      asdd %in% c(1, "1", "yes", "Yes", "YES", TRUE)  ~ 1L,
+      asdd %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ 0L,
+      TRUE ~ NA_integer_
+    ),
+    Asthma_doc_diag = dplyr::case_when(
+      is.na(Asthma_doc_diag) &
+        asthma_ever %in% c("no", "No", "NO", 0, "0", FALSE) ~ 0L,
+      TRUE ~ Asthma_doc_diag
+    ),
+    Asthma_doc_diag = factor(
+      Asthma_doc_diag,
+      levels = c(0, 1),
+      labels = c("no", "yes")
+    ),
+
+    ## ---- Asthma_attk_lastyr (VGO2: as12m) ----
+    Asthma_attk_lastyr = dplyr::case_when(
+      as12m %in% c(1, "1", "yes", "Yes", "YES", TRUE)  ~ "yes",
+      as12m %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ "no",
+      TRUE ~ NA_character_
+    ),
+    Asthma_attk_lastyr = dplyr::case_when(
+      is.na(Asthma_attk_lastyr) &
+        asthma_ever %in% c("no", "No", "NO", 0, "0", FALSE) ~ "no",
+      TRUE ~ Asthma_attk_lastyr
+    ),
+    Asthma_attk_lastyr = factor(
+      Asthma_attk_lastyr,
+      levels = c("no", "yes")
+    ),
+
+    ## ---- Asthma_med_current (VGO2: ascurmed) ----
+    Asthma_med_current = dplyr::case_when(
+      ascurmed %in% c(1, "1", "yes", "Yes", "YES", TRUE)  ~ "yes",
+      ascurmed %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ "no",
+      TRUE ~ NA_character_
+    ),
+    Asthma_med_current = dplyr::case_when(
+      is.na(Asthma_med_current) &
+        asthma_ever %in% c("no", "No", "NO", 0, "0", FALSE) ~ "no",
+      TRUE ~ Asthma_med_current
+    ),
+    Asthma_med_current = factor(
+      Asthma_med_current,
+      levels = c("no", "yes")
+    ),
+
+    ## ---- Asthma_current (same definition as VGO3) ----
+    Asthma_current = factor(
+      dplyr::case_when(
+        Asthma_doc_diag == "yes" &
+          (Asthma_attk_lastyr == "yes" | Asthma_med_current == "yes") ~ "yes",
+        TRUE ~ "no"
+      ),
+      levels = c("no", "yes")
+    )
   ) %>%
   rename(
-    height = Height,
-    weight = Weight,
+    height    = Height,
+    weight    = Weight,
     ethnicity = Ethnicity,
-    atopic = Atopisch,
-    pneumo_last3yr = pneumonia3y,
-    mindist_farm = mindist_bvb12,
-    mindist_goat_farm = mindist50geiten_bvb12,
-    mindist_poultry_farm = mindistpluimvee_bvb12,
-    mindist_pig_farm = mindistvarkens_bvb12,
-    mindist_horse_farm = mindistpaarden_bvb12,
-    mindist_cattle_farm = mindistrundvee_bvb12,
-    ngoats_500m = geiten_500_bvb12,
-    ngoats_1000m = geiten_1000_bvb12,
-    ngoats_5000m = geiten_5km_bvb12,
-    npoultry_500m = pluimvee_500_bvb12,
-    npoultry_1000m = pluimvee_1000_bvb12,
-    npigs_500m = varkens_500_bvb12,
-    npigs_1000m = varkens_1000_bvb12,
-    ncattle_500m = rundvee_500_bvb12,
-    ncattle_1000m = rundvee_1000_bvb12,
-    spirometrist = Spirometrist,
-    quality_grade = Quality_grade,
-    date_and_time_lf = date,
-    FEV1_pred = FEV1_pre_pred,
-    FVC_pred = FVC_pre_pred,
-    FEV1FVC_pred = FEV1FVC_pre_pred,
-    FEF25_75_pred = FEF25_75_pre_pred
-  ) %>%
-  # Remove unused or duplicate variables
-  select(
-    -smokeever, -asever, -T0_date, -T0_bdate
+    atopic    = Atopisch,
+    copd_doc_diag = sq13, 
+    asthma_current = Asthma_current,
+    asthma_doc_diag = Asthma_doc_diag,
+    asthma_attk_lastyr = Asthma_attk_lastyr,
+    asthma_med_current = Asthma_med_current,
+    pneumo_lastyr     = pneumonia3y,
+    spirometrist       = Spirometrist,
+    quality_grade      = Quality_grade,
+    date_and_time_lf   = date,
+    MMEF               = FEF25_75,
+    FEV1_pred          = FEV1_pre_pred,
+    FVC_pred           = FVC_pre_pred,
+    FEV1FVC_pred       = FEV1FVC_pre_pred,
+    MMEF_pred          = FEF25_75_pre_pred
   )
 
+## Labels for VGO2_metadata (additions and existing)
+var_label(VGO2_metadata$ID)            <- "VGO participant identifier"
+var_label(VGO2_metadata$educationlevel) <- "Education level (0=low, 1=medium, 2=high)"
+var_label(VGO2_metadata$gender)        <- "Participant gender"
+var_label(VGO2_metadata$study)         <- "VGO study (VGO2 or VGO3)"
+var_label(VGO2_metadata$age)           <- "Age at visit"
+var_label(VGO2_metadata$height)        <- "Height (cm)"
+var_label(VGO2_metadata$weight)        <- "Weight (kg)"
+var_label(VGO2_metadata$bmi)           <- "Body Mass Index"
+var_label(VGO2_metadata$ethnicity)     <- "Ethnicity"
+var_label(VGO2_metadata$asthma_ever)        <- "Ever had asthma"
+var_label(VGO2_metadata$asthma_doc_diag)    <- "Doctor diagnosed asthma"
+var_label(VGO2_metadata$asthma_attk_lastyr) <- "Asthma attack in the last year"
+var_label(VGO2_metadata$asthma_med_current) <- "Use of asthma medication"
+var_label(VGO2_metadata$asthma_current)     <- "Current asthma (doc diag + attack/medication)"
+var_label(VGO2_metadata$atopic)        <- "Atopic history"
+var_label(VGO2_metadata$copd_gold)     <- "COPD defined by GOLD"
+var_label(VGO2_metadata$copd_lln)      <- "COPD defined by LLN"
+var_label(VGO2_metadata$reversibility) <- "Bronchodilator reversibility"
+var_label(VGO2_metadata$smoke_status)  <- "Smoking status (non, former, current)"
+var_label(VGO2_metadata$packyears)     <- "Smoking pack years"
+var_label(VGO2_metadata$timepoint)     <- "Sample collection timepoint (T0 or T1)"
+var_label(VGO2_metadata$birth_date)    <- "Date of birth"
+var_label(VGO2_metadata$pneumo_lastyr) <- "Pneumonia in the last year"
+var_label(VGO2_metadata$FEV1)           <- "Forced Expiratory Volume in 1s (L)"
+var_label(VGO2_metadata$FVC)            <- "Forced Vital Capacity (L)"
+var_label(VGO2_metadata$FEV1_FVC)       <- "FEV1/FVC ratio"
+var_label(VGO2_metadata$MMEF)       <- "Forced Expiratory Flow (25–75%)"
+var_label(VGO2_metadata$quality_grade)  <- "Quality grade of spirometry"
+var_label(VGO2_metadata$spirometrist)   <- "Name of lung function technician"
+var_label(VGO2_metadata$date_spiro)     <- "Date of spirometry test"
+var_label(VGO2_metadata$FEV1_pred)      <- "Percent predicted FEV1"
+var_label(VGO2_metadata$FVC_pred)       <- "Percent predicted FVC"
+var_label(VGO2_metadata$FEV1FVC_pred)   <- "Percent predicted FEV1/FVC ratio"
+var_label(VGO2_metadata$MMEF_pred)  <- "Percent predicted FEF (25–75% midflow)"
 
 VGO2_metadata <- VGO2_metadata %>%
-  relocate(ID, study, timepoint, date_spiro, birth_date, age, gender, height, weight, bmi, ethnicity, asthma_ever, smoke_status, smoke_status, packyears, atopic, copd_gold, copd_lln, reversibility)
-
-# Assign variable labels
-var_label(VGO2_metadata$ID) <- "VGO participant identifier"
-var_label(VGO2_metadata$educationlevel) <- "Education level (0=low, 1=med, 2=high)"
-var_label(VGO2_metadata$gender) <- "Participant gender"
-var_label(VGO2_metadata$study) <- "VGO study (VGO2 or VGO3)"
-var_label(VGO2_metadata$age) <- "Age at visit"
-var_label(VGO2_metadata$height) <- "Height (cm)"
-var_label(VGO2_metadata$weight) <- "Weight (kg)"
-var_label(VGO2_metadata$bmi) <- "Body Mass Index"
-var_label(VGO2_metadata$ethnicity) <- "Ethnicity"
-var_label(VGO2_metadata$atopic) <- "Atopic history"
-var_label(VGO2_metadata$copd_gold) <- "COPD defined by GOLD (doctor diagnosed)"
-var_label(VGO2_metadata$copd_lln) <- "COPD defined by LLN"
-var_label(VGO2_metadata$reversibility) <- "Bronchodilator reversibility"
-var_label(VGO2_metadata$smoke_status) <- "Smoking status (non, former, current)"
-var_label(VGO2_metadata$packyears) <- "Smoking pack years"
-var_label(VGO2_metadata$timepoint) <- "Sample collection timepoint (T0 or T1)"
-var_label(VGO2_metadata$birth_date) <- "Date of birth"
-var_label(VGO2_metadata$pneumo_last3yr) <- "Pneumonia in the last 3 years"
-var_label(VGO2_metadata$mindist_farm) <- "Distance to nearest livestock farm"
-var_label(VGO2_metadata$mindist_goat_farm) <- "Distance to nearest goat farm"
-var_label(VGO2_metadata$mindist_poultry_farm) <- "Distance to nearest poultry farm"
-var_label(VGO2_metadata$mindist_pig_farm) <- "Distance to nearest pig farm"
-var_label(VGO2_metadata$mindist_horse_farm) <- "Distance to nearest horse farm"
-var_label(VGO2_metadata$mindist_cattle_farm) <- "Distance to nearest cattle farm"
-var_label(VGO2_metadata$ngoats_500m) <- "Number of goats within 500m"
-var_label(VGO2_metadata$ngoats_1000m) <- "Number of goats within 1000m"
-var_label(VGO2_metadata$ngoats_5000m) <- "Number of goats within 5km"
-var_label(VGO2_metadata$npoultry_500m) <- "Number of poultry within 500m"
-var_label(VGO2_metadata$npoultry_1000m) <- "Number of poultry within 1000m"
-var_label(VGO2_metadata$npigs_500m) <- "Number of pigs within 500m"
-var_label(VGO2_metadata$npigs_1000m) <- "Number of pigs within 1000m"
-var_label(VGO2_metadata$ncattle_500m) <- "Number of cattle within 500m"
-var_label(VGO2_metadata$ncattle_1000m) <- "Number of cattle within 1000m"
-var_label(VGO2_metadata$FEV1) <- "Forced Expiratory Volume in 1s (L)"
-var_label(VGO2_metadata$FVC) <- "Forced Vital Capacity (L)"
-var_label(VGO2_metadata$FEV1_FVC) <- "FEV1/FVC ratio"
-var_label(VGO2_metadata$FEF25_75) <- "Forced Expiratory Flow (25–75%)"
-var_label(VGO2_metadata$quality_grade) <- "Quality grade of spirometry"
-var_label(VGO2_metadata$spirometrist) <- "Name of lung function technician"
-var_label(VGO2_metadata$date_spiro) <- "Date of spirometry test"
-var_label(VGO2_metadata$FEV1_pred) <- "Percent predicted FEV1"
-var_label(VGO2_metadata$FVC_pred) <- "Percent predicted FVC"
-var_label(VGO2_metadata$FEV1FVC_pred) <- "Percent predicted FEV1/FVC ratio"
-var_label(VGO2_metadata$FEF25_75_pred) <- "Percent predicted FEF (25-75% midflow)"
+  select(
+    ID, study, timepoint, date_spiro, age, ethnicity, spirometrist, gender,
+    height, weight, bmi, educationlevel, smoke_status, pneumo_lastyr, copd_doc_diag, copd_gold, copd_lln, asthma_current, asthma_ever, asthma_doc_diag, asthma_attk_lastyr, asthma_med_current, asthma_current, atopic, farmchild, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred)
 
 
-write.csv(VGO2_metadata, "../Output/Participant_data/Datasets/VGO2_data.csv") 
-``` 
-
-# VGO2 and VGO3 combined - longitudinal
-```{r}
-# Prepare for binding by aligning variable names
-# Make sure ID is character
-VGO2_metadata <- VGO2_metadata %>% mutate(ID = as.character(ID))
-VGO3_metadata <- VGO3_metadata %>% mutate(ID = as.character(ID))
-
-# Check which variables exist in one but not the other
-vgo2_only <- setdiff(names(VGO2_metadata), names(VGO3_metadata))
-vgo3_only <- setdiff(names(VGO3_metadata), names(VGO2_metadata))
-
-# Harmonize column names if same meaning but different names
-# Example: gender is already aligned; if not, rename appropriately
-# We'll manually align only relevant fields
-
-# Add missing variables to VGO2 with NA to match VGO3 structure
-vars_missing_from_vgo2 <- vgo3_only[!vgo3_only %in% names(VGO2_metadata)]
-VGO2_metadata[vars_missing_from_vgo2] <- NA
-
-# Add missing variables to VGO3 with NA to match VGO2 structure
-vars_missing_from_vgo3 <- vgo2_only[!vgo2_only %in% names(VGO3_metadata)]
-VGO3_metadata[vars_missing_from_vgo3] <- NA
-
-# Make sure the columns are in the same order
-VGO2_metadata <- VGO2_metadata %>% select(names(VGO3_metadata))
-VGO3_metadata <- VGO3_metadata %>% select(names(VGO2_metadata))
-
-# Combine the datasets
-VGO_combined <- bind_rows(VGO2_metadata, VGO3_metadata) %>%
-  relocate(ID, study, timepoint, date_spiro, birth_date, age, gender)
-
-
-# Compute follow up time (fuperiod) and delta lung function values 
-# Ensure dates are Date class
-VGO_combined <- VGO_combined %>%
-  mutate(date_spiro = as.Date(date_spiro))
-
-# Keep only participants with both timepoints
-ids_with_both_timepoints <- VGO_combined %>%
-  group_by(ID) %>%
-  filter(n_distinct(timepoint) == 2) %>%
-  pull(ID) %>%
-  unique()
-
-VGO_combined_both <- VGO_combined %>%
-  filter(ID %in% ids_with_both_timepoints)
-
-# Pivot wider to separate VGO2 and VGO3 values
-VGO_wide <- VGO_combined_both %>%
-  pivot_wider(
-    id_cols = ID,
-    names_from = study,
-    values_from = c(date_spiro, FEV1, FVC, PEF, FEF25_75, FEV1_FVC)
-  )
-
-
-
-# Compute follow-up time and lung function changes
-VGO_wide <- VGO_wide %>%
-  mutate(
-    fuperiod = as.numeric(difftime(date_spiro_VGO3, date_spiro_VGO2, units = "days")) / 365.25,
-
-    delta_FEV1 = (FEV1_VGO3 - FEV1_VGO2) * 1000 / fuperiod,
-    delta_FVC = (FVC_VGO3 - FVC_VGO2) * 1000 / fuperiod,
-    delta_PEF = (PEF_VGO3 - PEF_VGO2) * 1000 / fuperiod,
-    delta_FEF25_75 = (FEF25_75_VGO3 - FEF25_75_VGO2) * 1000 / fuperiod,
-
-    FEV1_FVC_perc_VGO2 = FEV1_FVC_VGO2 * 100,
-    FEV1_FVC_perc_VGO3 = FEV1_FVC_VGO3 * 100,
-    delta_tiff = (FEV1_FVC_perc_VGO3 - FEV1_FVC_perc_VGO2) / fuperiod,
-
-    obstr_VGO2 = ifelse(FEV1_FVC_VGO2 < 0.7, 1, 0),
-    obstr_VGO3 = ifelse(FEV1_FVC_VGO3 < 0.7, 1, 0),
-    
-    new_obstr = case_when(
-      obstr_VGO2 == 0 & obstr_VGO3 == 1 ~ 1,
-      obstr_VGO2 == 0 & obstr_VGO3 == 0 ~ 0,
-      obstr_VGO2 == 1 ~ 2 # classify changes in airway obstruction status between the two timepoints (VGO2 and VGO3). 1= new obstruction, 0 = remained non-obstructed, 2 = obstructed already at baseline (VGO2)
-    )
-  )
-
-# Check final structure to ensure no nesting
-str(VGO_wide)
-
-
-
-# Merge wide-form variables back into long-form
-VGO_combined_final <- VGO_combined_both %>%
-  left_join(
-    VGO_wide %>%
-      select(ID, fuperiod, starts_with("delta_"), starts_with("obstr_"), new_obstr),
-    by = "ID"
-  )
-
-# Check final structure
-str(VGO_combined_final)
-
-
-# Assign variable labels to VGO_combined
-var_label(VGO_combined_final$ID) <- "VGO participant identifier"
-var_label(VGO_combined_final$study) <- "VGO study (VGO2 or VGO3)"
-var_label(VGO_combined_final$timepoint) <- "Sample collection timepoint (T0 or T1)"
-var_label(VGO_combined_final$date_spiro) <- "Date of spirometry measurements"
-var_label(VGO_combined_final$birth_date) <- "Date of birth"
-var_label(VGO_combined_final$age) <- "Age at visit"
-var_label(VGO_combined_final$gender) <- "Participant gender"
-var_label(VGO_combined_final$height) <- "Height (cm)"
-var_label(VGO_combined_final$weight) <- "Weight (kg)"
-var_label(VGO_combined_final$bmi) <- "Body Mass Index"
-var_label(VGO_combined_final$educationlevel) <- "Education level (low, medium, high)"
-var_label(VGO_combined_final$ethnicity) <- "Ethnicity"
-var_label(VGO_combined_final$atopic) <- "Atopic history"
-var_label(VGO_combined_final$smoke_status) <- "Smoking status (non, former, current)"
-var_label(VGO_combined_final$packyears) <- "Smoking pack years"
-var_label(VGO_combined_final$asthma_ever) <- "Ever had asthma"
-var_label(VGO_combined_final$asthma_doc_diag) <- "Doctor diagnosed asthma"
-var_label(VGO_combined_final$copd_doc_diag) <- "Doctor diagnosed COPD"
-var_label(VGO_combined_final$copd_lln) <- "COPD defined by LLN"
-var_label(VGO_combined_final$reversibility) <- "Bronchodilator reversibility"
-var_label(VGO_combined_final$pneumo_last3yr) <- "Pneumonia in the last 3 years"
-var_label(VGO_combined_final$pneumo_lastyr) <- "Pneumonia in the last year"
-var_label(VGO_combined_final$daily_cough_3mth) <- "Daily cough for >3 months"
-var_label(VGO_combined_final$daily_phlegm_3mth) <- "Daily phlegm for >3 months"
-var_label(VGO_combined_final$wheeze_lastyr) <- "Wheezing in the last year"
-var_label(VGO_combined_final$lung_medication) <- "Use of lung medication"
-var_label(VGO_combined_final$test_difficulty) <- "Difficulty doing the spirometry test"
-var_label(VGO_combined_final$covid_date) <- "Date of covid infection"
-var_label(VGO_combined_final$covid_last2mth) <- "Covid infection in the last 2 months"
-var_label(VGO_combined_final$mindist_farm) <- "Distance to nearest livestock farm"
-var_label(VGO_combined_final$mindist_goat_farm) <- "Distance to nearest goat farm"
-var_label(VGO_combined_final$mindist_poultry_farm) <- "Distance to nearest poultry farm"
-var_label(VGO_combined_final$mindist_pig_farm) <- "Distance to nearest pig farm"
-var_label(VGO_combined_final$mindist_horse_farm) <- "Distance to nearest horse farm"
-var_label(VGO_combined_final$mindist_cattle_farm) <- "Distance to nearest cattle farm"
-var_label(VGO_combined_final$ngoats_500m) <- "Number of goats within 500m"
-var_label(VGO_combined_final$ngoats_1000m) <- "Number of goats within 1000m"
-var_label(VGO_combined_final$ngoats_5000m) <- "Number of goats within 5km"
-var_label(VGO_combined_final$npoultry_500m) <- "Number of poultry within 500m"
-var_label(VGO_combined_final$npoultry_1000m) <- "Number of poultry within 1000m"
-var_label(VGO_combined_final$npigs_500m) <- "Number of pigs within 500m"
-var_label(VGO_combined_final$npigs_1000m) <- "Number of pigs within 1000m"
-var_label(VGO_combined_final$ncattle_500m) <- "Number of cattle within 500m"
-var_label(VGO_combined_final$ncattle_1000m) <- "Number of cattle within 1000m"
-var_label(VGO_combined_final$spirometrist) <- "Name of lung function technician"
-var_label(VGO_combined_final$quality_grade) <- "Quality grade of spirometry"
-var_label(VGO_combined_final$date_and_time_lf) <- "Date and time of lung function measurements"
-var_label(VGO_combined_final$FEV1) <- "Forced Expiratory Volume in 1s (L)"
-var_label(VGO_combined_final$FVC) <- "Forced Vital Capacity (L)"
-var_label(VGO_combined_final$FEV1_FVC) <- "FEV1/FVC ratio"
-var_label(VGO_combined_final$FEF25_75) <- "Forced Expiratory Flow (25–75%)"
-var_label(VGO_combined_final$FEV1_pred) <- "Percent predicted FEV1"
-var_label(VGO_combined_final$FVC_pred) <- "Percent predicted FVC"
-var_label(VGO_combined_final$FEV1FVC_pred) <- "Percent predicted FEF (25-75% midflow)"
-var_label(VGO_combined_final$farm_visit) <- "Visited a farm in the last year"
-var_label(VGO_combined_final$farm_visit_multiple) <- "Multiple visits to a farm in the last year (none, single, multiple)"
-var_label(VGO_combined_final$fuperiod) <- "Follow-up period in years"
-var_label(VGO_combined_final$delta_FEV1) <- "Annual change in FEV1 (mL/year)"
-var_label(VGO_combined_final$delta_FVC) <- "Annual change in FVC (mL/year)"
-var_label(VGO_combined_final$delta_PEF) <- "Annual change in PEF (mL/year)"
-var_label(VGO_combined_final$delta_FEF25_75) <- "Annual change in FEF25-75 (mL/year)"
-var_label(VGO_combined_final$delta_tiff) <- "Annual change in FEV1/FVC percentage"
-var_label(VGO_combined_final$obstr_VGO2) <- "Obstruction (FEV1/FVC < 0.7) at VGO2"
-var_label(VGO_combined_final$obstr_VGO3) <- "Obstruction (FEV1/FVC < 0.7) at VGO3"
-var_label(VGO_combined_final$new_obstr) <- "Obstruction trajectory: 0=never, 1=incident, 2=persistent"
-
-# OPTIONAL: Save to disk
-write.csv(VGO_combined_final, "../Output/Participant_data/Datasets/VGO_combined.csv", row.names = FALSE)
-
-
-
-
-# Checking FVC pred values
-# Create a filtered data frame (without altering the original)
-vgo3_table <- data.frame(
-  ID = VGO_combined_final$ID[VGO_combined_final$study == "VGO3"],
-  FVC_pred = VGO_combined_final$FVC_pred[VGO_combined_final$study == "VGO3"]
+# Save VGO2 dataset
+write.csv(
+  VGO2_metadata,
+  "../Output/Cross_sectional/Participant_data/VGO2_data.csv",
+  row.names = FALSE
 )
-# Sort by ID
-vgo3_table <- vgo3_table[order(vgo3_table$ID), ]
-# Show first rows
-head(vgo3_table)
-# Open full table in RStudio viewer
-View(vgo3_table)
-
-
-vgo3_table <- data.frame(
-  ID = VGO_combined_final$ID[VGO_combined_final$study == "VGO3"],
-  FEV1_pred = VGO_combined_final$FEV1_pred[VGO_combined_final$study == "VGO3"]
-)
-# Sort by ID
-vgo3_table <- vgo3_table[order(vgo3_table$ID), ]
-# Show first rows
-head(vgo3_table)
-# Open full table in RStudio viewer
-View(vgo3_table)
-
-
-summary(VGO_combined_final$FVC_pred)
-str(VGO_combined_final$FVC_pred)
-str(VGO_combined_final$FEV1_pred)
 
 ```
-
