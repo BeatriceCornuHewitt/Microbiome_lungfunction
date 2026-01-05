@@ -474,6 +474,7 @@ ps_longitudinal
 ```{r}
 # Save ps 
 saveRDS(ps_longitudinal, "../Output/Longitudinal/Phyloseq/ps_raw_longitudinal.rds")
+
 ```
 # Composition plots per dataset - before pre-processing
 ```{r}
@@ -1693,55 +1694,8 @@ stats
 write.csv(stats, "../Output/Longitudinal/Preprocessing/Processing_steps.csv")
 
 ```
-# Number samples in each dataset before and after pre-processing
-```{r}
-# Define a helper function to count samples
-count_samples <- function(ps_obj, niche_val, dataset_val) {
-  sample_data(ps_obj) %>%
-    data.frame() %>%
-    filter(niche == niche_val, dataset == dataset_val) %>%
-    nrow()
-}
-
-# Create the summary table
-sample_counts <- tibble(
-  Condition = c("NP - VGO2_NP", "NP - VGO3_OPNP", "OP - VGO2_OP", "OP - VGO3_NPOP"),
-  
-  Before = c(
-    count_samples(ps_longitudinal_NPOP_f, "NP", "VGO2_NP"),
-    count_samples(ps_longitudinal_NPOP_f, "NP", "VGO3_NPOP"),
-    count_samples(ps_longitudinal_NPOP_f, "OP", "VGO2_OP"),
-    count_samples(ps_longitudinal_NPOP_f, "OP", "VGO3_NPOP")
-  ),
-  
-  After = c(
-    count_samples(ps4_longitudinal, "NP", "VGO2_NP"),
-    count_samples(ps4_longitudinal, "NP", "VGO3_NPOP"),
-    count_samples(ps4_longitudinal, "OP", "VGO2_OP"),
-    count_samples(ps4_longitudinal, "OP", "VGO3_NPOP")
-  )
-)
-
-# View the table
-print(sample_counts)
-
-write.csv(sample_counts, "../Output/Longitudinal/Preprocessing/Sample_counts_before_after_preprocessing.csv")
-```
-# Taxonomy after processing
-```{r}
-count_by_rank <- function(ps) {
-  setNames(
-    sapply(phyloseq::rank_names(ps), \(r) phyloseq::ntaxa(phyloseq::tax_glom(ps, r, NArm = TRUE))),
-    phyloseq::rank_names(ps)
-  )
-}
-
-count_by_rank(ps4_longitudinal)
-
-```
-
 # Metadata additions and fixes 
-## Add participant metadata from VGO2 and VGO3 and select
+## Add participant metadata from VGO2 and VGO3 
 ```{r}
 # Make 2 phyloseq objects - for our 2 longitudinal research questions:
 # 1. how is microbiome at T0 associated with lung function at T1 (and the change in lung function from T0 to T1)
@@ -1972,7 +1926,6 @@ cat("Samples:", nsamples(ps_RQ2_pairedOnly), "\n")
 cat("Unique IDs:", length(unique(sd2p$ID)), "\n")
 print(table(sd2p$timepoint))
 print(table(sd2p$niche))
-
 ```
 # Population summary tables
 ## Summary of health data at T0 and T1 for longitudinal participants
@@ -2373,6 +2326,7 @@ ggsave(
   plot_delta, width = 8.5, height = 4.8
 )
 ```
+
 
 
 # ANALYSES
