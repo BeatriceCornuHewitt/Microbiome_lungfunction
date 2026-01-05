@@ -1,0 +1,4161 @@
+---
+title: "Longitudinal analysis - T1 microbiome --> T1 lung function"
+author: "Beatrice Cornu Hewitt"
+date: "`r Sys.time()`"
+output: html_document
+---
+
+```{r}
+library(phyloseq); library(vegan); library(tidyr); library(dplyr); library(ggplot2);library(tidyverse); library(microbiomer); library(paletteer);library(microbiome); library(devtools); library(forcats); library(haven); library(openxlsx); library(vegan); library(ggsignif); library(patchwork); library(decontam); library(RColorBrewer); library(forcats); library(lubridate); library(stringr); library(janitor); library(gtsummary); library(gt)
+
+library(phyloseq); library(tidyverse); library(broom);library(dplyr); library(tidyr); library(stringr); library(ggplot2); library(MASS); library(phyloseq); library(microbiomer)
+
+source("0_functions.R")
+
+# Theme for plots in script
+theme_set(theme_bw())
+theme_update(axis.text.x = element_text(angle = 45, hjust=1),
+             strip.text = element_text(colour = 'white'),
+             strip.background =element_rect(fill="#2F4858", color = "#2F4858"))
+```
+# Load data
+```{r}
+#### VGO2 NP #### 
+# These samples were sequenced at RIVM, processed using DADA2 at the RIVM by MLO
+VGO2_NP_all <- readRDS("../Input/Phyloseq/VGO2_NP/Received_Mari_Lee/ps_raw.Rds") # all time points 
+# Check the number of participants included at each time point in the raw dataset (T1, T2, T3)
+time_points_NP <- sample_data(VGO2_NP_all) %>%
+  data.frame() %>%
+  filter(time_period %in% c("T1", "T2", "T3")) %>%
+  group_by(time_period) %>%
+  summarise(unique_participants = n_distinct(respnr)) %>%
+  arrange(time_period) # T1 = 220, T2 = 12, T3 = 12
+
+# Remove samples where subject_identifier contains "T2" or "T3" - we will only keep time point 1 for analysis 
+VGO2_NP <- subset_samples(
+  VGO2_NP_all,
+  !str_detect(subject_identifier, "T2|T3")
+)
+
+# # Remove taxa with 0 sum 
+# VGO2_NP <- prune_taxa(taxa_sums(VGO2_NP) > 0, VGO2_NP) # 289 samples, 10892 taxa
+
+# Identify all duplicated `respnr` values (only in NP samples)
+# Extract full metadata
+meta_all <- sample_data(VGO2_NP) %>% data.frame()
+meta_all$SampleID <- sample_names(VGO2_NP)
+# Split into NP and non-NP
+meta_NP <- meta_all %>% filter(sample_type == "NP")
+meta_other <- meta_all %>% filter(sample_type != "NP")
+# Deduplicate only NP samples by respnr
+meta_NP_dedup <- meta_NP %>%
+  filter(!is.na(respnr)) %>%
+  distinct(respnr, .keep_all = TRUE)
+meta_NP_na <- meta_NP %>% filter(is.na(respnr))
+# Combine deduplicated NP with other niches
+samples_to_keep <- c(meta_NP_dedup$SampleID, meta_NP_na$SampleID, meta_other$SampleID)
+# Prune phyloseq object
+VGO2_NP_dedup <- prune_samples(samples_to_keep, VGO2_NP)
+# Confirm
+cat("Original sample count:", nsamples(VGO2_NP), "\n") # 289
+cat("After deduplication of NP samples:", nsamples(VGO2_NP_dedup), "\n") # 288
+
+
+#### VGO2 OP #### 
+# These samples were sequenced at the UMCU. Subsequently the V3 region was trimmed by AB, and run through the RIVM DADA2 pipeline by MLO
+VGO2_OP_all <- readRDS("../Input/Phyloseq/VGO2_OP/V4/VGO_OP_v4_50_220_3.rds") 
+# Extract and modify sample_data
+sample_data(VGO2_OP_all) <- sample_data(VGO2_OP_all) %>%
+  data.frame() %>%
+  mutate(OP_time = case_when(
+    str_detect(sample_identifier, "T1") ~ "T1",
+    str_detect(sample_identifier, "T2") ~ "T2",
+    str_detect(sample_identifier, "T3") ~ "T3",
+    TRUE ~ NA_character_  # fallback in case none matched
+  )) %>%
+  sample_data()
+
+time_points_VGO2_OP <- sample_data(VGO2_OP_all) %>%
+  data.frame() %>%
+  filter(OP_time %in% c("T1", "T2", "T3")) %>%
+  group_by(OP_time) %>%
+  summarise(unique_participants = n_distinct(sample_identifier)) %>%
+  arrange(OP_time) # T1 = 281, T2 = 21, T3 = 20
+
+# Only keep time point T1 from VGO2 OP data
+VGO2_OP <- subset_samples(
+  VGO2_OP_all,
+  !str_detect(sample_identifier, "T2|T3"))# 340 samples, 1592 taxa (41 removed)
+# # Remove taxa with 0 sum 
+# VGO2_OP <- prune_taxa(taxa_sums(VGO2_OP) > 0, VGO2_OP) # 340 samples, 1540 taxa
+
+# create respnr column  
+VGO2_OP@sam_data$respnr <- sub("T1$", "", VGO2_OP@sam_data$sample_identifier)
+VGO2_OP@sam_data$respnr[!grepl("^\\d", VGO2_OP@sam_data$respnr)] <- NA
+# number of VGO2 OP samples
+length(unique(na.omit(VGO2_OP@sam_data$respnr))) # 281
+# Additional metadata for VGO2_OP dataset
+VGO2_OP_meta <- read.xlsx("../Input/Phyloseq/VGO2_OP/V4/sample_sheet_VGO_OP.xlsx")
+VGO2_OP@sam_data$Sample
+VGO2_OP_meta$assay_sample
+# First, ensure both identifiers are character type
+VGO2_OP@sam_data$Sample <- as.character(VGO2_OP@sam_data$Sample)
+VGO2_OP_meta$assay_sample <- as.character(VGO2_OP_meta$assay_sample)
+# Subset only relevant metadata column for merging
+# Convert sample_data to data.frame and preserve rownames
+sam_df <- data.frame(VGO2_OP@sam_data)
+sam_df$Sample <- rownames(sam_df)  # create a 'Sample' column for merging
+# Make sure meta has correct column names
+meta_subset <- VGO2_OP_meta[, c("assay_sample", "pg/ul")]
+colnames(meta_subset) <- c("Sample", "pg_ul")  # rename for easier handling
+# Merge metadata
+merged_meta <- merge(sam_df, meta_subset, by = "Sample", all.x = TRUE)
+# Set rownames back using Sample column (which matches phyloseq sample names)
+rownames(merged_meta) <- merged_meta$Sample
+# Remove redundant 'Sample' column if needed
+merged_meta$Sample <- NULL
+# Assign merged data back to phyloseq
+sample_data(VGO2_OP) <- sample_data(merged_meta)
+
+# Add "niche" column to the sam_data
+# Extract sample data as a data.frame
+meta_OP_VGO2 <- sample_data(VGO2_OP) %>% data.frame()
+meta_OP_VGO2$sample_identifier
+# Create the niche column according to your rules:
+meta_OP_VGO2$niche <- ifelse(
+  !is.na(meta_OP_VGO2$respnr) & grepl("^\\d{5}$", meta_OP_VGO2$respnr),  # VGO3_ID exists & is 5-digit number
+  "OP",
+  meta_OP_VGO2$sample_identifier  # Otherwise, use sample_ID
+)
+# Assign updated metadata back to the phyloseq object (make sure niche is a factor)
+sample_data(VGO2_OP) <- sample_data(meta_OP_VGO2)
+
+# Identify all duplicated `respnr` values (only in OP samples)
+# Extract full metadata
+meta_all <- sample_data(VGO2_OP) %>% data.frame()
+meta_all$SampleID <- sample_names(VGO2_OP)
+# Split into NP and non-NP
+meta_OP <- meta_all %>% filter(niche == "OP")
+meta_other <- meta_all %>% filter(niche != "OP")
+# Deduplicate only NP samples by respnr
+meta_OP_dedup <- meta_OP %>%
+  filter(!is.na(respnr)) %>%
+  distinct(respnr, .keep_all = TRUE)
+meta_OP_na <- meta_OP %>% filter(is.na(respnr))
+# Combine deduplicated NP with other niches
+samples_to_keep <- c(meta_OP_dedup$SampleID, meta_OP_na$SampleID, meta_other$SampleID)
+# Prune phyloseq object
+VGO2_OP_dedup <- prune_samples(samples_to_keep, VGO2_OP)
+# Confirm
+cat("Original sample count:", nsamples(VGO2_OP), "\n") # 340
+cat("After deduplication of NP samples:", nsamples(VGO2_OP_dedup), "\n") # 340 i.e. none duplicated
+
+
+
+#### VGO3 NP & OP #### 
+VGO3_NPOP <- readRDS("../Input/Phyloseq/VGO3_NPOP/1_ps_raw.Rds")
+
+# only keep control control participants - exclude GF and GP samples - keep blanks etc.
+VGO3_NPOP <- subset_samples(VGO3_NPOP, !(population %in% c("GF", "GP")))
+table(VGO3_NPOP@sam_data$niche) 
+ #  NP   OP   BD   BP   FB ZMCB ZMCD  UMD   BB 
+ # 978  989  152   17  101   87   29   26    3
+table(VGO3_NPOP@sam_data$population) # CP 1941
+
+# Exclude duplicated participants
+# Extract metadata
+meta <- data.frame(sample_data(VGO3_NPOP))
+meta$SampleID <- sample_names(VGO3_NPOP)
+
+# Mark duplicates: only within CP population AND niche is OP or NP
+meta <- meta %>%
+  mutate(dup = if_else(
+    population == "CP" & niche %in% c("OP", "NP") & duplicated(paste(VGO3_ID, niche)),
+    TRUE, FALSE
+  ))
+
+# Keep non-duplicates or samples outside the CP+OP/NP filter
+keep_samples <- meta$SampleID[!meta$dup]
+# Prune phyloseq object
+VGO3_NPOP_dedup <- prune_samples(keep_samples, VGO3_NPOP)
+# Optional: confirm counts
+cat("Samples before:", nsamples(VGO3_NPOP), "\n") # 2397 
+cat("Samples after deduplication:", nsamples(VGO3_NPOP_dedup), "\n") # 2364 
+
+# Realised that some niche values are assigned as NP or OP but they are actually the blanks for these niches 
+# Filter for rows where niche is NP or OP but VGO3_ID is NOT a 5-digit number
+meta_check <- data.frame(VGO3_NPOP_dedup@sam_data)
+bad_niche_assignments <- meta_check %>%
+  filter(niche %in% c("NP", "OP") & !grepl("^\\d{5}$", VGO3_ID))
+# Print how many problematic rows there are
+cat("Number of samples with niche NP or OP but invalid VGO3_ID:", nrow(bad_niche_assignments), "\n") # 22 
+# View these rows 
+bad_niche_assignments # there are 2 which are not needed, the rest are blanks for the NP so need to be relabelled to be BL
+
+# Extract sample data
+meta <- data.frame(VGO3_NPOP_dedup@sam_data)
+meta$SampleID <- sample_names(VGO3_NPOP_dedup)
+
+# Remove two specific samples by sample_identifier
+samples_to_remove <- meta %>%
+  filter(sample_identifier %in% c("ISO_38_OP_TOP_B1_M", "ISO_38_OP_TOP_B2_M")) %>%
+  pull(SampleID)
+# Prune to remove those samples
+VGO3_NPOP_dedup <- prune_samples(!(sample_names(VGO3_NPOP_dedup) %in% samples_to_remove), VGO3_NPOP_dedup)
+# Fix niche values where VGO3_ID is not a 5-digit number but niche is NP or OP
+# Re-extract updated metadata
+meta <- data.frame(VGO3_NPOP_dedup@sam_data)
+# Identify the rows to correct
+bad_niche_idx <- which(meta$niche %in% c("NP", "OP") & !grepl("^\\d{5}$", meta$VGO3_ID))
+# Convert niche to character before assignment
+meta$niche <- as.character(meta$niche)
+# Now assign "FB" to the bad indices
+meta$niche[bad_niche_idx] <- "FB"
+# Optionally convert niche back to factor
+meta$niche <- factor(meta$niche)
+# Assign the modified metadata back to the phyloseq object
+sample_data(VGO3_NPOP_dedup) <- sample_data(meta)# Assign corrected metadata back to phyloseq object
+table(VGO3_NPOP_dedup@sam_data$niche)
+
+# How many samples have NA in 'niche' 
+cat("Number of samples with NA in niche:", sum(is.na(meta$niche)), "\n") #3 have NA
+# View the full rows where niche is still NA
+meta_with_na_niche <- meta %>%
+  filter(is.na(niche))
+
+# Print or inspect these rows
+View(meta_with_na_niche)
+
+# Extract metadata from the phyloseq object
+meta <- data.frame(sample_data(VGO3_NPOP_dedup))
+meta$SampleID <- sample_names(VGO3_NPOP_dedup)
+
+# Assign "FB" to the two identified samples
+fb_samples <- c("ISO_73_NP_TOP_BL_N5_1001", "ISO_73_NP_TOP_BL_N5_1005")
+meta$niche[meta$sample_identifier %in% fb_samples] <- "FB"
+
+# Identify the remaining samples that had NA in 'niche'
+meta_with_na_niche <- meta %>%
+  filter(is.na(niche) & !(sample_identifier %in% fb_samples))
+
+# Set 'niche' to "unknown" for these
+# Add "unknown" to the levels of niche if not already present
+if (!"unknown" %in% levels(meta$niche)) {
+  levels(meta$niche) <- c(levels(meta$niche), "unknown")
+}
+meta$niche[meta$SampleID %in% meta_with_na_niche$SampleID] <- "unknown"
+# Update the phyloseq object with the revised metadata
+sample_data(VGO3_NPOP_dedup) <- sample_data(meta)
+# Optional: check that no NAs remain
+cat("Remaining NAs in niche:", sum(is.na(sample_data(VGO3_NPOP_dedup)$niche)), "\n") # 0 
+
+
+# Check remaining unique participants in NP and OP niches (population CP)
+length(unique(VGO3_NPOP_dedup@sam_data$VGO3_ID[VGO3_NPOP_dedup@sam_data$niche == "NP" & VGO3_NPOP_dedup@sam_data$population == "CP"])) # 956
+length(unique(VGO3_NPOP_dedup@sam_data$VGO3_ID[VGO3_NPOP_dedup@sam_data$niche == "OP" & VGO3_NPOP_dedup@sam_data$population == "CP"])) # 954
+
+# Add 'dataset' column to each phyloseq object's sample_data
+sample_data(VGO2_NP_dedup)$dataset <- "VGO2_NP"
+sample_data(VGO2_OP_dedup)$dataset <- "VGO2_OP"
+sample_data(VGO3_NPOP_dedup)$dataset <- "VGO3_NPOP"
+
+# Add 'timepoint' column to each phyloseq object's sample_data
+sample_data(VGO2_NP_dedup)$timepoint <- "T0"
+sample_data(VGO2_OP_dedup)$timepoint <- "T0"
+sample_data(VGO3_NPOP_dedup)$timepoint <- "T1"
+
+# dna_isolation_date is simply the date, convert this to run numbers to match with DI.Run from the VGO3 dataset
+sample_data(VGO2_NP_dedup)$DI.Run <- as.factor(as.numeric(factor(sample_data(VGO2_NP_dedup)$dna_isolation_date)))
+# DNA isolation run is not known for VGO2_OP dataset so add it as an empty column in sam_data
+sample_data(VGO2_OP_dedup)$DI.Run <- NA  # This creates logical NAs
+
+# filter metadata in each dataset
+names(VGO2_NP_dedup@sam_data) # keep: subject_identifier, dna_isolation_date, qPCR_pg_ul, respnr, dataset, timepoint
+names(VGO2_OP_dedup@sam_data)# keep: sample_identifier, dataset, timepoint
+names(VGO3_NPOP_dedup@sam_data) # keep: sample_identifier, DI.Run, qPCR, VGO3_ID,  dataset, niche, timepoint
+
+
+# For VGO2_NP
+sample_data(VGO2_NP_dedup) <- sample_data(VGO2_NP_dedup)[, c("subject_identifier", "qPCR_pg_ul", "respnr", "dataset", "timepoint", "sample_type", "DI.Run")]
+
+# For VGO2_OP
+sample_data(VGO2_OP_dedup) <- sample_data(VGO2_OP_dedup)[, c("sample_identifier", "pg_ul", "respnr" ,"dataset", "timepoint", "niche", "DI.Run")]
+
+# For VGO3_NPOP
+sample_data(VGO3_NPOP_dedup) <- sample_data(VGO3_NPOP_dedup)[, c("sample_identifier", "qPCR", "VGO3_ID", "dataset", "timepoint", "niche", "DI.Run")]
+
+# rename some of the metadata columns to align with eachother for later merging
+# VGO2_NP
+colnames(sample_data(VGO2_NP_dedup))[
+  colnames(sample_data(VGO2_NP_dedup)) == "subject_identifier"
+] <- "sample_ID"
+
+colnames(sample_data(VGO2_NP_dedup))[
+  colnames(sample_data(VGO2_NP_dedup)) == "sample_type"
+] <- "niche"
+
+
+colnames(sample_data(VGO2_NP_dedup))[
+  colnames(sample_data(VGO2_NP_dedup)) == "qPCR_pg_ul"
+] <- "qPCR"
+
+colnames(sample_data(VGO2_NP_dedup))[
+  colnames(sample_data(VGO2_NP_dedup)) == "respnr"
+] <- "VGO3_ID"
+
+# VGO2_OP
+colnames(sample_data(VGO2_OP_dedup))[
+  colnames(sample_data(VGO2_OP_dedup)) == "sample_identifier"
+] <- "sample_ID"
+
+colnames(sample_data(VGO2_OP_dedup))[
+  colnames(sample_data(VGO2_OP_dedup)) == "respnr"
+] <- "VGO3_ID"
+
+colnames(sample_data(VGO2_OP_dedup))[
+  colnames(sample_data(VGO2_OP_dedup)) == "pg_ul"
+] <- "qPCR"
+
+# VGO3_NP
+colnames(sample_data(VGO3_NPOP_dedup))[
+  colnames(sample_data(VGO3_NPOP_dedup)) == "sample_identifier"
+] <- "sample_ID"
+
+
+
+####  Check longitudinal data (VGO2 and VGO3) #### 
+## NP 
+VGO3_NP <- subset_samples(VGO3_NPOP_dedup, niche == "NP")
+# VGO3_NP <- prune_taxa(taxa_sums(VGO3_NP) > 0, VGO3_NP) # 957 samples, 11053 taxa
+
+# Extract IDs from sample_data
+ids_VGO2 <- sample_data(VGO2_NP_dedup)$VGO3_ID
+ids_VGO3 <- sample_data(VGO3_NP)$VGO3_ID
+
+# Find intersecting IDs
+shared_ids_NP <- intersect(ids_VGO2, ids_VGO3)
+# Number of shared individuals
+length(shared_ids_NP) # 112 longitudinal NP samples
+
+
+## OP 
+VGO3_OP <- subset_samples(VGO3_NPOP, niche != "NP")
+# VGO3_OP <- prune_taxa(taxa_sums(VGO3_OP) > 0, VGO3_OP) # 1404 samples, 12902 taxa
+
+# Extract IDs from sample_data
+ids_VGO2 <- sample_data(VGO2_OP_dedup)$VGO3_ID
+ids_VGO3 <- sample_data(VGO3_OP)$VGO3_ID
+# Find intersecting IDs
+shared_ids_OP <- intersect(ids_VGO2, ids_VGO3)
+# Number of shared individuals
+length(shared_ids_OP) # 141 longitudinal OP samples
+```
+# Merge phyloseqs and taxonomy naming 
+```{r}
+head(taxa_names(VGO2_NP_dedup)) # ASVs named already e.g. "Corynebacterium_1", "Moraxella_2"  etc.
+head(taxa_names(VGO2_OP_dedup)) # Named by the sequence
+head(taxa_names(VGO3_NPOP_dedup))# ASVs named already e.g. "Dolosigranulum_pigrum_1" "Staphylococcus_2"
+
+ntaxa(VGO2_NP_dedup) # 11668
+ntaxa(VGO2_OP_dedup) # 1592
+ntaxa(VGO3_NPOP_dedup) # 25639
+nsamples(VGO2_NP_dedup) # 288
+nsamples(VGO2_OP_dedup) # 340
+nsamples(VGO3_NPOP_dedup) # 2362
+
+# Fix VGO2_OP so that the refseq() slot has the sequences and taxa_names are the ASV names
+# Get DNA sequences from current taxa_names
+seqs <- taxa_names(VGO2_OP_dedup)
+# Create ASV names
+asv_names <- paste0("ASV", seq_along(seqs))
+# Assign ASV names to the phyloseq object
+taxa_names(VGO2_OP_dedup) <- asv_names
+# Create DNAStringSet with ASV names
+dna_seqs <- Biostrings::DNAStringSet(seqs)
+names(dna_seqs) <- asv_names
+# Add refseq slot
+VGO2_OP_dedup <- merge_phyloseq(VGO2_OP_dedup, dna_seqs)
+# VGO2_OP_dedup <- prune_taxa(taxa_sums(VGO2_OP_dedup) > 0, VGO2_OP_dedup)
+# VGO2_OP_dedup <- prune_samples(sample_sums(VGO2_OP_dedup) > 0, VGO2_OP_dedup)
+
+# Rename ASVs to Sequence Level
+VGO2_NP_seq <- rename_ASVs(VGO2_NP_dedup)
+VGO2_OP_seq <- rename_ASVs(VGO2_OP_dedup)
+VGO3_NPOP_seq <- rename_ASVs(VGO3_NPOP_dedup)
+
+# Check that tax_table is annotated in the same way
+colnames(VGO2_NP_seq@tax_table)
+colnames(VGO2_OP_seq@tax_table)
+colnames(VGO3_NPOP_seq@tax_table)
+
+# Change all to lower case
+colnames(VGO2_OP_seq@tax_table) <- tolower(colnames(VGO2_OP_seq@tax_table))
+colnames(VGO2_NP_seq@tax_table) <- tolower(colnames(VGO2_NP_seq@tax_table))
+colnames(VGO3_NPOP_seq@tax_table) <- tolower(colnames(VGO3_NPOP_seq@tax_table))
+
+colnames(VGO2_NP_seq@tax_table)
+colnames(VGO2_OP_seq@tax_table)
+colnames(VGO3_NPOP_seq@tax_table)
+
+
+table(VGO2_NP_seq@sam_data$niche)
+table(VGO2_OP_seq@sam_data$niche)
+table(VGO3_NPOP_dedup@sam_data$niche)
+
+# Remove 'Species_one' column from VGO3 phyloseqs
+# For VGO3_NP_seq
+tax_table(VGO3_NPOP_dedup) <- tax_table(VGO3_NPOP_dedup)[, !colnames(tax_table(VGO3_NPOP_dedup)) %in% c("species_one", "asv")]
+colnames(VGO2_NP_seq@tax_table)
+colnames(VGO2_OP_seq@tax_table)
+colnames(VGO3_NPOP_seq@tax_table)
+
+
+# Check for mismatches in sam_data before merging phyloseqs
+# Sam_data variables between objects:
+all.equal(colnames(sample_data(VGO2_NP_seq)),
+          colnames(sample_data(VGO2_OP_seq)),
+          colnames(sample_data(VGO3_NPOP_seq)))
+# Get the column names for each phyloseq object
+cols_np   <- colnames(sample_data(VGO2_NP_seq))
+cols_op   <- colnames(sample_data(VGO2_OP_seq))
+cols_vgo3 <- colnames(sample_data(VGO3_NPOP_seq))
+# Compare: what's in VGO2 NP but not in VGO2 OP
+setdiff(cols_np, cols_op) # nothing
+# Compare: what's in VGO2 OP but not in VGO2 NP
+setdiff(cols_op, cols_np)
+# Compare: what's in VGO2 NP but not in VGO3 OP/NP
+setdiff(cols_np, cols_vgo3)
+
+# Get classes for each column in each phyloseq object
+classes_np <- sapply(sample_data(VGO2_NP_seq), class)
+classes_op <- sapply(sample_data(VGO2_OP_seq), class)
+classes_vgo3 <- sapply(sample_data(VGO3_NPOP_seq), class)
+
+# Combine into a comparison table
+compare_classes <- data.frame(
+  column_name = names(classes_np),
+  NP_class    = unname(classes_np),
+  OP_class    = unname(classes_op[names(classes_np)]),
+  VGO3_class  = unname(classes_vgo3[names(classes_np)])
+)
+
+# Convert the mismatches 
+sample_data(VGO2_NP_seq)$VGO3_ID <- as.character(sample_data(VGO2_NP_seq)$VGO3_ID)
+sample_data(VGO3_NPOP_seq)$niche <- as.character(sample_data(VGO3_NPOP_seq)$niche)
+VGO3_NPOP_seq@sam_data$niche
+
+# Merge datasets now that all variables across the phyloseqs are aligned and the same data class
+ps_combined <- merge_phyloseq(
+  VGO2_NP_seq,
+  VGO2_OP_seq,
+  VGO3_NPOP_seq
+  )
+
+#  Reorder ASVs by Abundance
+ps_reordered <- tax_sum_reorder(ps_combined)
+
+# Rename ASVs Based on Taxonomy
+ps_longitudinal <- create_phylo_custom(ps_reordered)
+table(ps_longitudinal@sam_data$niche)
+
+# Check tax table
+head(ps_longitudinal@tax_table)
+head(ps_longitudinal@otu_table)
+ps_longitudinal@sam_data
+ps_longitudinal
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 33168 taxa and 2990 samples ]
+# sample_data() Sample Data:       [ 2990 samples by 7 sample variables ]
+# tax_table()   Taxonomy Table:    [ 33168 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 33168 reference sequences ]
+```
+
+# Save ps
+```{r}
+# Save ps 
+saveRDS(ps_longitudinal, "../Output/Longitudinal/Phyloseq/ps_raw_longitudinal.rds")
+```
+# Composition plots per dataset - before pre-processing
+```{r}
+# Subset ps_longitudinalfor dataset == "VGO3_NP"
+ps_vgo2_np <- subset_samples(ps_longitudinal, dataset == "VGO2_NP" & niche == "NP")
+ps_vgo2_np_filt <- prune_taxa(taxa_sums(ps_vgo2_np) > 0, ps_vgo2_np)
+ps_vgo2_np_filt <- prune_samples(sample_sums(ps_vgo2_np_filt) > 0, ps_vgo2_np_filt)
+
+# stacked bar plot
+VGO2_NP_stackedbar <- create_ordered_bar_n(ps_vgo2_np, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO2 NP microbiome composition per sample")
+# Save plot
+
+ggsave("../Output/Longitudinal/Microbiome_descriptives/Before/VGO2_NP_barplot.svg", VGO2_NP_stackedbar, width = 5, height = 6)
+
+# Subset ps_longitudinalfor dataset == "VGO2_OP"
+ps_vgo2_op <- subset_samples(ps_longitudinal, dataset == "VGO2_OP" & niche == "OP")
+ps_vgo2_op_filt <- prune_taxa(taxa_sums(ps_vgo2_op) > 0, ps_vgo2_op)
+ps_vgo2_op_filt <- prune_samples(sample_sums(ps_vgo2_op_filt) > 0, ps_vgo2_op_filt)
+
+# stacked bar plot
+VGO2_OP_stackedbar <- create_ordered_bar_n(ps_vgo2_op_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO2 OP microbiome composition per sample")
+
+# Save plot
+ggsave("../Output/Longitudinal/Microbiome_descriptives/Before_preprocessing_composition/VGO2_OP_barplot.svg", VGO2_OP_stackedbar, width = 5, height = 6)
+
+
+# Subset ps_longitudinalfor dataset == "VGO3_NP"
+ps_vgo3_np <- subset_samples(ps_longitudinal, dataset == "VGO3_NPOP" & niche == "NP")
+ps_vgo3_np_filt <- prune_taxa(taxa_sums(ps_vgo3_np) > 0, ps_vgo3_np)
+ps_vgo3_np_filt <- prune_samples(sample_sums(ps_vgo3_np_filt) > 0, ps_vgo3_np_filt)
+
+# stacked bar plot
+VGO3_NP_stackedbar <- create_ordered_bar_n(ps_vgo3_np_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO3 NP microbiome composition per sample")
+
+# Save plot
+ggsave("../Output/Longitudinal/Microbiome_descriptives/Before_preprocessing_composition/VGO3_NP_barplot.svg", VGO3_NP_stackedbar, width = 5, height = 6)
+
+
+# Subset ps_longitudinalfor dataset == "VGO3_OP"
+ps_vgo3_op <- subset_samples(ps_longitudinal, dataset == "VGO3_NPOP" & niche == "OP")
+ps_vgo3_op_filt <- prune_taxa(taxa_sums(ps_vgo3_op) > 0, ps_vgo3_op)
+ps_vgo3_op_filt <- prune_samples(sample_sums(ps_vgo3_op_filt) > 0, ps_vgo3_op_filt)
+
+# stacked bar plot
+VGO3_OP_stackedbar <- create_ordered_bar_n(ps_vgo3_op_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO3 OP microbiome composition per sample")
+
+# Save plot
+ggsave("../Output/Longitudinal/Microbiome_descriptives/Before_preprocessing_composition/VGO3_OP_barplot.svg", VGO3_OP_stackedbar, width = 5, height = 6)
+
+#### Combine plots: NP on top row, OP on bottom row ####
+composition_combined <- (VGO2_NP_stackedbar | VGO3_NP_stackedbar) / 
+                        (VGO2_OP_stackedbar | VGO3_OP_stackedbar) +
+                        plot_annotation(tag_levels = 'A')  # Optional: add panel tags A, B, C, D
+
+print(composition_combined)
+
+# Save combined figure
+ggsave("../Output/Longitudinal/Microbiome_descriptives/Before_preprocessing_composition/Combined_composition_barplots.svg",
+       composition_combined, width = 12, height = 12)
+
+```
+
+# Pre-processing
+## Visualise library size
+```{r}
+df <- meta_to_df(ps_longitudinal)
+df$LibrarySize <- sample_sums(ps_longitudinal)
+df <- df[order(df$LibrarySize),]
+df$Index <- seq(nrow(df))
+
+# Library sizes - all samples including blanks
+libsize_niche <- ggplot(data = df, aes(x=Index, y=LibrarySize, color=niche)) + geom_point()
+ggsave("../Output/Longitudinal/Preprocessing/Library_size_niche.svg", libsize_niche)
+
+# Library size of NP and OP samples only 
+df_filtered <- df %>% filter(niche %in% c("NP", "OP"))
+libsize_niche_NPOP <- ggplot(data = df_filtered, aes(x = Index, y = LibrarySize, color = niche)) +
+  geom_point()
+ggsave("../Output/Longitudinal/Preprocessing/Library_size_NPvsOP.svg", libsize_niche_NPOP, width = 6, height = 5)
+
+```
+## Visualise bacterial density 
+```{r}
+bacterial_density_NP_OP <- df %>%
+  filter(niche %in% c("NP", "OP")) %>%
+  ggplot(aes(x = niche, y = qPCR)) +
+  geom_boxplot(alpha = 0.4, fill = "white") +
+  geom_jitter(aes(color = niche), width = 0.2, size = 1, alpha = 0.7) +
+  labs(x = "Niche", y = "Bacterial density (pg/µl)", color = "Niche") +
+  scale_y_continuous(trans = 'log10',
+                     breaks = scales::trans_breaks('log10', function(x) 10^x),
+                     labels = scales::trans_format('log10', scales::math_format(10^.x)))
+
+ggsave("../Output/Longitudinal/Preprocessing/Bacterial_density_NPvsOP.svg", bacterial_density_NP_OP)
+
+```
+# Decontaminating the microbiome data
+## Preparing data for decontamination
+```{r}
+# We want to decontaminate per sequencing group - i.e. VGO2_NP, VGO2_OP, VGO3_NP and VGO3_OP (VGO3 data was sequenced/processed together for NP and OP)
+# Define decontamination groups 
+sum(is.na(ps_longitudinal@sam_data$dataset))# No NAs for dataset
+
+unique(sample_data(ps_longitudinal)$dataset) # "VGO2_NP"   "VGO2_OP"   "VGO3_NPOP"
+sum(is.na(sample_data(ps_longitudinal)$decontam_group)) # 0 
+
+sample_data(ps_longitudinal)$decontam_group <- case_when(
+  sample_data(ps_longitudinal)$dataset == "VGO3_NPOP" ~ "VGO3_NPOP", 
+  sample_data(ps_longitudinal)$dataset == "VGO2_NP" ~ "VGO2_NP",
+  sample_data(ps_longitudinal)$dataset == "VGO2_OP" ~ "VGO2_OP",
+  TRUE ~ NA_character_
+)
+
+# Count zero-sum samples *before* the split
+zero_samples <- sample_sums(ps_longitudinal) == 0
+table(zero_samples, sample_data(ps_longitudinal)$decontam_group)
+
+table(sample_data(ps_longitudinal)$decontam_group)
+# VGO2_NP   VGO2_OP  VGO3_combined 
+# 288       340      2362 
+
+# Split phyloseq by group
+# Get the unique group names
+groups <- unique(na.omit(sample_data(ps_longitudinal)$decontam_group))
+
+# Use lapply to avoid `.x` evaluation issues
+ps_longitudinal_groups <- setNames(lapply(groups, function(g) {
+  keep_samples <- rownames(sample_data(ps_longitudinal))[sample_data(ps_longitudinal)$decontam_group == g]
+  prune_samples(keep_samples, ps_longitudinal)
+}), groups)
+
+# Create and assign objects with custom names
+for (group in names(ps_longitudinal_groups)) {
+  assign(paste0(group, "_ps_for_decontam"), ps_longitudinal_groups[[group]])
+}
+
+# Save each phyloseq to an individual object
+list2env(ps_longitudinal_groups, envir = .GlobalEnv)
+
+# These are the phyloseqs for decontamination
+VGO2_NP_ps_for_decontam
+VGO2_OP_ps_for_decontam
+VGO3_NPOP_ps_for_decontam
+
+table(VGO2_NP_ps_for_decontam@sam_data$niche) # Niche = Blank, NP, Zymo Mock
+table(VGO2_OP_ps_for_decontam@sam_data$niche) # EBL, NEG, NTC, OP, SBL, VBL, ZMCB
+table(VGO3_NPOP_ps_for_decontam@sam_data$niche) # BB, BD, BL, BP, FB, NP, OP, UMD, ZMCB, ZMCD
+
+# ZMCD	Zymo mock DNA (miseq PCR)		
+# ZMCB	Zymo mock Bacteria (extraction)		
+# AMCD	ATCC mock DNA (miseq PCR)		
+# UMD	UMCU low density mock DNA (miseq PCR)		
+# MSS	Mixed (fecal/NP/OP…) sample control 		
+# MSD	Mixed (fecal/NP/OP…) sample control DNA		
+# BD	Blank from DNA extraction		
+# BP	Blank from PCR		
+
+# For decontam we use the following as negative controls: 
+## Blank (n=47)
+## NTC, SBL, VBL, EBL (n = 54)
+## BL (n=22), BD (n=1), BP (n=1) and FB for VGO3NPOP dataset
+
+sample_data(VGO2_NP_ps_for_decontam)$is_neg <- sample_data(VGO2_NP_ps_for_decontam)$niche == "Blank"
+sample_data(VGO2_OP_ps_for_decontam)$is_neg <- sample_data(VGO2_OP_ps_for_decontam)$niche %in% c("SBL", "VBL", "EBL")
+sample_data(VGO3_NPOP_ps_for_decontam)$is_neg <- sample_data(VGO3_NPOP_ps_for_decontam)$niche == "BD"
+
+# NP samples were in DI.Run = 39-74
+# OP samples were in DI.Run = 1,2, 5-8, 10-12, 33-38, 75-91
+## Therefore we only want to select the BD samples from these run to do decontam per niche
+
+# Select BD samples for NP decontam
+np_DI_runs <- 39:74
+# Subset to NP and the correct BD runs
+VGO3_NP_ps_for_decontam <- subset_samples(
+  VGO3_NPOP_ps_for_decontam,
+  (niche == "NP") | (niche == "BD" & DI.Run %in% np_DI_runs)
+)
+# Prune taxa with 0 total counts
+VGO3_NP_ps_for_decontam <- prune_taxa(taxa_sums(VGO3_NP_ps_for_decontam) > 0, VGO3_NP_ps_for_decontam)
+
+# Define BD runs for OP
+op_DI_runs <- c(1, 2, 5:8, 10:12, 33:38, 75:91)
+# Subset to OP and the correct BD runs
+VGO3_OP_ps_for_decontam <- subset_samples(
+  VGO3_NPOP_ps_for_decontam,
+  (niche == "OP") | (niche == "BD" & DI.Run %in% op_DI_runs)
+)
+# Prune taxa with 0 total counts
+VGO3_OP_ps_for_decontam <- prune_taxa(taxa_sums(VGO3_OP_ps_for_decontam) > 0, VGO3_OP_ps_for_decontam)
+
+
+# Remove mocks & other unnecessary samples from the datasets
+table(VGO2_NP_ps_for_decontam@sam_data$niche)
+table(VGO2_OP_ps_for_decontam@sam_data$niche)
+table(VGO3_NP_ps_for_decontam@sam_data$niche)
+table(VGO3_OP_ps_for_decontam@sam_data$niche)
+
+VGO2_NP_ps_for_decontam <- subset_samples(VGO2_NP_ps_for_decontam, niche != "Zymo Mock") %>% 
+  subset_samples(., qPCR != 0) # 269 samples
+table(VGO2_NP_ps_for_decontam@sam_data$niche) # blank = 47, NP = 222
+
+VGO2_OP_ps_for_decontam <- subset_samples(VGO2_OP_ps_for_decontam, niche != "NEG") %>%  subset_samples(., niche != "NTC") %>%  subset_samples(., niche != "ZMCB") %>%
+  subset_samples(., qPCR != 0) # 313   samples 
+table(VGO2_OP_ps_for_decontam@sam_data$niche) # EBL  = 16, OP = 281, SBL= 8, VBL = 8
+
+VGO3_NP_ps_for_decontam <- subset_samples(VGO3_NP_ps_for_decontam, niche != "BB") %>%  subset_samples(., niche != "BP") %>% subset_samples(., niche != "FB") %>% subset_samples(., niche != "UMD") %>%  subset_samples(., niche != "ZMCB") %>% subset_samples(., niche != "ZMCD") %>% subset_samples(., niche != "unknown") %>%  
+  subset_samples(., qPCR != 0) # 1026  samples
+table(VGO3_NP_ps_for_decontam@sam_data$niche)
+
+VGO3_OP_ps_for_decontam <- subset_samples(VGO3_OP_ps_for_decontam, niche != "BB") %>%  subset_samples(., niche != "BP") %>% subset_samples(., niche != "FB") %>% subset_samples(., niche != "UMD") %>%  subset_samples(., niche != "ZMCB") %>% subset_samples(., niche != "ZMCD") %>% subset_samples(., niche != "unknown") %>%  
+  subset_samples(., qPCR != 0) # 991 samples
+table(VGO3_OP_ps_for_decontam@sam_data$niche)
+```
+## Run decontam combined method
+```{r}
+rownames(VGO2_NP_ps_for_decontam@tax_table)
+rownames(VGO2_OP_ps_for_decontam@tax_table)
+rownames(VGO3_NPOP_ps_for_decontam@tax_table)
+
+# VGO2 NP 
+VGO2_NP_ps_for_decontam <- prune_taxa(taxa_sums(VGO2_NP_ps_for_decontam) > 0, VGO2_NP_ps_for_decontam)
+contaminants_VGO2_NP <- isContaminant(VGO2_NP_ps_for_decontam, method="combined", conc="qPCR", neg="is_neg")
+contaminants_VGO2_NP <- subset(contaminants_VGO2_NP, contaminant == TRUE)
+dim(contaminants_VGO2_NP)[1] # 64 identified in the NP
+write.csv(contaminants_VGO2_NP, "../Output/Longitudinal/Decontamination/Decontam_combined_method/VGO2_NP_contaminants.csv")
+
+# VGO2 OP
+VGO2_OP_ps_for_decontam <- prune_taxa(taxa_sums(VGO2_OP_ps_for_decontam) > 0, VGO2_OP_ps_for_decontam)
+contaminants_VGO2_OP <- isContaminant(VGO2_OP_ps_for_decontam, method="combined", conc="qPCR", neg="is_neg")
+contaminants_VGO2_OP <- subset(contaminants_VGO2_OP, contaminant == TRUE)
+dim(contaminants_VGO2_OP)[1] # 24 identified in the NP
+write.csv(contaminants_VGO2_OP, "../Output/Longitudinal/Decontamination/Decontam_combined_method/VGO2_OP_contaminants.csv")
+
+# VGO3 NP
+# Prune taxa with total abundance of 0 across samples
+VGO3_NP_ps_for_decontam <- prune_taxa(taxa_sums(VGO3_NP_ps_for_decontam) > 0, VGO3_NP_ps_for_decontam)
+# Run decontam on NP subset (using method="combined")
+contaminants_VGO3_NP <- isContaminant(VGO3_NP_ps_for_decontam, method = "combined", conc = "qPCR", neg = "is_neg")
+contaminants_VGO3_NP <- subset(contaminants_VGO3_NP, contaminant == TRUE)
+dim(contaminants_VGO3_NP)[1] # 129 identified in the NP
+write.csv(contaminants_VGO3_NP, "../Output/Longitudinal/Decontamination/Decontam_combined_method/VGO3_NP_contaminants.csv")
+
+# VGO3 OP
+# Prune taxa with total abundance of 0 across samples
+VGO3_OP_ps_for_decontam <- prune_taxa(taxa_sums(VGO3_OP_ps_for_decontam) > 0, VGO3_OP_ps_for_decontam)
+# Run decontam on NP subset (using method="combined")
+contaminants_VGO3_OP <- isContaminant(VGO3_OP_ps_for_decontam, method = "combined", conc = "qPCR", neg = "is_neg")
+contaminants_VGO3_OP <- subset(contaminants_VGO3_OP, contaminant == TRUE)
+dim(contaminants_VGO3_OP)[1] # 88 identified in the OP
+write.csv(contaminants_VGO3_OP, "../Output/Longitudinal/Decontamination/Decontam_combined_method/VGO3_OP_contaminants.csv")
+```
+## Kruskall-Wallis across DNA isolation runs 
+We implement a Kruskal-Wallis test to see which ASVs show discrepancies across the DNA isolation runs. These differences might indicate contamination, so the Kruskal-Wallis test is applied to each ASV to assess whether its relative abundance (RA) differs significantly across the DI.Run groups N.B. DI run groups are only available for VGO2 NP and VGO3 NP/OP dataset. 
+```{r}
+# We only know the DI.Run for VGO2 NP and VGO3 datasets
+VGO2_NP_ps_for_decontam  
+
+VGO2_NP_filt_RA_1 <- VGO2_NP_ps_for_decontam %>% 
+  pres_abund_filter() %>% # Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>% # convert to relative abundance
+  pres_abund_filter(pres = 15, abund = 0.0001) # keep taxa in ≥15 samples at ≥0.01%
+# A total of 792 ASVs were found to be present at or above a level of confident detection (0.1% relative abundance) in at least 2 samples (n = 32376 ASVs excluded).
+# A total of 412 ASVs were found to be present at or above a level of confident detection (0.01% relative abundance) in at least 15 samples (n = 380 ASVs excluded).
+
+VGO2_NP_filt_RA_2 <- VGO2_NP_ps_for_decontam %>% 
+  pres_abund_filter() %>% #  Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>%  # convert to relative abundance
+  pres_abund_filter(pres = 40, abund = 0.01) # keep taxa in ≥40 samples at ≥1%
+# A total of 792 ASVs were found to be present at or above a level of confident detection (0.1% relative abundance) in at least 2 samples (n = 32376 ASVs excluded).
+# A total of 27 ASVs were found to be present at or above a level of confident detection (1% relative abundance) in at least 40 samples (n = 765 ASVs excluded).
+
+VGO2_NP_filt_RA_1 <- prune_taxa(!taxa_names(VGO2_NP_filt_RA_1) %in% taxa_names(VGO2_NP_filt_RA_2), VGO2_NP_filt_RA_1) # Exclude the high-abundance/core taxa from VGO2_NP_filt_RA_1
+
+# Reshape phyloseq 
+df_VGO2 <- ps_to_df(VGO2_NP_filt_RA_1)
+
+# Identify ASVs from the phyloseq object
+asv_names <- taxa_names(VGO2_NP_filt_RA_1)
+# Keep only ASVs that actually exist in df_VGO2
+existing_asvs <- intersect(asv_names, colnames(df_VGO2))
+
+# Select DI.Run and ASV columns
+df_VGO2 <- df_VGO2 %>%
+  select(all_of(c("DI.Run", existing_asvs)))
+
+# Pivot longer to long format (ASV, RA)
+df_VGO2_pivot <- pivot_longer(df_VGO2, cols = existing_asvs,
+                             names_to = "ASV", values_to = "RA")
+
+# Run Kruskal-Wallis test per ASV
+kruskal_results <- df_VGO2_pivot %>%
+  group_by(ASV) %>%
+  summarise(
+    kruskal_test = list(
+      kruskal.test(RA ~ DI.Run, data = pick(DI.Run, RA)) %>% broom::tidy()
+    ),
+    .groups = "drop"
+  ) %>%
+  unnest(cols = kruskal_test)
+
+# Flag significant ASVs as contaminants
+kruskal_results$contaminant <- ifelse(kruskal_results$p.value < 0.001, TRUE, FALSE)
+# Subset only significant (putative contaminants)
+KW_contams_vgo2_np <- subset(kruskal_results, contaminant == TRUE)
+KW_contams_vgo2_np # 94 detected 
+KW_contams_vgo2_np$ASV
+
+# Filter for significant ASVs
+KW_contams_VGO2NP <- ggplot(subset(df_VGO2_pivot, ASV %in% KW_contams_vgo2_np$ASV), 
+            aes(x = as.character(DI.Run), y = RA)) +
+  labs(y = "Relative abundance (%)", x = "DI Run") +
+  geom_point(alpha = 0.5, shape = 16, size = 2,
+             position = position_jitter(width = 0.25, height = 0)) +
+  geom_boxplot(colour = "black", alpha = 0.5) +
+  stat_summary(fun = "mean", geom = "point", shape = 8,
+               size = 2, color = "black") +
+  facet_wrap(~ASV, scales = "free_y") +
+  theme_bw()
+
+ggsave("../Output/Longitudinal/Decontamination/Kruskall_Wallis/KW_VGO2NP.svg", KW_contams_VGO2NP, width = 20, height = 20)
+
+
+#### VGO3 NP ####
+VGO3_NP_ps_for_decontam_1 <- VGO3_NP_ps_for_decontam %>% 
+  pres_abund_filter() %>% # Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>% # convert to relative abundance
+  pres_abund_filter(pres = 15, abund = 0.0001) # keep taxa in ≥15 samples at ≥0.01%
+
+VGO3_NP_ps_for_decontam_2 <- VGO3_NP_ps_for_decontam %>% 
+  pres_abund_filter() %>% #  Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>%  # convert to relative abundance
+  pres_abund_filter(pres = 40, abund = 0.01) # keep taxa in ≥40 samples at ≥1%
+
+VGO3_NP_ps_for_decontam_1 <- prune_taxa(!taxa_names(VGO3_NP_ps_for_decontam_1) %in% taxa_names(VGO3_NP_ps_for_decontam_2), VGO3_NP_ps_for_decontam_1) # Exclude the high-abundance/core taxa from ps_vgo3_np_for_decontam_1
+
+# Reshape phyloseq 
+df_both_np <- ps_to_df(VGO3_NP_ps_for_decontam_1)
+
+# Identify ASVs from the phyloseq object
+asv_names <- taxa_names(VGO3_NP_ps_for_decontam_1)
+# Keep only ASVs that actually exist in df_VGO2
+existing_asvs <- intersect(asv_names, colnames(df_both_np))
+
+# Select DI.Run and ASV columns
+df_both_np <- df_both_np %>%
+  select(all_of(c("DI.Run", existing_asvs)))
+
+# Pivot longer to long format (ASV, RA)
+df_both_np_pivot <- pivot_longer(df_both_np, cols = existing_asvs,
+                             names_to = "ASV", values_to = "RA")
+
+# Run Kruskal-Wallis test per ASV
+kruskal_results_vgo3_np <- df_both_np_pivot %>%
+  group_by(ASV) %>%
+  summarise(
+    kruskal_test = list(
+      kruskal.test(RA ~ DI.Run, data = pick(DI.Run, RA)) %>% broom::tidy()
+    ),
+    .groups = "drop"
+  ) %>%
+  unnest(cols = kruskal_test)
+
+# Flag significant ASVs as contaminants
+kruskal_results_vgo3_np$contaminant <- ifelse(kruskal_results_vgo3_np$p.value < 0.001, TRUE, FALSE)
+# Subset only significant (putative contaminants)
+KW_contams_vgo3_np <- subset(kruskal_results_vgo3_np, contaminant == TRUE)
+KW_contams_vgo3_np # 246 detected 
+KW_contams_vgo3_np$ASV
+
+# Filter for significant ASVs
+KW_contams_VGO3NP <- ggplot(subset(df_both_np_pivot, ASV %in% KW_contams_vgo3_np$ASV), 
+            aes(x = as.character(DI.Run), y = RA)) +
+  labs(y = "Relative abundance (%)", x = "DI Run") +
+  geom_point(alpha = 0.5, shape = 16, size = 2,
+             position = position_jitter(width = 0.25, height = 0)) +
+  geom_boxplot(colour = "black", alpha = 0.5) +
+  stat_summary(fun = "mean", geom = "point", shape = 8,
+               size = 2, color = "black") +
+  facet_wrap(~ASV, scales = "free_y") +
+  theme_bw()
+
+ggsave("../Output/Longitudinal/Decontamination/Kruskall_Wallis/KW_contams_VGO3NP.svg", KW_contams_VGO3NP, width = 25, height = 25)
+ggsave("../Output/Longitudinal/Decontamination/Kruskall_Wallis/KW_contams_VGO3NP.png", KW_contams_VGO3NP, width = 25, height = 25)
+
+
+#### VGO3 OP ####
+VGO3_OP_ps_for_decontam_1 <- VGO3_OP_ps_for_decontam %>% 
+  pres_abund_filter() %>% # Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>% # convert to relative abundance
+  pres_abund_filter(pres = 15, abund = 0.0001) # keep taxa in ≥15 samples at ≥0.01%
+
+VGO3_OP_ps_for_decontam_2 <- VGO3_OP_ps_for_decontam %>% 
+  pres_abund_filter() %>% #  Start with taxa present in ≥2 samples at ≥0.1% RA 
+  to_RA() %>%  # convert to relative abundance
+  pres_abund_filter(pres = 40, abund = 0.01) # keep taxa in ≥40 samples at ≥1%
+
+VGO3_OP_ps_for_decontam_1 <- prune_taxa(!taxa_names(VGO3_OP_ps_for_decontam_1) %in% taxa_names(VGO3_OP_ps_for_decontam_2), VGO3_OP_ps_for_decontam_1) # Exclude the high-abundance/core taxa from ps_vgo3_op_for_decontam_1
+
+# Reshape phyloseq 
+df_both_op <- ps_to_df(VGO3_OP_ps_for_decontam_1)
+
+# Identify ASVs from the phyloseq object
+asv_names <- taxa_names(VGO3_OP_ps_for_decontam_1)
+# Keep only ASVs that actually exist in df_VGO2
+existing_asvs <- intersect(asv_names, colnames(df_both_op))
+
+# Select DI.Run and ASV columns
+df_both_op <- df_both_op %>%
+  select(all_of(c("DI.Run", existing_asvs)))
+
+# Pivot longer to long format (ASV, RA)
+df_both_op_pivot <- pivot_longer(df_both_op, cols = existing_asvs,
+                                 names_to = "ASV", values_to = "RA")
+
+# Run Kruskal-Wallis test per ASV
+kruskal_results_vgo3_op <- df_both_op_pivot %>%
+  group_by(ASV) %>%
+  summarise(
+    kruskal_test = list(
+      kruskal.test(RA ~ DI.Run, data = pick(DI.Run, RA)) %>% broom::tidy()
+    ),
+    .groups = "drop"
+  ) %>%
+  unnest(cols = kruskal_test)
+
+# Flag significant ASVs as contaminants
+kruskal_results_vgo3_op$contaminant <- ifelse(kruskal_results_vgo3_op$p.value < 0.001, TRUE, FALSE)
+# Subset only significant (putative contaminants)
+KW_contams_vgo3_op <- subset(kruskal_results_vgo3_op, contaminant == TRUE)
+KW_contams_vgo3_op #125 detected 
+KW_contams_vgo3_op$ASV
+
+# Filter for significant ASVs
+KW_contams_VGO3OP <- ggplot(subset(df_both_op_pivot, ASV %in% KW_contams_vgo3_op$ASV), 
+                            aes(x = as.character(DI.Run), y = RA)) +
+  labs(y = "Relative abundance (%)", x = "DI Run") +
+  geom_point(alpha = 0.5, shape = 16, size = 2,
+             position = position_jitter(width = 0.25, height = 0)) +
+  geom_boxplot(colour = "black", alpha = 0.5) +
+  stat_summary(fun = "mean", geom = "point", shape = 8,
+               size = 2, color = "black") +
+  facet_wrap(~ASV, scales = "free_y") +
+  theme_bw()
+
+ggsave("../Output/Longitudinal/Decontamination/Kruskall_Wallis/KW_contams_VGO3OP.svg", KW_contams_VGO3OP, width = 20, height = 20)
+```
+## Combine contaminants from both methods per dataset
+```{r}
+# Check which contaminants are the same across decontam method and kruskall wallis
+# Extract ASV names from decontam (rownames)
+decontam_VGO2_NP_ASVs <- rownames(contaminants_VGO2_NP)
+decontam_VGO2_OP_ASVs <- rownames(contaminants_VGO2_OP)
+decontam_VGO3_NP_ASVs <- rownames(contaminants_VGO3_NP)
+decontam_VGO3_OP_ASVs <- rownames(contaminants_VGO3_OP)
+
+# Extract ASV names from Kruskal-Wallis results
+KW_VGO2_NP_ASVs <- KW_contams_vgo2_np$ASV
+KW_VGO3_NP_ASVs <- KW_contams_vgo3_np$ASV
+KW_VGO3_OP_ASVs <- KW_contams_vgo3_op$ASV
+
+# Function to get counts of overlaps and uniques
+compare_contaminants <- function(decontam_asvs, kw_asvs) {
+  decontam_set <- unique(decontam_asvs)
+  kw_set <- unique(kw_asvs)
+  
+  shared <- intersect(decontam_set, kw_set)
+  decontam_only <- setdiff(decontam_set, kw_set)
+  kw_only <- setdiff(kw_set, decontam_set)
+  
+  list(
+    shared_ASVs = shared,
+    shared_count = length(shared),
+    decontam_only_count = length(decontam_only),
+    kw_only_count = length(kw_only)
+  )
+}
+# Comparisons per niche/dataset
+comparison_VGO2_NP <- compare_contaminants(decontam_VGO2_NP_ASVs, KW_VGO2_NP_ASVs)
+# NO KW test for VGO2 OP
+comparison_VGO3_NP <- compare_contaminants(decontam_VGO3_NP_ASVs, KW_VGO3_NP_ASVs)
+comparison_VGO3_OP <- compare_contaminants(decontam_VGO3_OP_ASVs, KW_VGO3_OP_ASVs)
+
+comparison_VGO2_NP
+comparison_VGO3_NP
+comparison_VGO3_OP
+
+
+# Combine the contaminants identified by decontam with those detected using Kruskall-Wallis test
+# VGO2_NP: both decontam and KW
+contaminants_VGO2_NP_combined <- unique(c(decontam_VGO2_NP_ASVs, KW_VGO2_NP_ASVs))
+length(contaminants_VGO2_NP_combined)# 151
+# VGO2_OP: decontam only
+contaminants_VGO2_OP_combined <- unique(decontam_VGO2_OP_ASVs)
+length(contaminants_VGO2_OP_combined) # 24
+# VGO3_NP: both decontam and KW
+contaminants_VGO3_NP_combined <- unique(c(decontam_VGO3_NP_ASVs, KW_VGO3_NP_ASVs))
+length(contaminants_VGO3_NP_combined)# 357
+# VGO3_OP: both decontam and KW
+contaminants_VGO3_OP_combined <- unique(c(decontam_VGO3_OP_ASVs, KW_VGO3_OP_ASVs))
+length(contaminants_VGO3_OP_combined)# 187 
+
+
+# Sort ASVs in teh list by their ranking (i.e. the number suffix at the end of their name)
+# Sort ASV list by numeric suffix
+sort_asvs_by_index <- function(asvs) {
+  index <- as.numeric(sub(".*_", "", asvs))  # extract suffix
+  asvs[order(index)]
+}
+
+# VGO2 NP
+contaminants_VGO2_NP_combined_sorted <- sort_asvs_by_index(contaminants_VGO2_NP_combined)
+# VGO2 OP
+contaminants_VGO2_OP_combined_sorted <- sort_asvs_by_index(contaminants_VGO2_OP_combined)
+# VGO3 NP
+contaminants_VGO3_NP_combined_sorted <- sort_asvs_by_index(contaminants_VGO3_NP_combined)
+# VGO3 OP
+contaminants_VGO3_OP_combined_sorted <- sort_asvs_by_index(contaminants_VGO3_OP_combined)
+
+
+
+# Create table of contaminants detected by each method and in each dataset 
+# Create a union of all contaminant ASVs from all datasets
+all_contaminants <- unique(c(
+  contaminants_VGO2_NP_combined_sorted,
+  contaminants_VGO2_OP_combined_sorted,
+  contaminants_VGO3_NP_combined_sorted,
+  contaminants_VGO3_OP_combined_sorted
+))
+
+# Initialize data frame
+final_contaminant_df <- data.frame(
+  ASV = all_contaminants,
+  VGO2_NP_decontam = all_contaminants %in% contaminants_VGO2_NP_combined_sorted,
+  VGO2_OP_decontam = all_contaminants %in% contaminants_VGO2_OP_combined_sorted,
+  VGO3_NP_decontam = all_contaminants %in% contaminants_VGO3_NP_combined_sorted,
+  VGO3_OP_decontam = all_contaminants %in% contaminants_VGO3_OP_combined_sorted
+)
+
+# Optional: sort by numeric ASV suffix for readability
+final_contaminant_df <- final_contaminant_df[order(as.numeric(sub(".*_", "", final_contaminant_df$ASV))), ]
+
+# View final table
+head(final_contaminant_df)
+
+# Write to CSV
+write.csv(final_contaminant_df, "../Output/Longitudinal/Decontamination/Final_contaminants_combined.csv", row.names = FALSE)
+# Now to do manual checks of ASVs flagged as contaminants
+```
+## Frequency plot of contaminants
+We create a frequency plot of the top 100 identified contaminants. For most of these contaminant ASVs there seems to be a correlation between their relative abundance and the bacterial density (for VGO2 OP the pattern isn't so consistent)
+```{r}
+# Select top 100 ASVs (or fewer if < 100 available)
+top100_VGO2_NP <- head(contaminants_VGO2_NP_combined_sorted, 100)
+top100_VGO2_OP <- head(contaminants_VGO2_OP_combined_sorted, 100)
+top100_VGO3_NP <- head(contaminants_VGO3_NP_combined_sorted, 100)
+top100_VGO3_OP <- head(contaminants_VGO3_OP_combined_sorted, 100)
+
+# Frequency plots for each dataset
+# VGO2 NP
+plot_VGO2_NP <- plot_frequency(subset_samples(VGO2_NP_ps_for_decontam, niche == "NP"), top100_VGO2_NP, 
+               conc="qPCR") +  xlab("Bacterial density (pg/ul)")
+plot_VGO2_NP
+
+# VGO2 OP
+# plot_VGO2_OP <- plot_frequency(subset_samples(VGO2_OP_ps_for_decontam, niche == "OP"), top100_VGO2_OP, 
+#                conc="qPCR") +  xlab("Bacterial density (pg/ul)")
+# plot_VGO2_OP
+# Doesn't work for OP...
+# Subset to OP samples
+ps_op <- subset_samples(VGO2_OP_ps_for_decontam, niche == "OP")
+# Remove samples with zero total counts
+ps_op <- prune_samples(sample_sums(ps_op) > 0, ps_op)
+# Get ASVs present in this filtered OP set
+asvs_in_op <- taxa_names(ps_op)
+# Intersect with top100 ASVs
+top100_present_op <- intersect(top100_VGO2_OP, asvs_in_op)
+# Plot
+plot_VGO2_OP <- plot_frequency(
+  ps_op, 
+  top100_present_op,
+  conc = "qPCR"
+) + 
+  xlab("Bacterial density (pg/µl)") +
+  ggtitle("VGO2 OP")
+
+
+# VGO3 NP
+plot_VGO3_NP <- plot_frequency(subset_samples(ps_vgo3_np_for_decontam, niche == "NP"), top100_VGO3_NP, 
+               conc="qPCR") +  xlab("Bacterial density (pg/ul)")
+
+# VGO3 OP
+plot_VGO3_OP <- plot_frequency(subset_samples(ps_vgo3_op_for_decontam, niche == "OP"), top100_VGO3_OP, 
+               conc="qPCR") +  xlab("Bacterial density (pg/ul)")
+
+
+ggsave("../Output/Longitudinal/Decontamination/freqplot_VGO2_NP_top100.svg", plot_VGO2_NP, width=15, height=15)
+ggsave("../Output/Longitudinal/Decontamination/freqplot_VGO2_OP_top100.svg", plot_VGO2_OP, width=15, height=15)
+ggsave("../Output/Longitudinal/Decontamination/freqplot_VGO3_NP_top100.svg", plot_VGO3_NP, width=15, height=15)
+ggsave("../Output/Longitudinal/Decontamination/freqplot_VGO3_OP_top100.svg", plot_VGO3_OP, width=15, height=15)
+
+
+# x-axis: Bacterial load (e.g., qPCR concentration, here pg/μl)
+# y-axis: Frequency (relative abundance) of an individual ASV
+
+## For true contaminants we expect higher relative abundance at lower bacterial loads, and a declining or flat trend as load increases. There should be a negative correlation between ASV abundance and sample bacterial density. If it is a false contaminant, then there will be no clear correlation with bacterial load. 
+```
+## Differences in contaminants between niches 
+```{r}
+# Identify contaminants shared between 
+# Compare NP vs OP for VGO2
+compare_np_op <- function(np_asvs, op_asvs) {
+  shared <- intersect(np_asvs, op_asvs)
+  np_only <- setdiff(np_asvs, op_asvs)
+  op_only <- setdiff(op_asvs, np_asvs)
+  
+  list(
+    shared_ASVs = shared,
+    shared_count = length(shared),
+    np_only_ASVs = np_only,
+    np_only_count = length(np_only),
+    op_only_ASVs = op_only,
+    op_only_count = length(op_only)
+  )
+}
+
+# VGO2: Compare contaminants between NP and OP
+np_op_comparison_VGO2 <- compare_np_op(
+  contaminants_VGO2_NP_combined_sorted,
+  contaminants_VGO2_OP_combined_sorted
+)
+
+# VGO3: Compare contaminants between NP and OP
+np_op_comparison_VGO3 <- compare_np_op(
+  contaminants_VGO3_NP_combined_sorted,
+  contaminants_VGO3_OP_combined_sorted
+)
+
+# View the results
+np_op_comparison_VGO2 # 6 shared, 145 NP only, 18 OP only 
+np_op_comparison_VGO3 # 58 shared, 299 NP only, 129 OP only 
+
+```
+## Check false contaminants
+After screening the list of combined contaminants, we found some that some ASVs may not actually be contaminants.
+```{r}
+# Specifically we see that there are some high abundant common NP ASVs that are flagged as contaminants in the VGO3 OP dataset. But in the VGO3 sequencing, there were some mixed sequencing runs (i.e. mixing NP and OP niches). Checking in which runs these common NP ASVs appear to see if we can see signs of spill-over from the NP to OP niches.
+
+# Common NP contaminants to check
+# Define the ASVs you want to check for spill-over
+contams_check_vgo3_OP <- c("Dolosigranulum_pigrum_1", "Staphylococcus_2", "Corynebacterium_3", "Moraxella_4")
+# Filter to relevant ASVs in VGO3 OP and keep only non-zero abundance
+df_both_op_contams_present <- df_both_op_pivot %>%
+  filter(ASV %in% contams_check_vgo3_OP, RA > 0)
+# For each ASV, list the unique DI.Runs where it's present
+asv_run_presence_simple <- df_both_op_contams_present %>%
+  group_by(ASV) %>%
+  summarise(
+    Runs_present = paste(sort(unique(DI.Run)), collapse = ", "),
+    .groups = "drop"
+  )
+# View result
+print(asv_run_presence_simple)
+# Optionally write to file
+write.csv(asv_run_presence_simple, "../Output/Decontamination/VGO3_OP_suspect_ASV_run_presence.csv", row.names = FALSE) # The ASVs seem to be present across a selection of different DNA isolation runs - therefore not probably related to spill-over from NP niche
+
+# Extra check: 
+# Check the relative abundance across DNA isolation runs for these suspicious contaminants identified. 
+# Define ASVs of interest
+asvs_to_check <- c("Dolosigranulum_pigrum_1", "Staphylococcus_2", "Corynebacterium_3", "Moraxella_4")
+# Filter dataset for ASVs of interest and ensure DI.Run is ordered
+plot_data <- df_both_op_pivot %>%
+  filter(ASV %in% asvs_to_check) %>%
+  mutate(DI.Run = factor(DI.Run, levels = sort(unique(as.numeric(as.character(DI.Run))))))
+# Plot
+p <- ggplot(plot_data, aes(x = DI.Run, y = RA)) +
+  geom_point(alpha = 0.5, shape = 16, size = 2, position = position_jitter(width = 0.2)) +
+  geom_boxplot(outlier.shape = NA, fill = "grey90", alpha = 0.4) +
+  stat_summary(fun = mean, geom = "point", shape = 8, size = 2, color = "red") +
+  facet_wrap(~ASV, scales = "free_y") +
+  labs(
+    x = "DNA Isolation Run (DI.Run)",
+    y = "Relative Abundance",
+    title = "RA of suspect ASVs across runs (VGO3 OP)"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)
+  )
+# Display plot
+print(p)
+# Save plot 
+ggsave("../Output/Longitudinal/Decontamination/RA_by_run_VGO3_OP_suspects.svg", p, width = 10, height = 6)# no clear pattern
+
+```
+## Non-contaminants after manual inspection
+```{r}
+# Define non-contaminants manually verified
+non_contam <- c(
+  "Dolosigranulum_pigrum_1", "Staphylococcus_2", "Corynebacterium_3",
+  "Moraxella_4", "Veillonella_140", "Prevotella_7_melaninogenica_165",
+  "Anaerococcus_provencensis_168", "Acinetobacter_lwoffii_177", "Prevotella_7_179",
+  "Cutibacterium_187", "Lactococcus_209", "Actinomyces_225"
+)
+
+# Filter contaminants by removing known non-contaminants
+all_contaminants_combined_filt <- setdiff(all_contaminants, non_contam)
+cat("Number of contaminants after filtering non-contaminants:", length(all_contaminants_combined_filt), "\n") # 597 
+```
+## Exclude all blanks from phyloseq objects 
+```{r}
+# Subset phyloseq object to samples from niches "NP" and "OP"
+ps_longitudinal_NPOP <- subset_samples(ps_longitudinal, niche %in% c("NP", "OP"))
+
+# Remove taxa with zero counts after subsetting samples
+ps_longitudinal_NPOP_f <- prune_taxa(taxa_sums(ps_longitudinal_NPOP) > 0, ps_longitudinal_NPOP)
+ps_longitudinal_NPOP; ps_longitudinal_NPOP_f # 6980 taxa removed
+```
+## Remove contaminants 
+```{r}
+# Remove contaminant taxa from the filtered phyloseq object
+ps_longitudinal_NPOP_no_contams <- prune_taxa(!(taxa_names(ps_longitudinal_NPOP_f) %in% all_contaminants_combined_filt), ps_longitudinal_NPOP_f)
+
+cat("Contaminants removed:", length(taxa_names(ps_longitudinal_NPOP_f)) - length(taxa_names(ps_longitudinal_NPOP_no_contams)), "\n") # 597 removed 
+
+# Remove any taxa with zero counts after contaminant removal
+ps2_longitudinal <- prune_taxa(taxa_sums(ps_longitudinal_NPOP_no_contams) > 0, ps_longitudinal_NPOP_no_contams)
+
+# Final object: ps2_longitudinal contains no contaminants and no zero-count taxa
+
+# Manual inspection of list - "Salmonella_25", "Listeria_26" seem suspicious - not likely in NP and OP, do not appear in the VGO3 OP data, see where they are in the dataset - looking into these: 
+# Define the ASVs of interest
+asvs_of_interest <- c("Salmonella_25", "Listeria_26")
+# Get the OTU table and transpose so rows are samples
+otu_df <- as.data.frame(t(otu_table(ps_longitudinal_NPOP_no_contams)))
+# Find samples where either ASV is present (i.e., abundance > 0)
+samples_with_asvs <- rownames(otu_df)[rowSums(otu_df[, asvs_of_interest, drop = FALSE] > 0) > 0]
+# Extract the sample_data for those samples
+sample_data_with_asvs <- sample_data(ps_longitudinal)[samples_with_asvs, ]
+# View 
+sample_data_with_asvs
+
+```
+# Final list of ASVs remaining
+```{r}
+# Extract ASV names from phyloseq object
+asv_names <- taxa_names(ps2_longitudinal)
+# Extract numeric suffix (everything after last underscore)
+asv_suffix_numbers <- as.numeric(sub(".*_", "", asv_names))
+# Order ASVs by numeric suffix
+asv_ordered <- asv_names[order(asv_suffix_numbers)]
+# Take only the first 100
+asv_first_100 <- head(asv_ordered, 100)
+# Print
+print(asv_first_100)
+# save final ASV list
+write.csv(asv_first_100, "../Output/Longitudinal/Microbiome_descriptives/Ordered_ASV_names_top100.csv")
+```
+
+# Check for duplicated samples
+```{r}
+# Duplicates were already resolved before but check if any were missed
+# Convert sample_data to data.frame
+sample_df <- as.data.frame(sample_data(ps2_longitudinal))
+# Create a new combined key of VGO3_ID and niche
+sample_df$combined_key <- paste(sample_df$VGO3_ID, sample_df$niche, sample_df$study, sep = "_")
+# Count how many times each combined_key appears
+counts <- table(sample_df$combined_key)
+# Keep keys that appear more than once (true duplicates)
+dup_keys <- names(counts[counts > 1])
+# Filter the data.frame for those duplicated keys
+duplicates <- sample_df[sample_df$combined_key %in% dup_keys, ]
+# View duplicates
+duplicates
+```
+
+# Exclude low density samples
+Next, we remove all the samples with low bacterial density (lower than 0.095 pg/ul). This includes 20 samples
+```{r}
+ps3_longitudinal <- prune_samples(sample_data(ps2_longitudinal)$qPCR >= 0.095, ps2_longitudinal)
+ps3_longitudinal <- prune_taxa(taxa_sums(ps3_longitudinal) > 0, ps3_longitudinal) # Remove taxa with taxa sum of 0
+
+ps2_longitudinal; ps3_longitudinal # 84 samples were removed 
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 25591 taxa and 2415 samples ]
+# sample_data() Sample Data:       [ 2415 samples by 84 sample variables ]
+# tax_table()   Taxonomy Table:    [ 25591 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 25591 reference sequences ]
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 25355 taxa and 2332 samples ]
+# sample_data() Sample Data:       [ 2332 samples by 84 sample variables ]
+# tax_table()   Taxonomy Table:    [ 25355 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 25355 reference sequences ]
+
+
+```
+# Rarefaction curves
+```{r}
+# First we take a look at the distribution of # reads per sample
+read_counts <- sample_sums(ps3_longitudinal) %>% enframe() %>% ggplot(aes(y = 1, x = value)) +
+  ggdist::stat_halfeye( adjust = .5, height = .3, justification = -.3,
+                        .width = 0, point_colour = NA) + 
+  geom_point(size = 1.3, shape = 16, alpha = .2, 
+             position = position_jitter(seed = 1, width = 0, height = .05)) +
+  geom_boxplot(width = .12, alpha = 0.5, outlier.color = NA) +
+  scale_x_log10(breaks = c(1000, 5000, 10000, 30000, 100000, 300000),
+                labels = scales::comma) +
+  coord_cartesian(ylim = c(0.9, NA), clip = "off") +
+  labs(x = "Number of reads/sample", y = NULL) +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) +
+  geom_vline(xintercept = 10000, linetype = "dashed", color = "red")
+read_counts
+ggsave("../Output/Longitudinal/Preprocessing/read_counts.svg", read_counts, width = 5, height = 4)
+
+# Rarefaction curves - helps evaluate whether the sequencing depth (i.e., number of reads per sample) was sufficient to capture the diversity of microbial communities in the samples.
+# X-axis: Number of sequencing reads (sampling effort)
+# Y-axis: Number of observed species (or ASVs/OTUs, depending on your level of analysis)
+## Each line on the curve represents a sample.
+otu_tab_rare <- ps3_longitudinal %>% prune_samples(sample_sums(.) < 30000, .) %>% # only keep samples with <30000 reads
+  otu_table() %>% # extract otu table
+  as(., "matrix") %>% # convert it to a matrix
+  t # transpose the matrix where rows = samples and cols = taxa
+
+saveRDS(otu_tab_rare, "../Output/Longitudinal/Preprocessing/otu_tab_rare.rds")
+
+# Generate rarefaction curves
+# rarecurve() (from the vegan package) performs individual-based rarefaction for each sample by randomly subsampling reads without replacement at increasing steps (every 10 reads, here) and calculating the number of unique taxa detected at each step.
+# rare_curve_data <- rarecurve(otu_tab_rare, step = 10)
+
+# rare_curves <- map2_dfr(rare_curve_data, 
+#                         rownames(otu_tab_rare), ~enframe(.x) %>% 
+#                           mutate(sample_id = .y)) %>%
+#   mutate(name = str_remove(name, "N") %>% as.numeric) %>%
+#   ggplot(aes(x = name, y = value, group = sample_id)) +
+#     geom_line(alpha = 0.15) +
+#     scale_y_log10() +
+#     scale_x_continuous(breaks = c(0, 5000, 10000, 15000, 20000, 25000), 
+#                        labels = scales::comma) +
+#     geom_vline(aes(xintercept = 10000),  colour="grey50", linetype="dotted") +
+#     labs(x = "Sample size", y = "Number of species")
+# 
+# ggsave("../Output/Microbiome_descriptives/rarefaction_curves.svg", rare_curves)
+```
+
+# Exclusion of samples with less than 10,000 reads
+```{r}
+# Based on these figures, we chose a read cut-off at 10,000 reads. In the rarefaction curves, this was the point where the curves started flattening. 
+# Remove the samples with <10,000 reads
+ps4_longitudinal <- prune_samples(sample_sums(ps3_longitudinal) > 10000, ps3_longitudinal)
+ps4_longitudinal <- prune_samples(!is.na(ps4_longitudinal@sam_data$niche), ps4_longitudinal)
+ps4_longitudinal <- prune_taxa(taxa_sums(ps4_longitudinal) > 0, ps4_longitudinal)
+
+ps3_longitudinal; ps4_longitudinal
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 25355 taxa and 2332 samples ]
+# sample_data() Sample Data:       [ 2332 samples by 84 sample variables ]
+# tax_table()   Taxonomy Table:    [ 25355 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 25355 reference sequences ]
+# phyloseq-class experiment-level object
+# otu_table()   OTU Table:         [ 23557 taxa and 2137 samples ]
+# sample_data() Sample Data:       [ 2137 samples by 84 sample variables ]
+# tax_table()   Taxonomy Table:    [ 23557 taxa by 9 taxonomic ranks ]
+# refseq()      DNAStringSet:      [ 23557 reference sequences ]
+```
+# Composition plots per dataset - after pre-processing
+```{r}
+# Subset ps4_longitudinal for dataset == "VGO3_NP"
+ps_vgo2_np <- subset_samples(ps4_longitudinal, dataset == "VGO2_NP" & niche == "NP")
+ps_vgo2_np_filt <- prune_taxa(taxa_sums(ps_vgo2_np) > 0, ps_vgo2_np)
+ps_vgo2_np_filt <- prune_samples(sample_sums(ps_vgo2_np_filt) > 0, ps_vgo2_np_filt)
+
+# stacked bar plot
+VGO2_NP_stackedbar <- create_ordered_bar_n(ps_vgo2_np, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO2 NP microbiome composition per sample (cleaned)")
+
+# Save plot
+ggsave("../Output/Longitudinal/Microbiome_descriptives/After_preprocessing_composition/VGO2_NP_barplot.svg", VGO2_NP_stackedbar, width = 5, height = 6)
+
+# Subset ps_longitudinalfor dataset == "VGO3_OP"
+ps_vgo2_op <- subset_samples(ps4_longitudinal, dataset == "VGO2_OP" & niche == "OP")
+ps_vgo2_op_filt <- prune_taxa(taxa_sums(ps_vgo2_op) > 0, ps_vgo2_op)
+ps_vgo2_op_filt <- prune_samples(sample_sums(ps_vgo2_op_filt) > 0, ps_vgo2_op_filt)
+
+# stacked bar plot
+VGO2_OP_stackedbar <- create_ordered_bar_n(ps_vgo2_op_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO2 OP microbiome composition per sample (cleaned)")
+
+# Save plot
+ggsave("../Output/Longitudinal/Microbiome_descriptives/After_preprocessing_composition/VGO2_OP_barplot.svg", VGO2_OP_stackedbar, width = 5, height = 6)
+
+
+# Subset ps_longitudinalfor dataset == "VGO3_NP"
+ps_vgo3_np <- subset_samples(ps_longitudinal, dataset == "VGO3_NPOP" & niche == "NP")
+ps_vgo3_np_filt <- prune_taxa(taxa_sums(ps_vgo3_np) > 0, ps_vgo3_np)
+ps_vgo3_np_filt <- prune_samples(sample_sums(ps_vgo3_np_filt) > 0, ps_vgo3_np_filt)
+
+# stacked bar plot
+VGO3_NP_stackedbar <- create_ordered_bar_n(ps_vgo3_np_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO3 NP microbiome composition per sample (cleaned)")
+# Save plot
+ggsave("../Output/Longitudinal/Microbiome_descriptives/After_preprocessing_composition/VGO3_NP_barplot.svg", VGO3_NP_stackedbar, width = 5, height = 6)
+
+
+# Subset ps_longitudinal for dataset == "VGO3_NP"
+ps_vgo3_op <- subset_samples(ps_longitudinal, dataset == "VGO3_NPOP" & niche == "OP")
+ps_vgo3_op_filt <- prune_taxa(taxa_sums(ps_vgo3_op) > 0, ps_vgo3_op)
+ps_vgo3_op_filt <- prune_samples(sample_sums(ps_vgo3_op_filt) > 0, ps_vgo3_op_filt)
+
+# stacked bar plot
+VGO3_OP_stackedbar <- create_ordered_bar_n(ps_vgo3_op_filt, 15) + 
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank()) + 
+  geom_bar(stat = "identity", width = 1) +
+  labs(title = "VGO3 OP microbiome composition per sample (cleaned)")
+# Save plot
+ggsave("../Output/Longitudinal/Microbiome_descriptives/After_preprocessing_composition/VGO3_OP_barplot.svg", VGO3_OP_stackedbar, width = 5, height = 6)
+
+
+
+#### Combine plots: NP on top row, OP on bottom row ####
+composition_combined <- (VGO2_NP_stackedbar | VGO3_NP_stackedbar) / 
+                        (VGO2_OP_stackedbar | VGO3_OP_stackedbar) +
+                        plot_annotation(tag_levels = 'A')  # Optional: add panel tags A, B, C, D
+
+print(composition_combined)
+
+# Save combined figure
+ggsave("../Output/Longitudinal/Microbiome_descriptives/After_preprocessing_composition/Combined_composition_barplots.svg", composition_combined, width = 12, height = 12)
+
+```
+
+# Composition plots - average RA per dataset (genus level)
+Make plots which collapse ASVs to genera, calculate mean relative abundances for each genus per dataset, and keep genera that have >10% mean RA, create side-by-side bar plot across the datasets
+```{r}
+get_top_genera_RA <- function(ps_obj, dataset_name) {
+  # Aggregate to genus level
+  ps_genus <- tax_glom(ps_obj, taxrank = "genus")
+  ps_genus_RA <- transform_sample_counts(ps_genus, function(x) x / sum(x))
+  
+  # Convert to data frame
+  genus_df <- psmelt(ps_genus_RA)
+  
+  # Compute mean relative abundance and select top 10 genera
+  genus_summary <- genus_df %>%
+    group_by(genus) %>%
+    summarise(Mean_RA = mean(Abundance, na.rm = TRUE)) %>%
+    arrange(desc(Mean_RA)) %>%
+    slice_head(n = 5) %>%
+    mutate(Dataset = dataset_name)
+  
+  return(genus_summary)
+}
+
+
+# Run for each group
+RA_vgo2_np <- get_top_genera_RA(ps_vgo2_np_filt, "VGO2_NP")
+RA_vgo2_op <- get_top_genera_RA(ps_vgo2_op_filt, "VGO2_OP")
+RA_vgo3_np <- get_top_genera_RA(ps_vgo3_np_filt, "VGO3_NP")
+RA_vgo3_op <- get_top_genera_RA(ps_vgo3_op_filt, "VGO3_OP")
+
+# Combine
+RA_all <- bind_rows(RA_vgo2_np, RA_vgo2_op, RA_vgo3_np, RA_vgo3_op)
+
+# Make Genus a factor ordered by abundance for cleaner plotting
+RA_all <- RA_all %>%
+  mutate(Genus = fct_reorder(genus, Mean_RA, .fun = max, .desc = TRUE))
+
+
+# Add residual to each group to make bars stack to 100%
+RA_all_with_resid <- RA_all %>%
+  group_by(Dataset) %>%
+  mutate(Total_RA = sum(Mean_RA),
+         Residual_RA = 1 - Total_RA) %>%
+  ungroup()
+
+residual_rows <- RA_all_with_resid %>%
+  select(Dataset, Residual_RA) %>%
+  distinct() %>%
+  mutate(genus = "Residual", Mean_RA = Residual_RA) %>%
+  select(genus, Mean_RA, Dataset)
+
+RA_all_final <- RA_all %>%
+  select(genus, Mean_RA, Dataset) %>%
+  bind_rows(residual_rows)
+
+# Reorder genus so Residual is always on top
+RA_all_final <- RA_all_final %>%
+  mutate(Genus = ifelse(genus == "Residual", "Residual", as.character(genus))) %>%
+  mutate(Genus = fct_reorder(Genus, Mean_RA, .fun = max, .desc = TRUE)) %>%
+  mutate(Genus = fct_relevel(Genus, "Residual", after = 0))
+
+# Reorder Dataset manually
+RA_all_final <- RA_all_final %>%
+  mutate(Dataset = factor(Dataset, levels = c("VGO2_NP", "VGO3_NP", "VGO2_OP", "VGO3_OP")))
+
+
+# Assign colors
+genus_levels <- unique(RA_all_final$genus)
+n_non_residual <- length(setdiff(genus_levels, "Residual"))
+palette_colors <- brewer.pal(min(12, n_non_residual), "Paired")
+
+genus_colors <- c(
+  setNames(palette_colors[1:n_non_residual], setdiff(genus_levels, "Residual")),
+  Residual = "grey80"
+)
+
+# plot
+genus_plot_all <- RA_all_final %>%
+  ggplot(aes(x = Dataset, y = Mean_RA, fill = Genus)) +
+  geom_bar(stat = "identity", color = "white", size = 0.3) +  # white lines between stacked genera
+  scale_fill_manual(
+    values = genus_colors,
+    guide = guide_legend(title = "Genus", label.theme = element_text(face = "italic"))
+  ) +
+  labs(
+    title = "Top 5 genera per dataset",
+    y = "Mean relative abundance",
+    x = "Dataset"
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1), limits = c(0, 1), expand = c(0, 0)) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    panel.border = element_rect(color = "grey40", size = 0.5),
+    legend.key.size = unit(0.5, "cm")
+  )
+
+# View the plot
+genus_plot_all
+
+ggsave("../Output/Longitudinal/Microbiome_descriptives/After_preprocessing_composition/Genus_composition_plot_all.svg", genus_plot_all, height = 5, width =7)
+
+
+```
+
+# Composition plots
+## Top 5 ASVs per niche 
+```{r}
+# Subset ps4_longitudinal for dataset == "VGO3_NP"
+ps_vgo2_np <- subset_samples(ps4_longitudinal, dataset == "VGO2_NP" & niche == "NP")
+ps_vgo2_np_filt <- prune_taxa(taxa_sums(ps_vgo2_np) > 0, ps_vgo2_np)
+ps_vgo2_np_filt <- prune_samples(sample_sums(ps_vgo2_np_filt) > 0, ps_vgo2_np_filt)
+
+# Subset ps_longitudinalfor dataset == "VGO3_OP"
+ps_vgo2_op <- subset_samples(ps4_longitudinal, dataset == "VGO2_OP" & niche == "OP")
+ps_vgo2_op_filt <- prune_taxa(taxa_sums(ps_vgo2_op) > 0, ps_vgo2_op)
+ps_vgo2_op_filt <- prune_samples(sample_sums(ps_vgo2_op_filt) > 0, ps_vgo2_op_filt)
+
+# Merge NP + OP
+ps_combined_long <- merge_phyloseq(ps_vgo2_np_filt, ps_vgo2_op_filt)
+ps_combined_long@sam_data$niche
+# Transform to relative abundance 
+ps_combined_long_rel <- transform_sample_counts(ps_combined_long, function(x) x / sum(x))
+
+# Extract data
+otu_df_long <- as.data.frame(otu_table(ps_combined_long_rel))
+meta_df_long <- as.data.frame(sample_data(ps_combined_long_rel))
+
+# Ensure sample order alignment
+if (!identical(colnames(otu_df_long), rownames(meta_df_long))) {
+  otu_df_long <- otu_df_long[, rownames(meta_df_long)]
+}
+
+# Average per niche
+meta_df_long$niche <- as.factor(meta_df_long$niche)
+otu_avg_long <- sapply(levels(meta_df_long$niche), function(niche) {
+  rowMeans(otu_df_long[, rownames(meta_df_long[meta_df_long$niche == niche, ]), drop = FALSE])
+})
+otu_avg_long <- as.data.frame(otu_avg_long)
+otu_avg_long$Taxon <- rownames(otu_avg_long)
+
+#  Compute top 5 per niche
+top_np_long <- otu_avg_long %>% arrange(desc(NP)) %>% slice_head(n = 5) %>% pull(Taxon)
+top_op_long <- otu_avg_long %>% arrange(desc(OP)) %>% slice_head(n = 5) %>% pull(Taxon)
+
+# Reshape for plotting
+otu_long <- otu_avg_long %>%
+  tidyr::pivot_longer(cols = c("NP", "OP"), names_to = "Niche", values_to = "Abundance") %>%
+  mutate(TaxonGroup = case_when(
+    Niche == "NP" & Taxon %in% top_np_long ~ Taxon,
+    Niche == "OP" & Taxon %in% top_op_long ~ Taxon,
+    TRUE ~ "Other"
+  ))
+
+# Average proportions within each Niche
+df_plot_long <- otu_long %>%
+  group_by(Niche, TaxonGroup) %>%
+  summarise(MeanRelAbundance = sum(Abundance), .groups = "drop") %>%
+  group_by(Niche) %>%
+  mutate(Proportion = MeanRelAbundance / sum(MeanRelAbundance))
+
+
+# Properly order taxa within each niche and move "Other" to top ----
+df_plot_long <- df_plot_long %>%
+  group_by(Niche) %>%
+  arrange(Niche, Proportion) %>%
+  mutate(TaxonGroup = forcats::fct_reorder2(
+    TaxonGroup, Niche, Proportion, .desc = FALSE
+  ))
+
+# Create a unified ordering for plotting and legend:
+# Within each niche: from least → most abundant (so bars stack bottom→top)
+# Move "Other" to be plotted last (top of bar) and last in legend
+unique_taxa_order <- df_plot_long %>%
+  arrange(Niche, Proportion) %>%
+  distinct(TaxonGroup) %>%
+  pull(TaxonGroup)
+unique_taxa_order <- c(setdiff(unique_taxa_order, "Other"), "Other")
+
+df_plot_long$TaxonGroup <- factor(df_plot_long$TaxonGroup, levels = unique_taxa_order)
+
+# Plot
+palette_colors <- brewer.pal(10, "Paired")
+unique_taxa <- unique(df_plot_long$TaxonGroup)
+palette_final <- setNames(rep(palette_colors, length.out = length(unique_taxa)), unique_taxa)
+palette_final["Other"] <- "grey80"
+
+ggplot(df_plot_long, aes(x = Niche, y = Proportion, fill = TaxonGroup)) +
+  geom_col(color = "white") +
+  scale_fill_manual(values = palette_final, breaks = unique_taxa_order) +  # ensures legend order
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    title = "Top 5 ASVs per niche (each niche independent)",
+    y = "Relative abundance",
+    x = NULL,
+    fill = "ASV"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.major.x = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 9)
+  )
+
+# Save
+ggsave(
+  "../Output/Longitudinal/Microbiome_descriptives/After_preprocessing_composition/Top5_ASV_per_niche_longitudinal.svg",
+  width = 5, height = 4
+)
+
+```
+
+
+# Rarefy data and compute alpha diversity indices 
+```{r}
+m <- ps4_longitudinal %>% meta_to_df()
+gc()
+set.seed(77)
+ps4_longitudinal_rarefied <- phyloseq::rarefy_even_depth(ps4_longitudinal, replace = T, trimOTUs = T)
+sample_sums(ps4_longitudinal_rarefied) 
+min(sample_sums(ps4_longitudinal_rarefied))# min library size = 10002   
+# 2638OTUs were removed because they are no longer present in any sample after random subsampling
+# Compute alpha diversity indices: Observed, shannon and simpson
+adiv <- data.frame(
+  "Observed" = phyloseq::estimate_richness(ps4_longitudinal_rarefied, measures = "Observed"),
+  "Shannon" = phyloseq::estimate_richness(ps4_longitudinal_rarefied, measures = "Shannon"),
+  "Simpson" = phyloseq::estimate_richness(ps4_longitudinal_rarefied, measures = "Simpson")
+  )
+
+# sample id have been changed to "." instead of "_"
+adiv$sample_id <- gsub("\\.", "-", rownames(adiv))
+m <- left_join(m, adiv)
+m$qPCR_log <- log2(m$qPCR)
+
+# Add alpha diversity values to phyloseq object
+rownames(m) <- m$sample_id
+m <- select(m, -c("sample_id"))
+sample_data(ps4_longitudinal) <- m
+
+# Add read number metadata
+ps4_longitudinal@sam_data$final_read_nr <- colSums(ps4_longitudinal@otu_table)
+```
+
+# Preprocessing summary
+```{r}
+stats <- tibble(step = character(),
+                samples = numeric(),
+                taxa = numeric(),
+                reads = numeric())
+
+ps2_longitudinal
+stats <- ps_stats(ps_longitudinal, stats, "Raw data")
+stats <- ps_stats(ps_longitudinal_NPOP_f, stats, "Removal of blanks and zero sum taxa")
+stats <- ps_stats(ps2_longitudinal, stats, "Exclusion of contaminant ASVs")
+stats <- ps_stats(ps3_longitudinal, stats, "Exclusion of samples with bacterial density <0.095 pg/uL")
+stats <- ps_stats(ps4_longitudinal, stats, "Exclusion of samples with reads <10,000")
+stats <- ps_stats(ps4_longitudinal_rarefied, stats, "Rarefied for alpha diversity")
+stats
+
+write.csv(stats, "../Output/Longitudinal/Preprocessing/Processing_steps.csv")
+
+```
+# Number samples in each dataset before and after pre-processing
+```{r}
+# Define a helper function to count samples
+count_samples <- function(ps_obj, niche_val, dataset_val) {
+  sample_data(ps_obj) %>%
+    data.frame() %>%
+    filter(niche == niche_val, dataset == dataset_val) %>%
+    nrow()
+}
+
+# Create the summary table
+sample_counts <- tibble(
+  Condition = c("NP - VGO2_NP", "NP - VGO3_OPNP", "OP - VGO2_OP", "OP - VGO3_NPOP"),
+  
+  Before = c(
+    count_samples(ps_longitudinal_NPOP_f, "NP", "VGO2_NP"),
+    count_samples(ps_longitudinal_NPOP_f, "NP", "VGO3_NPOP"),
+    count_samples(ps_longitudinal_NPOP_f, "OP", "VGO2_OP"),
+    count_samples(ps_longitudinal_NPOP_f, "OP", "VGO3_NPOP")
+  ),
+  
+  After = c(
+    count_samples(ps4_longitudinal, "NP", "VGO2_NP"),
+    count_samples(ps4_longitudinal, "NP", "VGO3_NPOP"),
+    count_samples(ps4_longitudinal, "OP", "VGO2_OP"),
+    count_samples(ps4_longitudinal, "OP", "VGO3_NPOP")
+  )
+)
+
+# View the table
+print(sample_counts)
+
+write.csv(sample_counts, "../Output/Longitudinal/Preprocessing/Sample_counts_before_after_preprocessing.csv")
+```
+# Taxonomy after processing
+```{r}
+count_by_rank <- function(ps) {
+  setNames(
+    sapply(phyloseq::rank_names(ps), \(r) phyloseq::ntaxa(phyloseq::tax_glom(ps, r, NArm = TRUE))),
+    phyloseq::rank_names(ps)
+  )
+}
+
+count_by_rank(ps4_longitudinal)
+
+```
+
+# Metadata additions and fixes 
+## Add participant metadata from VGO2 and VGO3 and select
+```{r}
+# Make 2 phyloseq objects - for our 2 longitudinal research questions:
+# 1. how is microbiome at T0 associated with lung function at T1 (and the change in lung function from T0 to T1)
+# 2. how does the microbiome change over time (from T0 to T1) and how is this associated with changes in lung function? 
+
+
+# For RQ1 we only need microbiome at T0 (NP and/or OP), AND lung function at both timepoints (T0 and T1)
+# For RQ2 we need lung function at both T0 and T1 and at least one niche (NP or OP) sampled at both T0 and T1
+
+# Inputs (don't modify ps4_longitudinal)
+ps4_longitudinal_orig <- ps4_longitudinal
+
+# Load and prepare metadata
+
+metadata_all <- read.csv("../Output/Longitudinal/Participant_data/VGO_combined_longitudinal.csv") %>%
+  mutate(
+    ID             = as.character(ID),
+    study          = factor(study),
+    timepoint      = factor(timepoint, levels = c("T0", "T1")),
+    date_spiro     = ymd(date_spiro),
+    age            = as.numeric(age),
+    ethnicity      = factor(ethnicity),
+    spirometrist   = as.character(spirometrist),
+    gender         = factor(gender),
+    height         = as.numeric(height),
+    weight         = as.numeric(weight),
+    bmi            = as.numeric(bmi),
+    educationlevel = factor(educationlevel, levels = c("low", "medium", "high"), ordered = TRUE),
+    smoke_status   = factor(smoke_status, levels = c("non", "former", "current"), ordered = TRUE),
+    pneumo_lastyr  = factor(pneumo_lastyr),
+    copd_doc_diag  = factor(copd_doc_diag),
+    copd_gold      = factor(copd_gold),
+    copd_lln       = factor(copd_lln),
+    asthma_current = factor(asthma_current),
+    asthma_ever    = factor(asthma_ever),
+    asthma_doc_diag= factor(asthma_doc_diag),
+    asthma_attk_lastyr = factor(asthma_attk_lastyr),
+    asthma_med_current = factor(asthma_med_current),
+    atopic         = factor(atopic),
+    farmchild      = factor(farmchild),
+    FEV1_pred      = as.numeric(FEV1_pred),
+    FVC_pred       = as.numeric(FVC_pred),
+    FEV1FVC_pred   = as.numeric(FEV1FVC_pred),
+    MMEF_pred      = as.numeric(MMEF_pred),
+    delta_FEV1_pred     = as.numeric(delta_FEV1_pred),
+    delta_FVC_pred      = as.numeric(delta_FVC_pred),
+    delta_FEV1FVC_pred = as.numeric(delta_FEV1FVC_pred),
+    delta_MMEF_pred     = as.numeric(delta_MMEF_pred),
+    fuperiod       = as.numeric(fuperiod),
+    obstr_VGO2     = factor(obstr_VGO2),
+    obstr_VGO3     = factor(obstr_VGO3),
+    new_obstr      = factor(new_obstr)
+  )
+
+# -------------------------------------------------------------------------
+# 2. Prepare phyloseq object: fix ID and drop zero-count samples
+# -------------------------------------------------------------------------
+
+ps4_work <- ps4_longitudinal  # or ps4_longitudinal_orig if using backup
+
+sd <- as(sample_data(ps4_work), "data.frame")
+colnames(sd)[colnames(sd) == "VGO3_ID"] <- "ID"
+sample_data(ps4_work) <- sample_data(sd)
+
+ps4_work <- prune_samples(sample_sums(ps4_work) > 0, ps4_work)
+ps4_work <- prune_taxa(taxa_sums(ps4_work) > 0, ps4_work)
+
+ps_meta <- as(sample_data(ps4_work), "data.frame") %>%
+  rownames_to_column("SampleID") %>%
+  mutate(
+    ID        = as.character(ID),
+    timepoint = as.character(timepoint),
+    niche     = as.character(niche)
+  )
+
+# -------------------------------------------------------------------------
+# 3. Deduplication helper function
+# -------------------------------------------------------------------------
+
+dedup_by_depth <- function(ps, group_cols = c("ID", "timepoint", "niche")) {
+  sd <- as(sample_data(ps), "data.frame") %>% rownames_to_column("SampleID")
+  sd$LibrarySize <- sample_sums(ps)[sd$SampleID]
+  
+  keep <- sd %>%
+    group_by(across(all_of(group_cols))) %>%
+    slice_max(order_by = LibrarySize, n = 1, with_ties = FALSE) %>%
+    pull(SampleID)
+  
+  ps2 <- prune_samples(keep, ps)
+  prune_taxa(taxa_sums(ps2) > 0, ps2)
+}
+
+# -------------------------------------------------------------------------
+# RQ1: Microbiome at T0 (NP/OP) + Lung Function at both timepoints
+# -------------------------------------------------------------------------
+
+ids_LF_both <- metadata_all %>%
+  group_by(ID) %>%
+  filter(n_distinct(timepoint) == 2) %>%
+  pull(ID) %>%
+  unique()
+
+ids_micro_T0 <- ps_meta %>%
+  filter(timepoint == "T0", niche %in% c("NP", "OP")) %>%
+  pull(ID) %>%
+  unique()
+
+ids_RQ1 <- intersect(ids_LF_both, ids_micro_T0)
+
+samples_RQ1 <- ps_meta %>%
+  filter(ID %in% ids_RQ1, timepoint == "T0", niche %in% c("NP", "OP")) %>%
+  pull(SampleID)
+
+ps_RQ1 <- ps4_work %>%
+  prune_samples(samples_RQ1, .) %>%
+  prune_taxa(taxa_sums(.) > 0, .) %>%
+  dedup_by_depth()
+
+# -------------------------------------------------------------------------
+# Add metadata to phyloseq object (including delta_* variables)
+# -------------------------------------------------------------------------
+
+sd_RQ1 <- as(sample_data(ps_RQ1), "data.frame") %>%
+  rownames_to_column("SampleID") %>%
+  mutate(ID = as.character(ID), timepoint = as.character(timepoint))
+
+merged_RQ1 <- sd_RQ1 %>%
+  left_join(metadata_all, by = c("ID", "timepoint"))
+
+rownames(merged_RQ1) <- merged_RQ1$SampleID
+merged_RQ1$SampleID <- NULL
+sample_data(ps_RQ1) <- sample_data(merged_RQ1)
+
+ps_RQ1@sam_data$obstr_VGO2
+
+# Save ps
+saveRDS(ps_RQ1, "../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
+
+
+# RQ2 phyloseq:
+#    LF both + at least ONE niche (NP or OP) paired across T0/T1
+ids_micro_paired_niche <- ps_meta %>%
+  filter(timepoint %in% c("T0","T1"), niche %in% c("NP","OP")) %>%
+  group_by(ID, niche) %>%
+  summarise(n_tp = n_distinct(timepoint), .groups = "drop") %>%
+  filter(n_tp == 2) %>%
+  pull(ID) %>% unique()
+
+ids_RQ2 <- intersect(ids_LF_both, ids_micro_paired_niche)
+
+samples_RQ2 <- ps_meta %>%
+  filter(ID %in% ids_RQ2, timepoint %in% c("T0","T1"), niche %in% c("NP","OP")) %>%
+  pull(SampleID)
+
+ps_RQ2 <- prune_samples(samples_RQ2, ps4_work)
+ps_RQ2 <- prune_taxa(taxa_sums(ps_RQ2) > 0, ps_RQ2)
+
+ps_RQ2 <- dedup_by_depth(ps_RQ2, c("ID","timepoint","niche"))
+
+# Join timepoint-specific LF metadata by ID+timepoint (so T0 sample gets T0 covars etc.)
+sd_RQ2 <- as(sample_data(ps_RQ2), "data.frame") %>%
+  rownames_to_column("SampleID") %>%
+  mutate(ID = as.character(ID), timepoint = as.character(timepoint))
+
+meta_for_join <- metadata_all %>%
+  mutate(ID = as.character(ID), timepoint = as.character(timepoint))
+
+lf_wide_RQ2 <- make_lf_wide(ids_RQ2)
+
+merged_RQ2 <- sd_RQ2 %>%
+  left_join(meta_for_join, by = c("ID","timepoint")) %>%
+  left_join(lf_wide_RQ2, by = "ID")
+
+rownames(merged_RQ2) <- merged_RQ2$SampleID
+merged_RQ2$SampleID <- NULL
+sample_data(ps_RQ2) <- sample_data(merged_RQ2)
+
+saveRDS(ps_RQ2, "../Output/Longitudinal/Phyloseq/ps_RQ2_LFboth_micro_pairedNiche.rds")
+
+# ============================================================
+# 7) OPTIONAL: “paired-only within niche” version of RQ2 (cleanest for change models)
+#     Keeps only ID+niche combos that truly have BOTH T0 and T1.
+# ============================================================
+
+sd2 <- as(sample_data(ps_RQ2), "data.frame") %>%
+  rownames_to_column("SampleID") %>%
+  mutate(ID = as.character(ID), timepoint = as.character(timepoint), niche = as.character(niche))
+
+paired_id_niche <- sd2 %>%
+  distinct(ID, timepoint, niche) %>%
+  count(ID, niche, name = "n_tp") %>%
+  filter(n_tp == 2) %>%
+  select(ID, niche)
+
+keep_samples <- sd2 %>%
+  semi_join(paired_id_niche, by = c("ID","niche")) %>%
+  pull(SampleID)
+
+ps_RQ2_pairedOnly <- prune_samples(keep_samples, ps_RQ2)
+ps_RQ2_pairedOnly <- prune_taxa(taxa_sums(ps_RQ2_pairedOnly) > 0, ps_RQ2_pairedOnly)
+
+saveRDS(ps_RQ2_pairedOnly, "../Output/Longitudinal/Phyloseq/ps_RQ2_pairedNiche_only.rds")
+
+# ============================================================
+# 8) Quick checks
+# ============================================================
+
+cat("\n=== ORIGINAL ps4_longitudinal stays intact ===\n")
+cat("Samples original:", nsamples(ps4_longitudinal_orig), "\n")
+
+cat("\n=== RQ1 ===\n")
+sd1 <- as(sample_data(ps_RQ1), "data.frame")
+cat("Samples:", nsamples(ps_RQ1), "\n")
+cat("Unique IDs:", length(unique(sd1$ID)), "\n")
+print(table(sd1$timepoint))
+print(table(sd1$niche))
+
+cat("\n=== RQ2 ===\n")
+sd2b <- as(sample_data(ps_RQ2), "data.frame")
+cat("Samples:", nsamples(ps_RQ2), "\n")
+cat("Unique IDs:", length(unique(sd2b$ID)), "\n")
+print(table(sd2b$timepoint))
+print(table(sd2b$niche))
+
+cat("\n=== RQ2 paired-only (optional) ===\n")
+sd2p <- as(sample_data(ps_RQ2_pairedOnly), "data.frame")
+cat("Samples:", nsamples(ps_RQ2_pairedOnly), "\n")
+cat("Unique IDs:", length(unique(sd2p$ID)), "\n")
+print(table(sd2p$timepoint))
+print(table(sd2p$niche))
+
+```
+# Population summary tables
+## Summary of health data at T0 and T1 for longitudinal participants
+```{r}
+ps_VGO3 <- readRDS("../Output/Cross_sectional/Phyloseq/ps_final_VGO3.rds")
+ps_meta_VGO3 <- sample_data(ps_VGO3)
+ps_meta_VGO3$Sam_ID <- rownames(ps_VGO3@sam_data)
+
+ids_both # IDs with BOTH lung function and microbiome at both timepoints - previously created (n = 110)
+
+## Subset phyloseq to those IDs of participants with longitudinal LF and microbiome data
+samples_keep_VGO3 <- ps_meta_VGO3$Sam_ID[ps_meta_VGO3$VGO3_ID %in% ids_both]
+
+length(samples_keep_VGO3) # 194 microbiome samples kept
+
+ps_VGO3_longitudinal <- prune_samples(samples_keep_VGO3, ps_VGO3)
+ps_VGO3_longitudinal # 197 samples
+
+
+# Pull sample_data and keep only NP/OP samples
+sd_longitudinal <- sample_data(ps_VGO3_longitudinal) %>%
+  data.frame(check.names = FALSE, stringsAsFactors = FALSE) %>%
+  filter(niche %in% c("NP","OP"))
+
+sd_vgo3_longitudinal <- sd_longitudinal %>%
+  mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%   # prefer NP (1) over OP (2)
+  arrange(VGO3_ID, niche_rank) %>%                         # put NP first within each ID
+  filter(!duplicated(VGO3_ID)) %>%                         # keep first row per VGO3_ID
+  select(-niche_rank)
+
+## Just select the variables for Table 1
+df_vgo3_longitudinal <- sd_vgo3_longitudinal %>%
+  select(
+    Age, Gender, Height, Weight, BMI, Ethnicity, Education_level,
+    Lung_med, Asthma_med_current, Antibiotics_lastmonth, Antibiotics_lastyr, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr, COPD_emphy_doc_diag,
+    Smoking_status, Farm_childhood, Farm_visit_lastyr, T0_wkprior_NH3, T1_wkprior_NH3, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  )
+
+# Helper functions for summary
+cont_summary <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA_character_)
+  m  <- mean(x)
+  s  <- sd(x)
+  q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
+  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]",
+          m, s, q[2], q[1], q[3])
+}
+
+cat_summary <- function(x) {
+  x <- factor(x)
+  if (all(is.na(x))) return(NA_character_)
+  n_tot <- sum(!is.na(x))
+  levs <- levels(x)
+  out <- sapply(levs, function(lv) {
+    n <- sum(x == lv, na.rm = TRUE)
+    pct <- if (n_tot > 0) 100 * n / n_tot else NA_real_
+    sprintf("%s: %d (%.1f%%)", lv, n, pct)
+  }, USE.NAMES = FALSE)
+  paste(out, collapse = "\n")
+}
+
+
+## Build the Table 1 rows in the order you want them to appear
+rows_vgo3_longitudinal <- tibble::tibble(
+  Variable = c(
+    "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education_level",
+    "Lung_med", "Asthma_med_current", "Antibiotics_lastmonth", "Antibiotics_lastyr","Pneumonia_lastyr", "Asthma_ever", "Asthma_doc_diag", "Asthma_attk_lastyr", "COPD_emphy_doc_diag",
+    "Smoking_status", "Farm_childhood", "Farm_visit_lastyr","T0_wkprior_NH3", "T1_wkprior_NH3","FEV1", "FVC", "FEV1_FVC", "FEF25_75", 
+    "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "FEF25_75_pred"
+  ),
+  `VGO3` = c(
+    cont_summary(df_vgo3_longitudinal$Age),
+    cat_summary(df_vgo3_longitudinal$Gender),
+    cont_summary(df_vgo3_longitudinal$Height),
+    cont_summary(df_vgo3_longitudinal$Weight),
+    cont_summary(df_vgo3_longitudinal$BMI),
+    cat_summary(df_vgo3_longitudinal$Ethnicity),
+    cat_summary(df_vgo3_longitudinal$Education_level),
+    cat_summary(df_vgo3_longitudinal$Lung_med),
+    cat_summary(df_vgo3_longitudinal$Asthma_med_current),
+    cat_summary(df_vgo3_longitudinal$Antibiotics_lastmonth),
+    cat_summary(df_vgo3_longitudinal$Antibiotics_lastyr),
+    cat_summary(df_vgo3_longitudinal$Pneumonia_lastyr),
+    cat_summary(df_vgo3_longitudinal$Asthma_ever),
+    cat_summary(df_vgo3_longitudinal$Asthma_doc_diag),
+    cat_summary(df_vgo3_longitudinal$Asthma_attk_lastyr),
+    cat_summary(df_vgo3_longitudinal$COPD_emphy_doc_diag),
+    cat_summary(df_vgo3_longitudinal$Smoking_status),
+    cat_summary(df_vgo3_longitudinal$Farm_childhood),
+    cat_summary(df_vgo3_longitudinal$Farm_visit_lastyr),
+    cont_summary(df_vgo3_longitudinal$T0_wkprior_NH3),
+    cont_summary(df_vgo3_longitudinal$T1_wkprior_NH3),
+    cont_summary(df_vgo3_longitudinal$FEV1),
+    cont_summary(df_vgo3_longitudinal$FVC),
+    cont_summary(df_vgo3_longitudinal$FEV1_FVC),
+    cont_summary(df_vgo3_longitudinal$MMEF),
+    cont_summary(df_vgo3_longitudinal$FEV1_pred),
+    cont_summary(df_vgo3_longitudinal$FVC_pred),
+    cont_summary(df_vgo3_longitudinal$FEV1FVC_pred),
+    cont_summary(df_vgo3_longitudinal$MMEF_pred)
+  )
+)
+
+# Write to Excel
+writexl::write_xlsx(
+  list("Table 1 - VGO3" = rows_vgo3_longitudinal),
+  path = "../Output/Longitudinal/Participant_data/Table1_longitudinal_T1.xlsx"
+)
+
+
+
+
+#### VGO2 longitudinal data ####
+ps_meta_VGO2 <- read.csv("../Output/Cross_sectional/Participant_data/VGO2_data.csv")
+
+ids_both # IDs with BOTH lung function and microbiome at both timepoints - previously created
+
+# Ensure same structure
+str(ps_meta_VGO2$ID)
+str(ids_both)
+ids_both <- as.integer(ids_both)
+
+## Subset metadata to those IDs of participants with longitudinal LF and microbiome data
+samples_keep_VGO2 <- ps_meta_VGO2[ps_meta_VGO2$ID %in% ids_both,]
+
+nrow(samples_keep_VGO2) # 110 participants kept - correct
+
+## Just select the variables needed for Table 1
+samples_keep_VGO2
+
+##
+df_vgo2_longitudinal <- samples_keep_VGO2 %>%
+  select(
+    age, gender, height, weight, bmi, ethnicity, educationlevel, asthma_med_current, pneumo_lastyr, asthma_ever, asthma_doc_diag, asthma_attk_lastyr, copd_doc_diag,
+    smoke_status, farmchild, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  )
+
+# Helper functions for summary
+cont_summary <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA_character_)
+  m  <- mean(x)
+  s  <- sd(x)
+  q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
+  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]",
+          m, s, q[2], q[1], q[3])
+}
+
+cat_summary <- function(x) {
+  x <- factor(x)
+  if (all(is.na(x))) return(NA_character_)
+  n_tot <- sum(!is.na(x))
+  levs <- levels(x)
+  out <- sapply(levs, function(lv) {
+    n <- sum(x == lv, na.rm = TRUE)
+    pct <- if (n_tot > 0) 100 * n / n_tot else NA_real_
+    sprintf("%s: %d (%.1f%%)", lv, n, pct)
+  }, USE.NAMES = FALSE)
+  paste(out, collapse = "\n")
+}
+
+
+## Build the Table 1 rows in the order you want them to appear
+rows_vgo2_longitudinal <- tibble::tibble(
+  Variable = c("age", "gender", "height", "weight", "bmi", "ethnicity", "educationlevel", "asthma_med_current", "pneumo_lastyr", "asthma_ever", "asthma_doc_diag", "asthma_attk_lastyr", "copd_doc_diag",
+    "smoke_status", "farmchild", "FEV1", "FVC", "FEV1_FVC", "MMEF", "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"
+  ),
+  `VGO2` = c(
+    cont_summary(df_vgo2_longitudinal$age),
+    cat_summary(df_vgo2_longitudinal$gender),
+    cont_summary(df_vgo2_longitudinal$height),
+    cont_summary(df_vgo2_longitudinal$weight),
+    cont_summary(df_vgo2_longitudinal$bmi),
+    cat_summary(df_vgo2_longitudinal$ethnicity),
+    cat_summary(df_vgo2_longitudinal$educationlevel),
+    cat_summary(df_vgo2_longitudinal$asthma_med_current),
+    cat_summary(df_vgo2_longitudinal$pneumo_lastyr),
+    cat_summary(df_vgo2_longitudinal$asthma_ever),
+    cat_summary(df_vgo2_longitudinal$asthma_doc_diag),
+    cat_summary(df_vgo2_longitudinal$asthma_attk_lastyr),
+    cat_summary(df_vgo2_longitudinal$copd_doc_diag),
+    cat_summary(df_vgo2_longitudinal$smoke_status),
+    cat_summary(df_vgo2_longitudinal$farmchild),
+    cont_summary(df_vgo2_longitudinal$FEV1),
+    cont_summary(df_vgo2_longitudinal$FVC),
+    cont_summary(df_vgo2_longitudinal$FEV1_FVC),
+    cont_summary(df_vgo2_longitudinal$MMEF),
+    cont_summary(df_vgo2_longitudinal$FEV1_pred),
+    cont_summary(df_vgo2_longitudinal$FVC_pred),
+    cont_summary(df_vgo2_longitudinal$FEV1FVC_pred),
+    cont_summary(df_vgo2_longitudinal$MMEF_pred)
+  )
+)
+
+# Write to Excel
+writexl::write_xlsx(
+  list("Table 1 - VGO2" = rows_vgo2_longitudinal),
+  path = "../Output/Longitudinal/Participant_data/Table1_longitudinal_T0.xlsx"
+)
+```
+
+## Summary of lung function changes
+```{r}
+RQ1_meta <- data.frame(ps_RQ1@sam_data)
+
+# Helper functions for summary
+cont_summary <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA_character_)
+  m  <- mean(x)
+  s  <- sd(x)
+  q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
+  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]",
+          m, s, q[2], q[1], q[3])
+}
+
+cat_summary <- function(x) {
+  x <- factor(x)
+  if (all(is.na(x))) return(NA_character_)
+  n_tot <- sum(!is.na(x))
+  levs <- levels(x)
+  out <- sapply(levs, function(lv) {
+    n <- sum(x == lv, na.rm = TRUE)
+    pct <- if (n_tot > 0) 100 * n / n_tot else NA_real_
+    sprintf("%s: %d (%.1f%%)", lv, n, pct)
+  }, USE.NAMES = FALSE)
+  paste(out, collapse = "\n")
+}
+
+
+## Build the Table 1 rows in the order you want them to appear
+rows_both <- tibble::tibble(
+  Variable = c("fuperiod", "delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred", "obstr_VGO2", "obstr_VGO3", "new_obstr"
+  ),
+   c(
+    cont_summary(RQ1_meta$fuperiod),
+    cont_summary(RQ1_meta$delta_FEV1_pred),
+    cont_summary(RQ1_meta$delta_FVC_pred),
+    cont_summary(RQ1_meta$delta_FEV1FVC_pred),
+    cont_summary(RQ1_meta$delta_MMEF_pred),
+    cat_summary(RQ1_meta$obstr_VGO2),
+    cat_summary(RQ1_meta$obstr_VGO3),
+    cat_summary(RQ1_meta$new_obstr)
+    
+  )
+)
+
+# Write to Excel
+writexl::write_xlsx(
+  list("Table 1 - change" = rows_both),
+  path = "../Output/Longitudinal/Participant_data/Table1_VGO2toVGO3_change.xlsx"
+)
+
+
+## Plot change
+# Lung function change per person (unique row per VGO3_ID)
+# pick one row per person with the most non-missing change values
+RQ1_meta <- data.frame(sample_data(ps_RQ1))
+
+delta_vars  <- c("delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred")
+
+RQ1_meta_unique <- RQ1_meta %>%
+  mutate(nonmiss_lf = rowSums(across(all_of(delta_vars), ~ !is.na(.x)))) %>%
+  arrange(ID, desc(nonmiss_lf)) %>%
+  group_by(ID) %>% slice_head(n = 1) %>% ungroup() %>%
+  select(ID, all_of(lung_change_cols))
+
+
+plot_df <- RQ1_meta_unique %>%
+  select(all_of(delta_vars)) %>%
+  pivot_longer(everything(), names_to = "Measure", values_to = "Delta") %>%
+  filter(!is.na(Delta)) %>%
+  mutate(
+    Measure = recode(
+      Measure,
+      delta_FEV1_pred    = "ΔFEV1",
+      delta_FVC_pred     = "ΔFVC",
+      delta_FEV1FVC_pred = "ΔFEV1/FVC",
+      delta_MMEF_pred    = "ΔFEF25–75"
+    ),
+    Measure = factor(Measure, levels = c("ΔFEF25–75","ΔFEV1/FVC","ΔFVC","ΔFEV1")),  # match your example order (top→bottom)
+    Direction = if_else(Delta >= 0, "Improved", "Declined")
+  )
+
+
+summ_df <- plot_df %>%
+  group_by(Measure) %>%
+  summarise(
+    n = n(),
+    med = median(Delta, na.rm = TRUE),
+    q1  = quantile(Delta, 0.25, na.rm = TRUE),
+    q3  = quantile(Delta, 0.75, na.rm = TRUE),
+    p_improved = mean(Delta >= 0, na.rm = TRUE) * 100,
+    p_declined = mean(Delta <  0, na.rm = TRUE) * 100,
+    .groups = "drop"
+  )
+
+
+plot_delta <- ggplot(plot_df, aes(x = Delta, y = Measure)) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.8) +
+  geom_violin(fill = "grey70", color = NA, width = 0.85, trim = FALSE) +
+  geom_errorbarh(data = summ_df,
+                 aes(xmin = q1, xmax = q3, y = Measure),
+                 inherit.aes = FALSE, height = 0, linewidth = 1.0) +
+  geom_point(data = summ_df,
+             aes(x = med, y = Measure),
+             inherit.aes = FALSE, size = 2.2) +
+  geom_point(aes(color = Direction),
+             position = position_jitter(height = 0.12, width = 0),
+             size = 2, alpha = 0.75) +
+    # add % improved 5 reduced
+  geom_text(
+  data = summ_df,
+  aes(
+    x = Inf, y = Measure,
+    label = sprintf("+%.0f%%  /  −%.0f%%", p_improved, p_declined)
+  ),
+  inherit.aes = FALSE,
+  hjust = 1.05, size = 3.6
+)+
+  labs(
+    x = "Change per year \n(+ improvement, − decline beyond expected, 0 ≈ expected age decline)",
+    y = NULL,
+    color = "Direction"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    # legend
+    legend.title = element_text(size = 16),
+    legend.text  = element_text(size = 14),
+    # axes
+    axis.text.x  = element_text(size = 14),
+    axis.text.y  = element_text(size = 14),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16)
+  )
+
+
+
+# % decreased on the left, % increased on the right
+plot_delta <- ggplot(plot_df, aes(x = Delta, y = Measure)) +
+  geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.8) +
+  geom_violin(fill = "grey70", color = NA, width = 0.85, trim = FALSE) +
+  geom_errorbarh(
+    data = summ_df,
+    aes(xmin = q1, xmax = q3, y = Measure),
+    inherit.aes = FALSE, height = 0, linewidth = 1.0
+  ) +
+  geom_point(
+    data = summ_df,
+    aes(x = med, y = Measure),
+    inherit.aes = FALSE, size = 2.2
+  ) +
+  geom_point(
+    aes(color = Direction),
+    position = position_jitter(height = 0.12, width = 0),
+    size = 2, alpha = 0.75
+  ) +
+
+  # left side: % decreased
+  geom_text(
+    data = summ_df,
+    aes(x = -Inf, y = Measure, label = sprintf("%.0f%% decreased", p_declined)),
+    inherit.aes = FALSE,
+    hjust = -0.05,  # nudges text slightly inside plotting area
+    size = 3.6
+  ) +
+  # right side: % increased
+  geom_text(
+    data = summ_df,
+    aes(x = Inf, y = Measure, label = sprintf("%.0f%% increased", p_improved)),
+    inherit.aes = FALSE,
+    hjust = 1.05,
+    size = 3.6
+  ) +
+
+  labs(
+    x = "Change per year",
+    y = NULL,
+    color = "Direction"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 16),
+    legend.text  = element_text(size = 14),
+    axis.text.x  = element_text(size = 14),
+    axis.text.y  = element_text(size = 14),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16)
+  ) 
+
+
+ggsave(
+  "../Output/Longitudinal/Participant_data/Deltas_VGO2toVGO3.svg",
+  plot_delta, width = 8.5, height = 4.8
+)
+```
+
+
+# ANALYSES
+## Read in data
+```{r}
+ps_l <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
+```
+
+# How is microbiome at T0 associated with lung function at T1?
+## Data 
+```{r}
+get_season <- function(date_vec) {
+  mo <- month(date_vec)
+  out <- ifelse(mo %in% 3:5,  "Spring",
+         ifelse(mo %in% 6:8,  "Summer",
+         ifelse(mo %in% 9:11, "Autumn", "Winter")))
+  factor(out, levels = c("Winter","Spring","Summer","Autumn"))
+}
+
+sd_l <- as(sample_data(ps_l), "data.frame") %>%
+  rownames_to_column("SampleID") %>%
+  mutate(
+    date_spiro_T0 = ymd(date_spiro_T0),
+    date_spiro_T1 = ymd(date_spiro_T1),
+
+    # pick the spirometry date corresponding to the sample timepoint
+    date_spiro_this_tp = case_when(
+      timepoint == "T0" ~ date_spiro_T0,
+      timepoint == "T1" ~ date_spiro_T1,
+      TRUE ~ as.Date(NA)
+    ),
+
+    season_spiro = get_season(date_spiro_this_tp)
+  )
+
+# If you want your analyses to use a generic "season_microbiome_sampling" covariate name:
+sd_l$season_microbiome_sampling <- sd_l$season_spiro
+
+# Put back into phyloseq
+rownames(sd_l) <- sd_l$SampleID
+sd_l$SampleID <- NULL
+sample_data(ps_l) <- sample_data(sd_l)
+
+# checks
+table(sample_data(ps_l)$timepoint, useNA = "ifany")
+table(sample_data(ps_l)$season_microbiome_sampling, useNA = "ifany")
+
+saveRDS(ps_l, "../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth_withSeason.rds")
+```
+# Separate microbiome data per dataset and niche
+```{r}
+# Subset per niche
+# VGO3_NPOP dataset, NP niche
+T0_NP <- subset_samples(ps_l, niche == "NP")
+nsamples(T0_NP) # 95 NP samples
+
+# VGO3_NPOP dataset, OP niche
+T0_OP <- subset_samples(ps_l, niche == "OP")
+nsamples(T0_OP) # 73 OP samples
+```
+# Filter taxa and convert to relative abundance
+```{r}
+# VGO3 NP 
+# Remove low abundant ASVs and convert counts to relative abundances
+T0_NP_filtered <- T0_NP %>% 
+  pres_abund_filter() %>% # 0.1% relative abundance in at least 2 samples is default
+  to_RA()
+# A total of 477 ASVs were found to be present at or above a level of confident detection (0.1% relative abundance) in at least 2 samples (n = 5543 ASVs excluded).
+
+# VGO3 OP 
+# Remove low abundant ASVs and convert counts to relative abundances
+T0_OP_filtered <- T0_OP %>% 
+  pres_abund_filter() %>% 
+  to_RA()
+# A total of 215 ASVs were found to be present at or above a level of confident detection (0.1% relative abundance) in at least 2 samples (n = 5805 ASVs excluded).
+```
+# Extract OTU and metadata 
+```{r}
+otu_t0_np <- t(as.data.frame(otu_table(T0_NP_filtered)))
+meta_t0_np <- meta_to_df(T0_NP_filtered, sample_name = ".row_id")
+
+otu_t0_op <- t(as.data.frame(otu_table(T0_OP_filtered)))
+meta_t0_op <- meta_to_df(T0_OP_filtered, sample_name = ".row_id")
+```
+
+# Alpha diversity and lung function at T1
+```{r}
+### Multivariable
+dataset_list <- list(T0_NP = meta_t0_np, T0_OP = meta_t0_op)
+alpha_vars   <- c("Observed","Shannon","Simpson")
+lung_fun_cont <- c("FEV1_pred_T1","FVC_pred_T1","FEV1FVC_pred_T1","MMEF_pred_T1","delta_FEV1_pred","delta_FVC_pred" , "delta_FEV1FVC_pred", "delta_MMEF_pred")
+core_covariates <- c("age_T0","gender_T0","smoke_status_T0","season_microbiome_sampling")
+pretty_alpha <- c("Observed_z"="Observed richness","Shannon_z"="Shannon diversity","Simpson_z"="Simpson diversity")
+pretty_lung  <- c(
+  "FEV1_pred_T1_decline_z"      = "FEV1 % predicted (T1)",
+  "FVC_pred_T1_decline_z"       = "FVC % predicted (T1)",
+  "FEV1FVC_pred_T1_decline_z"   = "FEV1/FVC % predicted (T1)",
+  "MMEF_pred_T1_decline_z"      = "MMEF % predicted (T1)",
+  "delta_FEV1_pred_decline_z"   = "Delta FEV1 % predicted (T1-T0)",
+  "delta_FVC_pred_decline_z"    = "Delta FVC % predicted (T1-T0)",
+  "delta_FEV1FVC_pred_decline_z"= "Delta FEV1FVC % predicted (T1-T0)",
+  "delta_MMEF_pred_decline_z"   = "Delta MMEF % predicted (T1-T0)"
+)
+meta_t0_np$delta_FEV1FVC_pred
+
+preprocess_dataset <- function(df){
+  df <- df %>%
+    dplyr::mutate(
+      Age = suppressWarnings(as.numeric(as.character(age_T0))),
+      FEV1_pred = suppressWarnings(as.numeric(as.character(FEV1_pred_T1))),
+      FVC_pred  = suppressWarnings(as.numeric(as.character(FVC_pred_T1))),
+      FEV1FVC_pred = suppressWarnings(as.numeric(as.character(FEV1FVC_pred_T1))),
+      MMEF_pred = suppressWarnings(as.numeric(as.character(MMEF_pred_T1))),
+      Observed  = suppressWarnings(as.numeric(as.character(Observed))),
+      Shannon   = suppressWarnings(as.numeric(as.character(Shannon))),
+      Simpson   = suppressWarnings(as.numeric(as.character(Simpson))),
+      Gender = factor(as.character(gender_T0), levels=c("Male","Female")),
+      Smoking_status = factor(tolower(as.character(smoke_status_T0)),
+                              levels=c("never","former","current"), ordered=TRUE),
+      season_microbiome_sampling = factor(as.character(season_microbiome_sampling),
+                              levels=c("Winter","Spring","Summer","Autumn"), ordered=TRUE)
+    )
+  
+  df <- df %>%
+    dplyr::mutate(
+      Observed_z = as.numeric(scale(Observed)),
+      Shannon_z  = as.numeric(scale(Shannon)),
+      Simpson_z  = as.numeric(scale(Simpson))
+    )
+
+  # z-scored "decline" lung vars (higher = worse)
+  for (lf in lung_fun_cont) if (lf %in% names(df))
+    df[[paste0(lf, "_decline_z")]] <- as.numeric(scale(-1 * df[[lf]]))
+
+  df
+}
+
+fit_pooled_mv <- function(df, dataset_name){
+  df <- preprocess_dataset(df)
+  alpha_z <- c("Observed_z","Shannon_z","Simpson_z")
+  lung_z  <- paste0(lung_fun_cont, "_decline_z")
+
+  out <- list()
+  for (a in alpha_z){
+    for (lz in lung_z){
+      need <- c(a, lz, core_covariates)
+      if (!all(need %in% names(df))) next
+      dat <- df %>% dplyr::select(dplyr::all_of(need)) %>% tidyr::drop_na()
+      if (nrow(dat) < 20) next
+
+      fml <- as.formula(paste(a, "~", paste(c(lz, core_covariates), collapse = " + ")))
+      fit <- tryCatch(stats::lm(fml, data = dat), error=function(e) NULL)
+      if (is.null(fit)) next
+      row <- broom::tidy(fit) %>% dplyr::filter(term == lz)
+      if (!nrow(row)) next
+
+      out[[length(out)+1]] <- tibble::tibble(
+        dataset = dataset_name,
+        niche = dplyr::recode(dataset_name, T0_NP="NP", T0_OP="OP"),
+        alpha_metric = a,
+        lung_var = lz,
+        estimate = row$estimate, std.error = row$std.error, p.value = row$p.value,
+        n_used = stats::nobs(fit)
+      )
+    }
+  }
+  dplyr::bind_rows(out)
+}
+
+
+mv_all <- dplyr::bind_rows(
+  fit_pooled_mv(dataset_list$T0_NP, "T0_NP"),
+  fit_pooled_mv(dataset_list$T0_OP, "T0_OP")
+) %>%
+  dplyr::mutate(
+    alpha_metric = dplyr::recode(alpha_metric, !!!pretty_alpha),
+    lung_var     = dplyr::recode(lung_var, !!!pretty_lung)
+  ) %>%
+  dplyr::group_by(dataset) %>%
+  dplyr::mutate(q.value = p.adjust(p.value, method="BH"),
+                stars   = dplyr::case_when(q.value<=0.05~"***", q.value<=0.10~"**", q.value<=0.25~"*", TRUE~"")) %>%
+  dplyr::ungroup()
+
+# Plot heatmap
+pal <- try(rcartocolor::carto_pal(7, "Geyser"), silent=TRUE)
+if (inherits(pal, "try-error")) pal <- c("#2166ac","#67a9cf","#d1e5f0","#f7f7f7","#fddbc7","#ef8a62","#b2182b")
+lim <- max(abs(mv_all$estimate), na.rm=TRUE); if (!is.finite(lim)) lim <- 1
+
+plot_df <- mv_all %>%
+  dplyr::mutate(
+    lung_var = factor(lung_var, levels = rev(c("FEV1 % predicted (T1)",
+                                               "FVC % predicted (T1)",
+                                               "FEV1/FVC % predicted (T1)",
+                                               "MMEF % predicted (T1)",
+                                               "Delta FEV1 % predicted (T1-T0)",
+                                               "Delta FVC % predicted (T1-T0)",
+                                               "Delta FEV1FVC % predicted (T1-T0)",
+                                               "Delta MMEF % predicted (T1-T0)"))),
+    alpha_metric = factor(alpha_metric, levels=c("Observed richness","Shannon diversity","Simpson diversity")),
+    niche = factor(dplyr::recode(dataset, T0_NP="NP", T0_OP="OP"), levels=c("NP","OP"))
+  )
+
+p_mv <- ggplot2::ggplot(plot_df, aes(x = alpha_metric, y = lung_var, fill = estimate)) +
+  ggplot2::geom_tile(color="white") +
+  ggplot2::geom_text(aes(label = stars), size=4) +
+  ggplot2::scale_fill_gradient2(low=pal[1], mid=pal[4], high=pal[7], midpoint=0, limits=c(-lim,lim),
+                                name="Std. β (per 1 SD worse)") +
+  ggplot2::facet_wrap(~ niche, nrow=1) +
+  ggplot2::theme_minimal(base_size=12) +
+  ggplot2::theme(panel.grid=element_blank(), axis.text.x=element_text(angle=30,hjust=1),
+                 strip.text=element_text(face="bold")) +
+  ggplot2::labs(x="Alpha diversity metric", y="Lung function metric (decline)",
+                title="Multivariable models (pooled; adjusted for Age, Gender, Smoking, Season)")
+
+ggplot2::ggsave("../Output/Longitudinal/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_heatmap.svg", p_mv, width=7.0, height=4)
+
+readr::write_csv(mv_all,"../Output/Longitudinal/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_results.csv")
+
+```
+
+# Beta diversity 
+### Multivariable PERMANOVA
+```{r}
+lung_outcomes <- c("FEV1_pred_T1","FVC_pred_T1","FEV1FVC_pred_T1","MMEF_pred_T1", "delta_FEV1_pred","delta_FVC_pred" , "delta_FEV1FVC_pred", "delta_MMEF_pred")
+covars_adj    <- c("age_T0","gender_T0","smoke_status_T0","season_microbiome_sampling")
+perms         <- 999
+set.seed(202501)
+
+# Helper: samples x taxa matrix
+otu_samples_x_taxa <- function(ps) {
+  M <- as(otu_table(ps), "matrix")
+  if (taxa_are_rows(ps)) M <- t(M)
+  mode(M) <- "numeric"
+  M
+}
+
+# Main runner for one niche
+run_permanova_niche <- function(ps_rq1, niche_keep, outcomes, covars, perms = 999) {
+
+  sd0 <- as(sample_data(ps_rq1), "data.frame")
+  keep_samp <- as.character(sd0$niche) == niche_keep
+
+  ps_n <- prune_samples(keep_samp, ps_rq1)
+  ps_n <- prune_taxa(taxa_sums(ps_n) > 0, ps_n)
+
+  # relative abundance
+  ps_ra <- transform_sample_counts(ps_n, function(x) if (sum(x) == 0) x else x / sum(x))
+
+  # samples x taxa
+  otu <- as(otu_table(ps_ra), "matrix")
+  if (taxa_are_rows(ps_ra)) otu <- t(otu)
+  mode(otu) <- "numeric"
+
+  meta <- as(sample_data(ps_ra), "data.frame")
+
+  bray <- vegan::vegdist(otu, method = "bray")
+
+  out <- lapply(outcomes, function(y) {
+
+    if (!(y %in% names(meta))) return(NULL)
+
+    need <- c(y, covars)
+    need <- need[need %in% names(meta)]
+
+    df <- meta %>%
+      dplyr::select(dplyr::all_of(need)) %>%
+      dplyr::mutate(
+        y_num = suppressWarnings(as.numeric(as.character(.data[[y]]))),
+        y_z   = as.numeric(scale(y_num))
+      ) %>%
+      tidyr::drop_na()
+
+    ids <- intersect(rownames(df), attr(bray, "Labels"))
+    if (length(ids) < 20) return(NULL)
+
+    df <- df[ids, , drop = FALSE]
+    br <- as.dist(as.matrix(bray)[ids, ids, drop = FALSE])
+
+    cov_use <- covars[covars %in% names(df)]
+    cov_use <- cov_use[vapply(cov_use, function(v) {
+      x <- df[[v]]
+      x <- x[!is.na(x)]
+      if (!length(x)) return(FALSE)
+      if (is.numeric(x)) return(stats::sd(x) > 0)
+      length(unique(x)) > 1
+    }, logical(1))]
+
+    fml <- as.formula(paste(
+      "br ~ y_z",
+      if (length(cov_use)) paste("+", paste(cov_use, collapse = " + ")) else ""
+    ))
+
+    fit <- vegan::adonis2(fml, data = df, permutations = perms, by = "margin")
+
+    tibble::tibble(
+      niche   = niche_keep,
+      outcome = y,
+      n_used  = length(ids),
+      R2      = fit["y_z", "R2"],
+      F       = fit["y_z", "F"],
+      p       = fit["y_z", "Pr(>F)"]
+    )
+  })
+
+  res <- dplyr::bind_rows(out)
+  if (nrow(res)) res <- res %>% dplyr::mutate(q = p.adjust(p, method = "BH"))
+  res
+}
+
+
+
+# Run PERMANOVA
+
+ps_rq1 <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
+
+res_np <- run_permanova_niche(ps_rq1, "NP", lung_outcomes, covars_adj, perms)
+res_op <- run_permanova_niche(ps_rq1, "OP", lung_outcomes, covars_adj, perms)
+
+res_all <- bind_rows(res_np, res_op) %>%
+  mutate(
+    group = ifelse(grepl("^delta_", outcome), "delta", "T1")
+  ) %>%
+  group_by(niche, group) %>%
+  mutate(q = p.adjust(p, method = "BH")) %>%
+  ungroup()
+
+
+res_all
+write.csv(res_all, "../Output/Longitudinal/Beta_diversity/RQ1_PERMANOVA_T0composition_vs_T1lung_byNiche.csv",
+          row.names = FALSE)
+
+
+# Plot results in bar plot
+pretty_outcomes <- c(
+  "FEV1_pred_T1"    = "FEV1 % predicted",
+  "FVC_pred_T1"     = "FVC % predicted",
+  "FEV1FVC_pred_T1" = "FEV1/FVC % predicted",
+  "MMEF_pred_T1"    = "MMEF % predicted",
+  "delta_FEV1_pred" = "Delta FEV1 % predicted (T1-T0)",
+  "delta_FVC_pred"  = "Delta FVC % predicted (T1-T0)",
+  "delta_FEV1FVC_pred" = "Delta FEV1FVC % predicted (T1-T0)",
+  "delta_MMEF_pred" = "Delta MMEF % predicted (T1-T0)"
+  )
+
+desired_outcome_order <- c(
+  "FEV1 % predicted","FVC % predicted","FEV1/FVC % predicted","MMEF % predicted", "Delta FEV1 % predicted (T1-T0)", "Delta FVC % predicted (T1-T0)", "Delta FEV1FVC % predicted (T1-T0)","Delta MMEF % predicted (T1-T0)"
+)
+
+q_lung_sig_thresh <- 0.25
+nice_ceiling <- function(x, step = 0.0025) step * ceiling(x / step)
+
+plot_df <- res_all %>%
+  mutate(
+    outcome_lab = recode(outcome, !!!pretty_outcomes, .default = outcome),
+    outcome_f   = factor(outcome_lab, levels = rev(desired_outcome_order)),
+    niche_f     = factor(niche, levels = c("NP","OP")),
+    fill_q      = factor(if_else(!is.na(q) & q <= q_lung_sig_thresh, "q \u2264 0.25", "ns"),
+                         levels = c("ns","q \u2264 0.25")),
+    stars_q     = case_when(
+      is.na(q)   ~ "",
+      q <= 0.05  ~ "***",
+      q <= 0.10  ~ "**",
+      q <= 0.25  ~ "*",
+      TRUE       ~ ""
+    ),
+    label_inside = stars_q
+  )
+
+# x-limit
+xlim_all <- nice_ceiling(max(plot_df$R2, na.rm = TRUE) * 1.05)
+if (!is.finite(xlim_all) || xlim_all <= 0) xlim_all <- 0.01
+
+# dummy df to force a "Significance" legend
+stars_legend_df <- tibble(
+  stars_level = factor(c("*","**","***"), levels = c("*","**","***")),
+  x = 0, y = 0
+)
+
+# --- Make the plot ---
+p <- ggplot(plot_df, aes(x = R2 * 100, y = outcome_f, fill = fill_q)) +
+  geom_col(width = 0.7) +
+  geom_text(
+    data = filter(plot_df, label_inside != ""),
+    aes(x = pmax((R2 * 100) / 2, 0.1), y = outcome_f, label = label_inside),
+    inherit.aes = FALSE,
+    color = "white", fontface = "bold", size = 3.2, vjust = 0.6
+  ) +
+  facet_grid(cols = vars(niche_f), scales = "free_y", space = "free_y", drop = FALSE) +
+  scale_x_continuous(
+    limits = c(0, xlim_all * 100),
+    breaks = pretty_breaks(n = 5),
+    labels = label_number(accuracy = 0.1),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_fill_manual(
+    values = c("ns" = "grey30", "q \u2264 0.25" = "#F28E2B"),
+    labels = c("Non significant", "Significant (q \u2264 0.25)"),
+    name   = NULL
+  ) +
+  labs(
+    x = "Explained variance (% R\u00B2)", y = NULL,
+    title = "RQ1: T0 microbiome composition vs T1 lung function (PERMANOVA; adjusted)"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    strip.text         = element_text(face = "bold"),
+    axis.text.y        = element_text(size = 9),
+    plot.title         = element_text(face = "bold", hjust = 0),
+    plot.margin        = margin(t = 4, r = 8, b = 4, l = 4)
+  ) +
+  # legend hack (optional)
+  geom_point(
+    data = stars_legend_df,
+    aes(x = x, y = y, shape = stars_level),
+    inherit.aes = FALSE, alpha = 0, size = 0, show.legend = TRUE
+  ) +
+  scale_shape_manual(
+    values = c("*" = 16, "**" = 16, "***" = 16),
+    labels = c("*" = "* q \u2264 0.25","**" = "** q \u2264 0.10","***" = "*** q \u2264 0.05"),
+    name   = "Significance"
+  ) +
+  guides(fill = guide_legend(order = 1), shape = guide_legend(order = 2)) +
+  coord_cartesian(clip = "off")
+
+ggsave("../Output/Longitudinal/Beta_diversity/T0composition_vs_T1lung_barplot.svg",p, width =7, height = 4)
+
+
+
+
+```
+## PCoAs
+```{r}
+# helper
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+make_pretty_pcoa_cat <- function(ps, group_var,
+                                 covars = NULL,
+                                 group_levels = NULL,
+                                 pretty_map = NULL,
+                                 colors = NULL,   # <-- pass in call
+                                 shapes = NULL,   # <-- optional
+                                 title = "PCoA — Bray–Curtis",
+                                 legend_title = NULL,
+                                 perms = 999, seed = 202501) {
+
+  stopifnot(inherits(ps, "phyloseq"))
+
+  meta <- as(sample_data(ps), "data.frame")
+  meta$sample_id <- rownames(meta)
+
+  if (!group_var %in% names(meta)) stop(sprintf("'%s' not in metadata.", group_var))
+
+  # coerce grouping var
+  meta[[group_var]] <- as.character(meta[[group_var]])
+  if (!is.null(group_levels)) meta[[group_var]][!meta[[group_var]] %in% group_levels] <- NA
+  meta[[group_var]] <- factor(meta[[group_var]],
+                              levels = group_levels %||% sort(unique(meta[[group_var]])))
+
+  # complete cases for group (+ covars if adjusted)
+  needed <- c(group_var, covars)
+  meta_cc <- meta %>% tidyr::drop_na(dplyr::all_of(needed))
+
+  ps_cc <- prune_samples(meta_cc$sample_id, ps)
+  if (nsamples(ps_cc) < 3) stop("Too few samples after pruning.")
+
+  # distance + align
+  dist_bc <- phyloseq::distance(ps_cc, method = "bray")
+  ids <- intersect(attr(dist_bc, "Labels"), rownames(meta_cc))
+  dist_bc <- as.dist(as.matrix(dist_bc)[ids, ids, drop = FALSE])
+  meta_cc <- meta_cc[ids, , drop = FALSE]
+
+  # drop singleton levels
+  tab <- table(meta_cc[[group_var]])
+  keep_lv <- names(tab)[tab >= 2]
+  meta_cc <- meta_cc[meta_cc[[group_var]] %in% keep_lv, , drop = FALSE]
+  meta_cc[[group_var]] <- droplevels(meta_cc[[group_var]])
+  dist_bc <- as.dist(as.matrix(dist_bc)[rownames(meta_cc), rownames(meta_cc), drop = FALSE])
+
+  if (nlevels(meta_cc[[group_var]]) < 2) stop("Need at least 2 groups.")
+
+  # PERMANOVA
+  form <- reformulate(c(group_var, covars), response = "dist_bc")
+  set.seed(seed)
+  fit <- vegan::adonis2(form, data = meta_cc, permutations = perms, by = "margin")
+  aov_tbl <- as.data.frame(fit); aov_tbl$term <- rownames(aov_tbl)
+
+  row_term <- aov_tbl[aov_tbl$term == group_var, , drop = FALSE]
+  R2_val <- if (nrow(row_term)) row_term$R2[1] else NA_real_
+  p_val  <- if (nrow(row_term)) row_term$`Pr(>F)`[1] else NA_real_
+
+  sig <- dplyr::case_when(
+    is.na(p_val)  ~ "",
+    p_val < 0.001 ~ "***",
+    p_val < 0.01  ~ "**",
+    p_val < 0.05  ~ "*",
+    TRUE          ~ ""
+  )
+
+  lab_str <- sprintf("PERMANOVA%s\n%s: R² = %.3f, p = %.3g %s",
+                     ifelse(is.null(covars), " (univariable)", " (adjusted)"),
+                     ifelse(is.null(legend_title), group_var, legend_title),
+                     R2_val, p_val, sig)
+
+  # PCoA
+  pco <- ape::pcoa(dist_bc)
+  ax1_var <- round(100 * pco$values$Relative_eig[1], 1)
+  ax2_var <- round(100 * pco$values$Relative_eig[2], 1)
+
+  scr <- as.data.frame(pco$vectors[, 1:2, drop = FALSE])
+  colnames(scr) <- c("PCoA1","PCoA2")
+  scr$sample_id <- rownames(scr)
+
+  df <- dplyr::left_join(scr, meta_cc, by = "sample_id")
+
+  surv_lv <- levels(df[[group_var]])
+  if (is.null(pretty_map)) pretty_map <- setNames(surv_lv, surv_lv)
+
+  df$group_plot <- factor(as.character(df[[group_var]]),
+                          levels = surv_lv,
+                          labels = unname(pretty_map[surv_lv]))
+
+  # colors: use what you pass; otherwise default ggplot hues
+  if (is.null(colors)) {
+    colors <- setNames(scales::hue_pal()(length(surv_lv)), surv_lv)
+  } else {
+    # allow unnamed vector; assume order matches levels
+    if (is.null(names(colors))) colors <- setNames(colors, surv_lv)
+  }
+
+  # shapes: binary gets circle/triangle; multi-level all circles unless you pass shapes
+  if (is.null(shapes)) {
+    if (length(surv_lv) == 2) shapes <- setNames(c(16,17), surv_lv)
+    else shapes <- setNames(rep(16, length(surv_lv)), surv_lv)
+  } else {
+    if (is.null(names(shapes))) shapes <- setNames(shapes, surv_lv)
+  }
+
+  # ellipses only if >=3 per group
+  cnt <- table(df$group_plot)
+  can_ell <- length(cnt) > 1 && all(cnt >= 3)
+
+  p <- ggplot(df, aes(PCoA1, PCoA2,
+                      color = .data[[group_var]],
+                      shape = .data[[group_var]])) +
+    geom_point(size = 3, alpha = 0.7) +
+    scale_color_manual(values = colors, aesthetics = "colour") +
+    scale_fill_manual(values  = colors, aesthetics = "fill") +
+    scale_shape_manual(values = shapes) +
+    { if (can_ell)
+      stat_ellipse(aes(fill = .data[[group_var]], color = .data[[group_var]]),
+                   type = "t", level = 0.95, size = 1,
+                   geom = "polygon", alpha = 0.1,
+                   show.legend = FALSE)
+    } +
+    labs(
+      title = title,
+      x = paste0("PCoA1 (", ax1_var, "%)"),
+      y = paste0("PCoA2 (", ax2_var, "%)"),
+      color = ifelse(is.null(legend_title), group_var, legend_title)
+    ) +
+    annotate("text", x = Inf, y = -Inf, label = lab_str,
+             hjust = 1.05, vjust = -0.2, size = 4, color = "black") +
+    theme_bw() +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+      legend.position = "right", 
+      axis.title = element_text(size = 16, face = "bold"),
+axis.text  = element_text(size = 13)
+    ) +
+    guides(
+      fill  = "none",
+      shape = "none",
+      color = guide_legend(override.aes = list(
+        shape = unname(shapes[surv_lv]),
+        linetype = 0, fill = NA, alpha = 1, size = 3
+      ))
+    )
+
+  attr(p, "permanova") <- fit
+  return(p)
+}
+
+out_dir <- "../Output/Longitudinal/Beta_diversity/Ordinations"
+
+# Niche - NP vs OP
+OPvsNP_PCoA <- make_pretty_pcoa_cat(
+  ps           = ps_rq1,
+  group_var    = "niche",
+  colors       = c("#7987AF","#7c674d"), 
+  title        = "PCoA — Niche (VGO3 NP vs OP)",
+  legend_title = "Niche (OP vs NP)"
+)
+
+ggsave(file.path(out_dir, "Niche_OPvsNP_PCoA2.svg"), OPvsNP_PCoA, width=7, height=5)
+
+```
+
+
+# Differential abundance analysis
+## MaAsLin2
+```{r}
+# Differential abundance analysis – MaAsLin2 (Longitudinal)
+# Outcomes: T1 lung function + Delta lung function (all treated as declines)
+# FDR correction is applied separately per outcome group (T1 vs Delta)
+# Results are saved as .csv per outcome × dataset × tax level
+
+# Load & prepare data
+# These ps objects are already filtered and converted to RA
+T0_NP_filtered
+T0_OP_filtered
+
+# Quick counts 
+length(unique(as.data.frame(tax_table(T0_NP_filtered))$ASV)) # 477
+length(unique(as.data.frame(tax_table(T0_NP_filtered))$genus)) # 164
+length(unique(as.data.frame(tax_table(T0_OP_filtered))$ASV)) # 215
+length(unique(as.data.frame(tax_table(T0_OP_filtered))$genus)) # 40
+
+## Convert ASV RA -> "absolute" abundance via qPCR 
+#### T0 NP ####
+# Ensure sample_id is present in the sample_data
+sample_data(T0_NP_filtered) <- sample_data(T0_NP_filtered) %>%
+  data.frame() %>%
+  dplyr::rename(sample_id = sample_ID)
+
+# Convert OTU and metadata to data frames
+T0_np_otu  <- otu_tab_to_df(T0_NP_filtered)  # has 'sample_id'
+T0_np_meta <- meta_to_df(T0_NP_filtered, sample_name = "sample_id_row")  # rownames column is now 'sample_id_row'
+
+# Merge and multiply by qPCR
+T0_np_otu <- T0_np_otu %>%
+  dplyr::left_join(T0_np_meta[, c("sample_id_row", "qPCR")], by = c("sample_id" = "sample_id_row")) %>%
+  dplyr::mutate(dplyr::across(-c(sample_id, qPCR), ~ .x * qPCR)) %>%
+  dplyr::select(-qPCR) %>%
+  as.data.frame()
+
+# Convert to wide OTU table format for phyloseq
+rownames(T0_np_otu) <- T0_np_otu$sample_id
+T0_np_otu <- T0_np_otu[, -1] %>% t() %>% as.data.frame()
+
+# Rebuild phyloseq object with absolute abundances
+T0_np_ps_abs <- phyloseq(
+  otu_table(T0_np_otu, taxa_are_rows = TRUE),
+  tax_table(T0_NP_filtered),
+  sample_data(T0_NP_filtered)
+)
+
+
+#### T0 OP ####
+# Ensure sample_id is present in the sample_data
+sample_data(T0_OP_filtered) <- sample_data(T0_OP_filtered) %>%
+  data.frame() %>%
+  dplyr::rename(sample_id = sample_ID)
+
+# Convert OTU and metadata to data frames
+T0_op_otu  <- otu_tab_to_df(T0_OP_filtered)  # has 'sample_id'
+T0_op_meta <- meta_to_df(T0_OP_filtered, sample_name = "sample_id_row")  # rownames column is now 'sample_id_row'
+
+# Merge and multiply by qPCR
+T0_op_otu <- T0_op_otu %>%
+  dplyr::left_join(T0_op_meta[, c("sample_id_row", "qPCR")], by = c("sample_id" = "sample_id_row")) %>%
+  dplyr::mutate(dplyr::across(-c(sample_id, qPCR), ~ .x * qPCR)) %>%
+  dplyr::select(-qPCR) %>%
+  as.data.frame()
+
+# Convert to wide OTU table format for phyloseq
+rownames(T0_op_otu) <- T0_op_otu$sample_id
+T0_op_otu <- T0_op_otu[, -1] %>% t() %>% as.data.frame()
+
+# Rebuild phyloseq object with absolute abundances
+T0_op_ps_abs <- phyloseq(
+  otu_table(T0_op_otu, taxa_are_rows = TRUE),
+  tax_table(T0_OP_filtered),
+  sample_data(T0_OP_filtered)
+)
+
+
+#### Agglomerate absolute phyloseqs to Genus level #### 
+set_genus_names <- function(ps) {
+  tt <- as(phyloseq::tax_table(ps), "matrix")
+  if ("genus" %in% colnames(tt)) {
+    g <- as.character(tt[, "genus"])
+    g[is.na(g) | g == ""] <- paste0("Unclassified_genus_", seq_len(sum(is.na(g) | g == "")))
+    if (any(duplicated(g))) {
+      dup <- duplicated(g) | duplicated(g, fromLast = TRUE)
+      g[dup] <- paste0(g[dup], "_", ave(seq_along(g[dup]), g[dup], FUN = seq_along))
+    }
+    taxa_names(ps) <- g
+  }
+  ps
+}
+
+T0_np_ps_genus_abs <- T0_np_ps_abs %>% tax_glom(taxrank = "genus") %>% set_genus_names()
+T0_op_ps_genus_abs <- T0_op_ps_abs %>% tax_glom(taxrank = "genus") %>% set_genus_names()
+
+
+
+#### Additional filtering ####
+rel_thresh <- 0.005
+prev_frac  <- 0.10
+
+# Helper: apply RA-based prevalence filter, return ABS pruned
+filter_abs_by_RA_rule <- function(ps_abs, rel_thresh, prev_frac) {
+  ps_ra <- phyloseq::transform_sample_counts(ps_abs, function(x) { s <- sum(x); if (s == 0) x else x/s })
+  ns <- phyloseq::nsamples(ps_ra)
+  need <- ceiling(ns * prev_frac)
+  otu <- as(otu_table(ps_ra), "matrix")
+  if (!taxa_are_rows(ps_ra)) otu <- t(otu)
+  keep_taxa <- rownames(otu)[rowSums(otu >= rel_thresh) >= need]
+  phyloseq::prune_taxa(keep_taxa, ps_abs)
+}
+
+#### ASV level ####
+T0_np_ps_abs_filt <- filter_abs_by_RA_rule(T0_np_ps_abs, rel_thresh, prev_frac)
+T0_op_ps_abs_filt <- filter_abs_by_RA_rule(T0_op_ps_abs, rel_thresh, prev_frac)
+
+#### Genus level ####
+T0_np_ps_genus_abs_filt <- filter_abs_by_RA_rule(T0_np_ps_genus_abs, rel_thresh, prev_frac)
+T0_op_ps_genus_abs_filt <- filter_abs_by_RA_rule(T0_op_ps_genus_abs, rel_thresh, prev_frac)
+
+# Per-niche lists (names are *niche only*, so folders will be <out_root>/<niche>/{ASV,Genus})
+ps_list_DA_ASV <- list(
+  T0_NP = T0_np_ps_abs_filt,
+  T0_OP = T0_op_ps_abs_filt
+)
+ps_list_DA_genus <- list(
+  T0_NP = T0_np_ps_genus_abs_filt,
+  T0_OP = T0_op_ps_genus_abs_filt
+)
+
+
+#### MaAsLin function ####
+# Define outcome variables (treated as decline)
+outcomes_decline <- c(
+  "FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1",
+  "delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred"
+)
+
+# Define covariates
+covariates <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
+
+# Safe file-naming helper
+safe_name <- function(x) gsub("[^A-Za-z0-9._-]+", "_", x)
+
+# Output directory
+out_root <- "../Output/Longitudinal/DA/MaAsLin2"
+
+# MaAsLin2 wrapper (non-stratified)
+run_maaslin2_longitudinal <- function(ps, outcome_var, covariates, out_dir) {
+  stopifnot(inherits(ps, "phyloseq"))
+  
+  meta <- data.frame(sample_data(ps), check.names = FALSE)
+  
+  if (!outcome_var %in% colnames(meta)) return(NULL)
+  
+  # Convert to decline direction
+  meta[[paste0(outcome_var, "_decline")]] <- -1 * suppressWarnings(as.numeric(meta[[outcome_var]]))
+  outcome_use <- paste0(outcome_var, "_decline")
+
+  sample_data(ps) <- sample_data(meta)
+
+  # Prepare OTU table
+  otu <- as(otu_table(ps), "matrix")
+  if (taxa_are_rows(ps)) otu <- t(otu)
+
+  otu_df <- as.data.frame(otu, check.names = FALSE)
+  meta_df <- data.frame(sample_data(ps), check.names = FALSE)
+
+  common <- intersect(rownames(meta_df), rownames(otu_df))
+  otu_df  <- otu_df[common, , drop = FALSE]
+  meta_df <- meta_df[common, , drop = FALSE]
+
+  if (!identical(rownames(otu_df), rownames(meta_df))) return(NULL)
+
+  # Run MaAsLin2
+  fit <- Maaslin2(
+    input_data     = otu_df,
+    input_metadata = meta_df,
+    output         = out_dir,
+    fixed_effects  = c(outcome_use, covariates),
+    normalization  = "NONE",
+    transform      = "LOG",
+    min_abundance  = 0,
+    min_prevalence = 0,
+    plot_heatmap   = FALSE,
+    plot_scatter   = FALSE
+  )
+
+  # Post-process result
+  res <- fit$results
+  if (is.null(res) || !nrow(res)) return(NULL)
+  
+  res <- res[res$metadata == outcome_use, ]
+  res$outcome <- outcome_var
+  res$conf.low  <- res$coef - 1.96 * res$stderr
+  res$conf.high <- res$coef + 1.96 * res$stderr
+  res$label <- dplyr::case_when(
+    is.na(res$qval)        ~ NA_character_,
+    res$qval <= 0.05       ~ "***",
+    res$qval <= 0.10       ~ "**",
+    res$qval <= 0.25       ~ "*",
+    TRUE                   ~ NA_character_
+  )
+
+  return(res)
+}
+
+# Batch runner
+run_all_maaslin_models <- function(ps_lists, outcomes, covars, out_root) {
+  results_all <- list()
+  
+  for (level in names(ps_lists)) {
+    for (niche in names(ps_lists[[level]])) {
+      ps <- ps_lists[[level]][[niche]]
+      for (v in outcomes) {
+        subdir <- file.path(out_root, niche, level)
+        dir.create(subdir, recursive = TRUE, showWarnings = FALSE)
+        
+        out_dir <- file.path(subdir, safe_name(v))
+        dir.create(out_dir, showWarnings = FALSE)
+        
+        cat("Running:", niche, "|", level, "|", v, "\n")
+        res <- try(run_maaslin2_longitudinal(ps, v, covars, out_dir), silent = TRUE)
+        
+        if (inherits(res, "try-error") || is.null(res) || !nrow(res)) {
+          message("No results for:", niche, level, v)
+          next
+        }
+        
+        res$niche <- niche
+        res$level <- level
+        results_all[[paste(niche, level, v, sep = "_")]] <- res
+
+        # Save individual file
+        fn <- paste0(niche, "_", level, "_", safe_name(v), ".csv")
+        readr::write_csv(res, file.path(subdir, fn))
+      }
+    }
+  }
+
+  # Save full summary
+  res_df <- dplyr::bind_rows(results_all)
+  readr::write_csv(res_df, file.path(out_root, "MaAsLin2_all_results_summary.csv"))
+  return(res_df)
+}
+
+# Run all (using your prepared filtered objects)
+ps_lists_longitudinal <- list(
+  ASV   = ps_list_DA_ASV,
+  Genus = ps_list_DA_genus
+)
+
+maaslin_results_longitudinal <- run_all_maaslin_models(
+  ps_lists = ps_lists_longitudinal,
+  outcomes = outcomes_decline,
+  covars   = covariates,
+  out_root = out_root
+)
+
+
+
+
+```
+#### MaAsLin2 heatmaps 
+```{r}
+# Settings
+root_dir <- "../Output/Longitudinal/DA/MaAsLin2/"
+
+# ASV folders
+asv_folders <- list(
+  NP = file.path(root_dir, "T0_NP", "ASV"),
+  OP = file.path(root_dir, "T0_OP", "ASV")
+)
+
+# Genus folders (datasets end with _genus)
+genus_folders <- list(
+  NP = file.path(root_dir, "T0_NP", "Genus"),
+  OP = file.path(root_dir, "T0_OP", "Genus")
+)
+
+# Order on the x-axis (raw metadata names in CSV)
+custom_metadata_order <- c(
+  "FEV1_pred_T1_decline","FVC_pred_T1_decline", "FEV1FVC_pred_T1_decline",  "MMEF_pred_T1_decline", "delta_FEV1_pred_decline", "delta_FVC_pred_decline", "delta_FEV1FVC_pred_decline", "delta_MMEF_pred_decline"
+)
+
+# Pretty names to display on x-axis (same order)
+pretty_labels <- c(
+  "FEV1",
+  "FVC",
+  "FEV1/FVC",
+  "MMEF",
+  "Delta FEV1",
+  "Delta FVC",
+  "Delta FEV1/FVC",
+  "Delta MMEF"
+)
+
+names(pretty_labels) <- custom_metadata_order
+
+# Helper functions
+# Read + tidy one dataset/level folder
+read_heatmap_data <- function(folder) {
+  files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
+  if (!length(files)) return(NULL)
+
+  df <- lapply(files, function(f) {
+    tryCatch(readr::read_csv(f, show_col_types = FALSE), error = function(e) NULL)
+  }) |> bind_rows()
+
+  if (is.null(df) || !nrow(df)) return(NULL)
+
+  # Keep required columns; tolerate missing 'label'
+  if (!"label" %in% names(df)) df$label <- NA_character_
+  df <- df |> select(feature, metadata, coef, label)
+
+  # x-axis handling: keep raw + pretty factor
+  df$metadata_raw <- factor(df$metadata, levels = custom_metadata_order)
+  # map to pretty labels with same order
+  df$metadata_plot <- factor(pretty_labels[as.character(df$metadata_raw)],
+                             levels = pretty_labels)
+
+  df
+}
+
+
+#  Y-axis label formatter:
+#    - replace underscores with spaces
+#    - italicize the text part
+#    - put trailing numbers at the end in parentheses, non-italic
+format_feature_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)  # underscores -> spaces
+    if (grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)   # remove trailing number
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)  # extract trailing number
+      bquote(italic(.(text)) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+
+
+# Generic heatmap builder (works for both ASV/Genus)
+make_heatmap <- function(df, title, italicize_features = TRUE) {
+  if (is.null(df) || !nrow(df)) {
+    return(ggplot() + theme_void() + ggtitle(paste0(title, " (no data)")))
+  }
+
+  p <- ggplot(df, aes(x = metadata_plot, y = feature, fill = coef)) +
+    geom_tile(color = "white") +
+    # EXACT palette requested:
+    scale_fill_gradient2(
+      low = rcartocolor::carto_pal(7, "Geyser")[1],
+      mid = rcartocolor::carto_pal(7, "Geyser")[4],
+      high = rcartocolor::carto_pal(7, "Geyser")[7],
+      midpoint = 0,
+      name = "Coefficient"
+    ) +
+    # centered significance stars
+    geom_text(aes(label = label), color = "black", size = 5,
+              hjust = 0.5, vjust = 0.8, na.rm = TRUE) +
+    theme_minimal(base_size = 11) +
+    theme(
+      axis.text.x  = element_text(angle = 45, hjust = 1),
+      axis.text.y  = element_text(),   # base; we format with scale_y_discrete
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.grid   = element_blank(),
+      plot.title   = element_text(hjust = 0.5),
+      plot.margin  = unit(c(6, 6, 6, 12), "pt")
+    ) +
+    ggtitle(title)
+
+  if (italicize_features) {
+    p + scale_y_discrete(labels = format_feature_labels)
+  } else {
+    # If you ever want Genus plain: change italicize_features=FALSE
+    # Here we still italicize + remove underscores (same formatter)
+    p + scale_y_discrete(labels = format_feature_labels)
+  }
+}
+
+# Formatter for ASV labels: italics + trailing numbers in parentheses
+format_asv_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)  # underscores -> spaces
+    if (grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)   # remove trailing number
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)  # extract trailing number
+      bquote(italic(.(text)) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+
+# Formatter for genus labels: italics only, no special number handling
+format_genus_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)  # underscores -> spaces
+    bquote(italic(.(lab)))
+  })
+}
+
+# Generic heatmap builder (choose formatter based on level)
+make_heatmap <- function(df, title, level = c("ASV","Genus")) {
+  level <- match.arg(level)
+
+  if (is.null(df) || !nrow(df)) {
+    return(ggplot() + theme_void() + ggtitle(paste0(title, " (no data)")))
+  }
+
+  p <- ggplot(df, aes(x = metadata_plot, y = feature, fill = coef)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient2(
+      low = rcartocolor::carto_pal(7, "Geyser")[1],
+      mid = rcartocolor::carto_pal(7, "Geyser")[4],
+      high = rcartocolor::carto_pal(7, "Geyser")[7],
+      midpoint = 0,
+      name = "Coefficient"
+    ) +
+    geom_text(aes(label = label), color = "black", size = 5,
+              hjust = 0.5, vjust = 0.8, na.rm = TRUE) +
+    theme_minimal(base_size = 11) +
+    theme(
+      axis.text.x  = element_text(angle = 45, hjust = 1),
+      axis.text.y  = element_text(),
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.grid   = element_blank(),
+      plot.title   = element_text(hjust = 0.5),
+      plot.margin  = unit(c(6, 6, 6, 12), "pt")
+    ) +
+    ggtitle(title)
+
+  if (level == "ASV") {
+    p + scale_y_discrete(labels = format_asv_labels)
+  } else {
+    p + scale_y_discrete(labels = format_genus_labels)
+  }
+}
+
+
+# Build individual plots
+# ASV heatmaps
+p_T0_NP_ASV <- make_heatmap(read_heatmap_data(asv_folders$NP), "T0 NP (ASV)", "ASV")
+p_T0_OP_ASV <- make_heatmap(read_heatmap_data(asv_folders$OP), "T0 OP (ASV)", "ASV")
+
+# Genus heatmaps
+p_T0_NP_Gen <- make_heatmap(read_heatmap_data(genus_folders$NP), "T0 NP (Genus)", "Genus")
+p_T0_OP_Gen <- make_heatmap(read_heatmap_data(genus_folders$OP), "T0 OP (Genus)", "Genus")
+
+# Combine into 2×2 grids and save
+asv_grid <- (p_T0_NP_ASV | p_T0_OP_ASV) +
+            patchwork::plot_annotation(title = "MaAsLin2 Heatmaps — ASV Level")
+
+genus_grid <- (p_T0_NP_Gen | p_T0_OP_Gen) +
+              patchwork::plot_annotation(title = "MaAsLin2 Heatmaps — Genus Level")
+
+ggsave(file.path(root_dir, "Heatmap_Maaslin_results_ASV.svg"),
+       asv_grid, width = 10, height = 8)
+
+ggsave(file.path(root_dir, "Heatmap_Maaslin_results_Genus.svg"),
+       genus_grid, width = 10, height = 8)
+```
+
+## ANCOMBC2 
+```{r}
+# Make tree summarised experiment data
+T0_np_asv_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(T0_np_ps_abs_filt)
+T0_op_asv_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(T0_op_ps_abs_filt)
+T0_np_genus_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(T0_np_ps_genus_abs_filt)
+T0_op_genus_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(T0_op_ps_genus_abs_filt)
+
+
+# Order on the x-axis (raw metadata names in CSV)
+custom_metadata_order <- c(
+  "FEV1_pred_T1_decline","FVC_pred_T1_decline", "FEV1FVC_pred_T1_decline",  "MMEF_pred_T1_decline", "delta_FEV1_pred_decline", "delta_FVC_pred_decline", "delta_FEV1FVC_pred_decline", "delta_MMEF_pred_decline"
+)
+
+# Pretty names to display on x-axis (same order)
+pretty_labels <- c(
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted",
+  "Delta FEV1 % predicted (T1-T0)",
+  "Delta FVC % predicted (T1-T0)",
+  "Delta FEV1/FVC % predicted (T1-T0)",
+  "Delta MMEF % predicted (T1-T0)"
+)
+
+outcomes_decline <- c(
+  "FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1",
+  "delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred"
+)
+
+# Define covariates
+covariates <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
+
+
+models <- list(
+  FEV1 = "FEV1_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
+  FVC = "FVC_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
+  FEV1FVC = "FEV1FVC_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
+  MMEF = "MMEF_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
+  DeltaFEV1 = "delta_FEV1_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
+  DeltaFVC = "delta_FVC_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
+  DeltaFEV1FVC = "delta_FEV1FVC_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
+  DeltaMMEF = "delta_MMEF_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling"
+)
+
+
+# create *_decline variables in your metadata 
+# vars to convert
+decline_vars <- c("FEV1_pred_T1","FVC_pred_T1","FEV1FVC_pred_T1", "MMEF_pred_T1", "delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred")
+
+add_decline_vars <- function(obj, vars = decline_vars) {
+  if (inherits(obj, c("TreeSummarizedExperiment","SummarizedExperiment"))) {
+    cd <- SummarizedExperiment::colData(obj)
+    for (v in vars) {
+      if (v %in% colnames(cd)) {
+        cd[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(as.character(cd[[v]])))
+      } else {
+        warning("Column not found in colData: ", v)
+      }
+    }
+    SummarizedExperiment::colData(obj) <- cd
+    return(obj)
+  }
+
+  # phyloseq
+  if (inherits(obj, "phyloseq")) {
+    md <- data.frame(phyloseq::sample_data(obj), check.names = FALSE)
+    for (v in vars) {
+      if (v %in% names(md)) {
+        md[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(as.character(md[[v]])))
+      } else {
+        warning("Column not found in sample_data: ", v)
+      }
+    }
+    phyloseq::sample_data(obj) <- phyloseq::sample_data(md)
+    return(obj)
+  }
+
+  stop("Unsupported object class: ", class(obj)[1])
+}
+
+# Apply to the tse objects
+T0_np_asv_tse <- add_decline_vars(T0_np_asv_tse)
+T0_op_asv_tse <- add_decline_vars(T0_op_asv_tse)
+T0_np_genus_tse <- add_decline_vars(T0_np_genus_tse)
+T0_op_genus_tse <- add_decline_vars(T0_op_genus_tse)
+
+
+fix_factors <- function(tse) {
+  colData(tse) <- colData(tse) %>%
+    as.data.frame() %>%
+    mutate(
+      gender_T0 = factor(gender_T0, levels = c("male", "female")),
+      season_microbiome_sampling = factor(
+        season_microbiome_sampling,
+        levels = c("Winter", "Spring", "Summer", "Autumn")
+      ),
+      smoke_status_T0 = factor(
+        smoke_status_T0,
+        levels = c("non", "former", "current")
+      )
+    ) %>%
+    S4Vectors::DataFrame()
+  tse
+}
+
+T0_np_asv_tse   <- fix_factors(T0_np_asv_tse)
+T0_op_asv_tse   <- fix_factors(T0_op_asv_tse)
+T0_np_genus_tse <- fix_factors(T0_np_genus_tse)
+T0_op_genus_tse <- fix_factors(T0_op_genus_tse)
+
+# references
+refs <- list(
+  gender_0 = "male",
+  season_microbiome_sampling = "Winter") # smoke_status is already an ordered factor variable (non< former < current)
+
+# Minimal helper: relevel selected columns if they exist
+relevel_tse <- function(tse, refs) {
+  cd <- as.data.frame(SummarizedExperiment::colData(tse), check.names = FALSE)
+  for (nm in names(refs)) {
+    if (nm %in% names(cd)) cd[[nm]] <- stats::relevel(factor(cd[[nm]]), ref = refs[[nm]])
+  }
+  SummarizedExperiment::colData(tse) <- S4Vectors::DataFrame(cd, row.names = rownames(cd))
+  tse
+}
+
+# Apply to each object
+T0_np_asv_tse <- relevel_tse(T0_np_asv_tse, refs)
+T0_op_asv_tse <- relevel_tse(T0_op_asv_tse, refs)
+T0_np_genus_tse <- relevel_tse(T0_np_genus_tse, refs)
+T0_op_genus_tse <- relevel_tse(T0_op_genus_tse, refs)
+
+
+# Run ANCOM-BC2 analyses for all models
+ancom_np_asv <- map(models, ~ ANCOMBC::ancombc2(
+  data = T0_np_asv_tse,
+  fix_formula = .x,
+  rand_formula = NULL,
+  p_adj_method = "BH",
+  prv_cut = 0,
+  lib_cut = 0,
+  struc_zero = FALSE,
+  alpha = 0.05,
+  global = FALSE,
+  pairwise = FALSE
+))
+
+# Process and save results 
+ancom_np_asv <- map(ancom_np_asv, ~ mutate_if(.x$res, is.numeric, round, 2))
+
+# Define output paths
+output_dir <- "../Output/Longitudinal/DA/ANCOMBC2/NP/ASV"
+file_names <- c("FEV1", "FVC", "FEV1FVC", "MMEF", "Delta_FEV1", "Delta_FVC","Delta_FEV1FVC","Delta_MMEF")
+
+# Save results as CSV
+walk2(ancom_np_asv, file_names, ~ write_csv(.x, file.path(output_dir, paste0("ANCOMBC2_NP_ASV_", .y, ".csv"))))
+
+
+#### OP ASV level ####
+# Run ANCOM-BC2 analyses for all models
+ancom_op_asv <- map(models, ~ ANCOMBC::ancombc2(
+  data = T0_op_asv_tse,
+  fix_formula = .x,
+  rand_formula = NULL,
+  p_adj_method = "BH",
+  prv_cut = 0,
+  lib_cut = 0,
+  struc_zero = FALSE,
+  alpha = 0.05,
+  global = FALSE,
+  pairwise = FALSE
+))
+
+# Process and save results 
+ancom_op_asv <- map(ancom_op_asv, ~ mutate_if(.x$res, is.numeric, round, 2))
+
+# Define output paths
+output_dir <- "../Output/Longitudinal/DA/ANCOMBC2/OP/ASV"
+file_names <- c("FEV1", "FVC", "FEV1FVC", "MMEF", "Delta_FEV1", "Delta_FVC","Delta_FEV1FVC","Delta_MMEF")
+
+# Save results as CSV
+walk2(ancom_op_asv, file_names, ~ write_csv(.x, file.path(output_dir, paste0("ANCOMBC2_OP_ASV_", .y, ".csv"))))
+
+
+
+#### NP Genus level ####
+ancom_np_genus <- map(models, ~ ANCOMBC::ancombc2(
+  data = T0_np_genus_tse,
+  fix_formula = .x,
+  rand_formula = NULL,
+  p_adj_method = "BH",
+  prv_cut = 0,
+  lib_cut = 0,
+  struc_zero = FALSE,
+  alpha = 0.05,
+  global = FALSE,
+  pairwise = FALSE
+))
+
+# Process and save results 
+ancom_np_genus <- map(ancom_np_genus, ~ mutate_if(.x$res, is.numeric, round, 2))
+
+# Define output paths
+output_dir <- "../Output/Longitudinal/DA/ANCOMBC2/NP/Genus"
+file_names <- c("FEV1", "FVC", "FEV1FVC", "MMEF", "Delta_FEV1", "Delta_FVC","Delta_FEV1FVC","Delta_MMEF")
+
+# Save results as CSV
+walk2(ancom_np_genus, file_names, ~ write_csv(.x, file.path(output_dir, paste0("ANCOMBC2_NP_genus_", .y, ".csv"))))
+
+
+#### OP Genus level ####
+ancom_op_genus <- map(models, ~ ANCOMBC::ancombc2(
+  data = T0_op_genus_tse,
+  fix_formula = .x,
+  rand_formula = NULL,
+  p_adj_method = "BH",
+  prv_cut = 0,
+  lib_cut = 0,
+  struc_zero = FALSE,
+  alpha = 0.05,
+  global = FALSE,
+  pairwise = FALSE
+))
+
+# Process and save results 
+ancom_op_genus <- map(ancom_op_genus, ~ mutate_if(.x$res, is.numeric, round, 2))
+
+# Define output paths
+output_dir <- "../Output/Longitudinal/DA/ANCOMBC2/OP/Genus"
+file_names <- c("FEV1", "FVC", "FEV1FVC", "MMEF", "Delta_FEV1", "Delta_FVC","Delta_FEV1FVC","Delta_MMEF")
+
+# Save results as CSV
+walk2(ancom_op_genus, file_names, ~ write_csv(.x, file.path(output_dir, paste0("ANCOMBC2_OP_genus_", .y, ".csv"))))
+```
+#### ANCOM-BC2 heatmaps 
+```{r}
+# ANCOM-BC2 heatmaps — NP & OP combined, ASV & Genus
+root_ancom <- "../Output/Longitudinal/DA/ANCOMBC2"
+paths <- list(
+  NP_ASV    = file.path(root_ancom, "NP", "ASV"),
+  OP_ASV    = file.path(root_ancom, "OP", "ASV"),
+  NP_Genus  = file.path(root_ancom, "NP", "Genus"),
+  OP_Genus  = file.path(root_ancom, "OP", "Genus")
+)
+
+lung_vars <- tibble::tribble(
+  ~file_suffix,        ~plot_var,        ~model_var,
+  "FEV1",              "FEV1",            "FEV1_pred_T1",
+  "FVC",               "FVC",             "FVC_pred_T1",
+  "FEV1FVC",           "FEV1FVC",          "FEV1FVC_pred_T1",
+  "MMEF",              "MMEF",             "MMEF_pred_T1",
+  "Delta_FEV1",        "Delta_FEV1",       "delta_FEV1_pred",
+  "Delta_FVC",         "Delta_FVC",        "delta_FVC_pred",
+  "Delta_FEV1FVC",     "Delta_FEV1FVC",    "delta_FEV1FVC_pred",
+  "Delta_MMEF",        "Delta_MMEF",       "delta_MMEF_pred"
+)
+
+
+pretty_labels <- c(
+  FEV1 = "FEV1",
+  FVC = "FVC",
+  FEV1FVC = "FEV1/FVC",
+  MMEF = "MMEF",
+  Delta_FEV1 = "Delta FEV1",
+  Delta_FVC = "Delta FVC",
+  Delta_FEV1FVC = "Delta FEV1/FVC",
+  Delta_MMEF = "Delta MMEF"
+)
+
+
+# Change Y axis labels of ASVs and genera
+# ASV: italics + trailing number in parentheses
+format_asv_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    if (grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)
+      bquote(italic(.(trimws(text))) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+
+# Genus: just italics
+format_genus_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    bquote(italic(.(lab)))
+  })
+}
+
+
+read_ancom_manual_NP_ASV <- function(folder, lung_vars) {
+
+  all_out <- list()
+
+  for (i in seq_len(nrow(lung_vars))) {
+
+    file <- file.path(
+      folder,
+      paste0("ANCOMBC2_NP_ASV_", lung_vars$file_suffix[i], ".csv")
+    )
+
+    if (!file.exists(file)) {
+      warning("Missing file: ", basename(file))
+      next
+    }
+
+    df <- readr::read_csv(file, show_col_types = FALSE)
+
+    lfc_col <- paste0("lfc_", lung_vars$model_var[i])
+    q_col   <- paste0("q_", lung_vars$model_var[i])
+    ps_col  <- paste0("passed_ss_", lung_vars$model_var[i])
+
+    if (!all(c("taxon", lfc_col, q_col, ps_col) %in% names(df))) {
+      warning("Missing columns in ", basename(file))
+      next
+    }
+
+    all_out[[i]] <- tibble::tibble(
+      feature   = df$taxon,
+      metadata  = lung_vars$plot_var[i],
+      coef      = as.numeric(df[[lfc_col]]),
+      q_value   = as.numeric(df[[q_col]]),
+      passed_ss = as.logical(df[[ps_col]]),
+      label = dplyr::case_when(
+        is.na(df[[q_col]])        ~ "",
+        df[[q_col]] <= 0.05       ~ "***",
+        df[[q_col]] <= 0.10       ~ "**",
+        df[[q_col]] <= 0.25       ~ "*",
+        TRUE                      ~ ""
+      )
+    )
+  }
+
+  d <- dplyr::bind_rows(all_out)
+
+  d$metadata <- factor(d$metadata, levels = names(pretty_labels))
+  d$metadata_plot <- factor(pretty_labels[d$metadata], levels = pretty_labels)
+
+  d
+}
+
+
+read_ancom_manual_OP_ASV <- function(folder, lung_vars) {
+
+  all_out <- list()
+
+  for (i in seq_len(nrow(lung_vars))) {
+
+    file <- file.path(
+      folder,
+      paste0("ANCOMBC2_OP_ASV_", lung_vars$file_suffix[i], ".csv")
+    )
+
+    if (!file.exists(file)) {
+      warning("Missing file: ", basename(file))
+      next
+    }
+
+    df <- readr::read_csv(file, show_col_types = FALSE)
+
+    lfc_col <- paste0("lfc_", lung_vars$model_var[i])
+    q_col   <- paste0("q_", lung_vars$model_var[i])
+    ps_col  <- paste0("passed_ss_", lung_vars$model_var[i])
+
+    if (!all(c("taxon", lfc_col, q_col, ps_col) %in% names(df))) {
+      warning("Missing columns in ", basename(file))
+      next
+    }
+
+    all_out[[i]] <- tibble::tibble(
+      feature   = df$taxon,
+      metadata  = lung_vars$plot_var[i],
+      coef      = as.numeric(df[[lfc_col]]),
+      q_value   = as.numeric(df[[q_col]]),
+      passed_ss = as.logical(df[[ps_col]]),
+      label = dplyr::case_when(
+        is.na(df[[q_col]])        ~ "",
+        df[[q_col]] <= 0.05       ~ "***",
+        df[[q_col]] <= 0.10       ~ "**",
+        df[[q_col]] <= 0.25       ~ "*",
+        TRUE                      ~ ""
+      )
+    )
+  }
+
+  d <- dplyr::bind_rows(all_out)
+
+  d$metadata <- factor(d$metadata, levels = names(pretty_labels))
+  d$metadata_plot <- factor(pretty_labels[d$metadata], levels = pretty_labels)
+
+  d
+}
+
+read_ancom_manual_NP_Genus <- function(folder, lung_vars) {
+
+  all_out <- list()
+
+  for (i in seq_len(nrow(lung_vars))) {
+
+    file <- file.path(
+      folder,
+      paste0("ANCOMBC2_NP_Genus_", lung_vars$file_suffix[i], ".csv")
+    )
+
+    if (!file.exists(file)) {
+      warning("Missing file: ", basename(file))
+      next
+    }
+
+    df <- readr::read_csv(file, show_col_types = FALSE)
+
+    lfc_col <- paste0("lfc_", lung_vars$model_var[i])
+    q_col   <- paste0("q_", lung_vars$model_var[i])
+    ps_col  <- paste0("passed_ss_", lung_vars$model_var[i])
+
+    if (!all(c("taxon", lfc_col, q_col, ps_col) %in% names(df))) {
+      warning("Missing columns in ", basename(file))
+      next
+    }
+
+    all_out[[i]] <- tibble::tibble(
+      feature   = df$taxon,
+      metadata  = lung_vars$plot_var[i],
+      coef      = as.numeric(df[[lfc_col]]),
+      q_value   = as.numeric(df[[q_col]]),
+      passed_ss = as.logical(df[[ps_col]]),
+      label = dplyr::case_when(
+        is.na(df[[q_col]])        ~ "",
+        df[[q_col]] <= 0.05       ~ "***",
+        df[[q_col]] <= 0.10       ~ "**",
+        df[[q_col]] <= 0.25       ~ "*",
+        TRUE                      ~ ""
+      )
+    )
+  }
+
+  d <- dplyr::bind_rows(all_out)
+
+  d$metadata <- factor(d$metadata, levels = names(pretty_labels))
+  d$metadata_plot <- factor(pretty_labels[d$metadata], levels = pretty_labels)
+
+  d
+}
+
+
+
+read_ancom_manual_OP_Genus <- function(folder, lung_vars) {
+
+  all_out <- list()
+
+  for (i in seq_len(nrow(lung_vars))) {
+
+    file <- file.path(
+      folder,
+      paste0("ANCOMBC2_OP_Genus_", lung_vars$file_suffix[i], ".csv")
+    )
+
+    if (!file.exists(file)) {
+      warning("Missing file: ", basename(file))
+      next
+    }
+
+    df <- readr::read_csv(file, show_col_types = FALSE)
+
+    lfc_col <- paste0("lfc_", lung_vars$model_var[i])
+    q_col   <- paste0("q_", lung_vars$model_var[i])
+    ps_col  <- paste0("passed_ss_", lung_vars$model_var[i])
+
+    if (!all(c("taxon", lfc_col, q_col, ps_col) %in% names(df))) {
+      warning("Missing columns in ", basename(file))
+      next
+    }
+
+    all_out[[i]] <- tibble::tibble(
+      feature   = df$taxon,
+      metadata  = lung_vars$plot_var[i],
+      coef      = as.numeric(df[[lfc_col]]),
+      q_value   = as.numeric(df[[q_col]]),
+      passed_ss = as.logical(df[[ps_col]]),
+      label = dplyr::case_when(
+        is.na(df[[q_col]])        ~ "",
+        df[[q_col]] <= 0.05       ~ "***",
+        df[[q_col]] <= 0.10       ~ "**",
+        df[[q_col]] <= 0.25       ~ "*",
+        TRUE                      ~ ""
+      )
+    )
+  }
+
+  d <- dplyr::bind_rows(all_out)
+
+  d$metadata <- factor(d$metadata, levels = names(pretty_labels))
+  d$metadata_plot <- factor(pretty_labels[d$metadata], levels = pretty_labels)
+
+  d
+}
+
+
+# Do for all datasets
+np_asv <- read_ancom_manual_NP_ASV(paths$NP_ASV, lung_vars)
+op_asv <- read_ancom_manual_OP_ASV(paths$OP_ASV, lung_vars)
+np_genus <- read_ancom_manual_NP_Genus(paths$NP_Genus, lung_vars)
+op_genus <- read_ancom_manual_OP_Genus(paths$OP_Genus, lung_vars)
+
+
+make_heatmap <- function(df, title, level = c("ASV", "Genus")) {
+  level <- match.arg(level)
+
+  pal <- rcartocolor::carto_pal(7, "Geyser")
+
+  p <- ggplot(df, aes(x = metadata_plot, y = feature, fill = coef)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = label,
+                  color = ifelse(passed_ss, "black", "white")),
+              size = 4) +
+    scale_color_identity() +
+    scale_fill_gradient2(
+      low = pal[1], mid = pal[4], high = pal[7],
+      midpoint = 0, name = "Coefficient"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.title = element_blank(),
+      panel.grid = element_blank(),
+      plot.title = element_text(hjust = 0.5)
+    ) +
+    ggtitle(title)
+
+  if (level == "ASV") {
+    p + scale_y_discrete(labels = format_asv_labels)
+  } else {
+    p + scale_y_discrete(labels = format_genus_labels)
+  }
+}
+
+
+p_np_asv <- make_heatmap(np_asv, "T0 NP (ASV)")
+p_op_asv <- make_heatmap(op_asv, "T0 OP (ASV)")
+p_np_genus <- make_heatmap(np_genus, "T0 NP (Genus)")
+p_op_genus <- make_heatmap(op_genus, "T0 NP (Genus)")
+
+# ASV level heatmaps 
+p_asv_grid <- (p_np_asv | p_op_asv) +
+  patchwork::plot_annotation(title = "ANCOM-BC2 Heatmaps — ASV level")
+
+ggsave("../Output/Longitudinal/DA/ANCOMBC2/Heatmap_ANCOMBC2_ASV_combined.svg",
+       p_asv_grid, width = 10, height = 8)
+
+# Genus level heatmaps 
+p_gen_grid <- (p_np_genus | p_op_genus) +
+  patchwork::plot_annotation(title = "ANCOM-BC2 Heatmaps — Genus level")
+
+ggsave("../Output/Longitudinal/DA/ANCOMBC2/Heatmap_ANCOMBC2_Genus_combined.svg",
+       p_gen_grid, width = 10, height = 8)
+
+
+```
+
+
+
+# RF to predict lung function - CONTINUE 
+
+```{r}
+library(tidyverse)
+library(phyloseq)
+library(mikropml)
+library(furrr)
+library(glue)
+library(here)
+library(vegan)
+library(caret)
+library(ranger)
+library(xgboost)
+library(patchwork)
+
+plan("multisession")  # parallel processing
+
+out_dir <- "../Output/Longitudinal/Machine_learning/"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+# Select your baseline data (T0)
+ps_np_t0 <- T0_np_ps_abs_filt  # or ps_vgo3_op_filtered, or combined
+
+# Use only ASVs found significant in DA analysis
+sig_asvs <- read.csv("../Output/Longitudinal/DA/MaAsLin2/T0_NP/ASV/T0_NP_ASV_delta_FEV1_pred.csv")$feature
+ps_np_t0_sig <- prune_taxa(sig_asvs, ps_np_t0)
+nrow(ps_np_t0_sig@tax_table) # 27 remaining as for DAA
+
+# Transform to relative abundance and merge metadata
+ps_rel <- transform_sample_counts(ps_np_t0_sig, function(x) x / sum(x))
+otu_df <- as.data.frame(t(otu_table(ps_rel)))
+meta_df <- as.data.frame(sample_data(ps_rel))
+
+# Merge OTU + metadata
+df <- cbind(meta_df, otu_df)
+
+# Keep only samples with follow-up lung function
+df <- df %>% filter(!is.na(FEV1_FVC))
+ps_np_t0_sig@sam_data$rev
+# Create binary obstruction variable
+df <- df %>%
+  mutate(Obstruction = ifelse(FEV1_FVC < 0.7, "Obstructive", "Normal")) %>%
+  mutate(Obstruction = factor(Obstruction, levels = c("Normal","Obstructive")))
+
+
+# Preprocess features (mikropml-style)
+# Choose outcome type
+# For classification:
+df_ml <- df %>% select(Obstruction, all_of(sig_asvs))
+df
+# For regression (predict continuous FEV1/FVC):
+# df_ml <- df %>% select(FEV1_FVC, all_of(sig_asvs))
+
+# Scale and center features
+preproc <- preprocess_data(df_ml, outcome_colname = names(df_ml)[1])
+m_pre <- preproc$dat_transformed
+
+
+# Define helper functions
+run_ml_models <- function(seed, method, pre_df = m_pre, feat = FALSE) {
+  mikropml::run_ml(pre_df,
+                   method = method,
+                   outcome_colname = names(pre_df)[1],
+                   kfold = 5, cv_times = 50,
+                   training_frac = 0.8,
+                   hyperparameters = test_hp,
+                   seed = seed,
+                   find_feature_importance = feat)
+}
+
+extract_performance <- function(model_list, method_name) {
+  map_dfr(seq_along(model_list),
+          ~ model_list[[.x]]$performance %>%
+            mutate(seed = .x, method = method_name))
+}
+
+
+#Train multiple models
+# Logistic regression (classification)
+test_hp <- list(alpha = 0, lambda = c(0.001, 0.005, 0.01, 0.05))
+it_glmnet <- future_map(1:20, ~run_ml_models(.x, "glmnet"), .options = furrr_options(seed = TRUE))
+
+# Random Forest
+test_hp <- list(mtry = c(2, 4, 6))
+it_rf <- future_map(1:20, ~run_ml_models(.x, "rf", feat = TRUE), .options = furrr_options(seed = TRUE))
+
+# XGBoost
+test_hp <- list(nrounds = 200, eta = 0.01, max_depth = 6, subsample = 0.7)
+it_xgb <- future_map(1:20, ~run_ml_models(.x, "xgbTree"), .options = furrr_options(seed = TRUE))
+
+# Evaluate model performance
+
+# Combine performance results
+perf_glmnet <- extract_performance(it_glmnet, "Logistic regression")
+perf_rf <- extract_performance(it_rf, "Random forest")
+perf_xgb <- extract_performance(it_xgb, "XGBoost")
+
+perf_all <- bind_rows(perf_glmnet, perf_rf, perf_xgb)
+
+# Reshape for plotting
+perf_trans <- perf_all %>%
+  pivot_longer(c(cv_metric_AUC, AUC), names_to = "AUC_type", values_to = "AUC_val") %>%
+  mutate(AUC_type = recode(AUC_type, cv_metric_AUC = "Cross-validation", AUC = "Testing"))
+
+# Compare mean AUC
+perf_summary <- perf_trans %>%
+  group_by(method, AUC_type) %>%
+  summarise(mean_AUC = mean(AUC_val, na.rm = TRUE),
+            sd_AUC = sd(AUC_val, na.rm = TRUE),
+            .groups = "drop")
+
+# Plot
+ggplot(perf_trans, aes(AUC_type, AUC_val, color = method)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.4) +
+  geom_jitter(width = 0.2, alpha = 0.6) +
+  labs(y = "Area Under Curve (AUC)", x = "", title = "ML model performance") +
+  theme_bw()
+
+
+# Feature importance (for Random Forest)
+
+feat_imp <- map_dfr(1:20, ~it_rf[[.x]]$feature_importance %>%
+                      mutate(seed = .x), .id = "model")
+
+feat_summary <- feat_imp %>%
+  group_by(feat) %>%
+  summarise(mean_imp = mean(perf_metric_diff, na.rm = TRUE),
+            sd_imp = sd(perf_metric_diff, na.rm = TRUE)) %>%
+  arrange(desc(mean_imp))
+
+ggplot(feat_summary %>% top_n(20, mean_imp),
+       aes(x = reorder(feat, mean_imp), y = mean_imp)) +
+  geom_col(fill = "#4B8BBE") +
+  coord_flip() +
+  labs(x = "ASV", y = "Mean Importance (ΔAUC)", title = "Top predictors (Random Forest)") +
+  theme_bw()
+
+
+# Save models and results 
+
+saveRDS(it_rf, file.path(out_dir, "rf_models_T0toT1.rds"))
+saveRDS(it_glmnet, file.path(out_dir, "glmnet_models_T0toT1.rds"))
+saveRDS(it_xgb, file.path(out_dir, "xgb_models_T0toT1.rds"))
+write.csv(feat_summary, file.path(out_dir, "RF_feature_importance.csv"), row.names = FALSE)
+
+
+
+
+```
+
+
