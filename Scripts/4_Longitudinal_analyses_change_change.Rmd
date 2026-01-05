@@ -1,0 +1,1554 @@
+---
+title: "Longitudinal analysis - change in microbiome --> change in lung function"
+author: "Beatrice Cornu Hewitt"
+date: "`r Sys.time()`"
+output: html_document
+---
+
+## Plot change
+```{r}
+# Lung function change per person (unique row per VGO3_ID)
+# pick one row per person with the most non-missing change values
+lung_change_cols <- c("delta_FEV1", delta_FVC, )
+
+
+df_unique <- sd2 %>%
+  mutate(nonmiss_lf = rowSums(across(all_of(lung_change_cols), ~ !is.na(.x)))) %>%
+  arrange(VGO3_ID, desc(nonmiss_lf)) %>%
+  group_by(VGO3_ID) %>% slice_head(n = 1) %>% ungroup() %>%
+  select(VGO3_ID, all_of(lung_change_cols))
+
+lung_long <- df_unique %>%
+  pivot_longer(-VGO3_ID, names_to = "lf", values_to = "per_year") %>%
+  mutate(
+    lf_lab = dplyr::recode(lf,
+      FEV1_pred_per_year     = "ΔFEV1",
+      FVC_pred_per_year      = "ΔFVC",
+      FEV1FVC_pred_per_year  = "ΔFEV1/FVC",
+      FEF25_75_pred_per_year = "ΔFEF25–75"
+    ),
+    # <<< set the desired order here
+    lf_lab = factor(lf_lab,
+      levels = c("ΔFEF25–75","ΔFEV1/FVC", "ΔFVC", "ΔFEV1"))
+  )
+
+lung_summ <- lung_long %>%
+  group_by(lf_lab) %>%
+  summarise(
+    n    = sum(is.finite(per_year)),
+    mean = mean(per_year, na.rm = TRUE),
+    sd   = sd(per_year,   na.rm = TRUE),
+    se   = sd / sqrt(n),
+    lo95 = mean - qt(0.975, df = pmax(n - 1, 1)) * se,
+    hi95 = mean + qt(0.975, df = pmax(n - 1, 1)) * se,
+    Direction = case_when(
+      is.na(mean) ~ "No data",
+      mean >  0   ~ "Improved",
+      mean <  0   ~ "Declined",
+      TRUE        ~ "No change"
+    ),
+    .groups = "drop"
+  )
+
+lung_long <- lung_long %>%
+  left_join(lung_summ %>% select(lf_lab, Direction), by = "lf_lab")
+
+rng_lung <- max(abs(lung_long$per_year), na.rm = TRUE)
+
+p_lung <- ggplot(lung_long, aes(x = lf_lab, y = per_year, fill = Direction)) +
+  geom_violin(trim = FALSE, width = 0.9, color = NA) +
+  geom_jitter(width = 0.08, alpha = 0.25, size = 0.6) +
+  stat_summary(fun = mean, geom = "point", size = 2.2, color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  coord_flip(ylim = c(-rng_lung, rng_lung)) +
+  scale_fill_manual(values = c("Improved"="#44A3AA","Declined"="#AA4A44",
+                               "No change"="grey80","No data"="grey90")) +
+  labs(
+    x = NULL,
+    y = "Change per year\n(+ improvement, − decline beyond expected, \n0 ≈ expected age decline)",
+    title = "Lung function change per year"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank())
+
+print(p_lung)
+
+ggsave("../Output/Alpha_diversity/Longitudinal_analysis/Figures/Lung_change_violin_plot.svg",
+       p_lung, width = 5, height = 3.6)
+
+```
+# Alpha diversity change (VGO2 to VGO3)
+## Compute
+```{r}
+# Change in α-diversity (per person × niche)
+keep_alpha <- c("SampleID","VGO3_ID","niche","dataset","date_spiro", alpha_vars)
+sd_a <- sd0 %>%
+  select(any_of(keep_alpha)) %>%
+  mutate(visit = visit_from_dataset(dataset)) %>%
+  filter(visit %in% c("VGO2","VGO3"))
+
+# Collapse to ONE row per (person × niche × visit)
+alpha_by_visit <- sd_a %>%
+  group_by(VGO3_ID, niche, visit) %>%
+  summarise(
+    across(all_of(alpha_vars), ~ mean(suppressWarnings(as.numeric(.x)), na.rm = TRUE)),
+    date_spiro = suppressWarnings(min(date_spiro, na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(VGO3_ID), !is.na(niche))
+
+# Keep pairs within each person × niche
+alpha_pairs <- alpha_by_visit %>%
+  group_by(VGO3_ID, niche) %>%
+  filter(n_distinct(visit) == 2) %>%
+  ungroup()
+
+# Wide and deltas (VGO3 − VGO2)
+alpha_wide <- alpha_pairs %>%
+  tidyr::pivot_wider(names_from = visit,
+                     values_from = c(all_of(alpha_vars), date_spiro),
+                     names_sep = "_") %>%
+  mutate(
+    d_Observed = Observed_VGO3 - Observed_VGO2,
+    d_Shannon  = Shannon_VGO3  - Shannon_VGO2,
+    d_Simpson  = Simpson_VGO3  - Simpson_VGO2
+  ) %>%
+  select(VGO3_ID, niche, d_Observed, d_Shannon, d_Simpson)
+
+# Join back to rows of that person × niche (replicates panel-level changes)
+sd2 <- sd1 %>% left_join(alpha_wide, by = c("VGO3_ID","niche"))
+
+```
+## Plot change
+```{r}
+# α-diversity change per person × niche (free y by index)
+alpha_change_cols <- c("d_Observed","d_Shannon","d_Simpson")
+alpha_long <- sd2 %>%
+  select(VGO3_ID, niche, all_of(alpha_change_cols)) %>%
+  pivot_longer(-c(VGO3_ID, niche), names_to = "alpha", values_to = "delta") %>%
+  mutate(alpha_lab = dplyr::recode(alpha,
+                            d_Observed = "Δ Observed",
+                            d_Shannon  = "Δ Shannon",
+                            d_Simpson  = "Δ Simpson"))
+
+alpha_summ <- alpha_long %>%
+  group_by(niche, alpha_lab) %>%
+  summarise(
+    n    = sum(is.finite(delta)),
+    mean = mean(delta, na.rm = TRUE),
+    sd   = sd(delta, na.rm = TRUE),
+    se   = sd / sqrt(n),
+    lo95 = mean - qt(0.975, df = pmax(n - 1, 1)) * se,
+    hi95 = mean + qt(0.975, df = pmax(n - 1, 1)) * se,
+    direction = case_when(
+      is.na(mean) ~ "No data",
+      mean >  0   ~ "Increased",
+      mean <  0   ~ "Decreased",
+      TRUE        ~ "No change"
+    ),
+    .groups = "drop"
+  )
+
+alpha_long <- alpha_long %>%
+  left_join(alpha_summ %>% select(niche, alpha_lab, direction), by = c("niche","alpha_lab"))
+
+p_alpha <- ggplot(alpha_long, aes(x = 1, y = delta, fill = direction)) +
+  geom_violin(color = "grey65", trim = FALSE, width = 0.9) +
+  geom_jitter(width = 0.08, alpha = 0.25, size = 0.6) +
+  geom_point(data = alpha_summ, aes(x = 1, y = mean), inherit.aes = FALSE, size = 2.2, color = "black") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  facet_grid(alpha_lab ~ niche, scales = "free_y", switch = "y") +
+  scale_x_continuous(breaks = NULL) +
+  scale_fill_manual(values = c("Increased"="#44A3AA","Decreased"="#AA4A44","No change"="grey80","No data"="grey90")) +
+  labs(x = NULL,
+       y = "α-diversity change (VGO3 − VGO2)\n(+ increase, − decrease)",
+       title = "α-diversity change by niche") +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank(),
+        strip.placement = "outside",
+        strip.background = element_rect(fill = "grey90", color = NA))
+print(p_alpha)
+ggsave("../Output/Alpha_diversity/Longitudinal_analysis/Figures/Alpha_change_violin.svg",
+       p_alpha, width = 6.5, height = 4.5)
+```
+
+# Add lung function and alpha diversity changes to phyloseq metadata
+```{r}
+sd2_out <- sd2
+rownames(sd2_out) <- sd2_out$SampleID
+sd2_out$SampleID <- NULL
+sample_data(ps_final) <- sample_data(sd2_out)
+
+saveRDS(ps_final, "../Output/Phyloseq/ps4_with_changes.rds")
+```
+
+# Alpha diversity longitudinal analysis
+```{r}
+# Longitudinal models: Δ alpha-diversity ~ change in lung function
+# (per person × niche; adjust for baseline alpha, baseline lung, and VGO2 covariates)
+
+# Labels for plots
+alpha_labs_map <- c(
+  d_Observed = "Δ Observed",
+  d_Shannon  = "Δ Shannon",
+  d_Simpson  = "Δ Simpson"
+)
+
+cont_pred_labs_map <- c(
+  FEV1_pred_per_year     = "Δ FEV1",
+  FVC_pred_per_year      = "Δ FVC",
+  FEV1FVC_pred_per_year  = "Δ FEV1/FVC",
+  FEF25_75_pred_per_year = "Δ FEF25–75"
+)
+
+cat_pred_labs_map <- c(
+  FEV1_category_change     = "Δ FEV1 (category)",
+  FVC_category_change      = "Δ FVC (category)",
+  FEV1FVC_category_change  = "Δ FEV1/FVC (category)",
+  FEF25_75_category_change = "Δ FEF25–75 (category)"
+)
+
+# Variables / helpers used for the models
+id_var       <- "VGO3_ID"
+niche_var    <- "niche"
+dataset_var  <- "dataset"
+date_var     <- "date_spiro"
+alpha_vars   <- c("Observed","Shannon","Simpson")
+lung_num_pred <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred")
+lung_cat_vars <- c("FEV1_category","FVC_category","FEV1FVC_category","FEF25_75_category")
+# covars_base   <- c("age","gender","smoke_status","season_microbiome_sampling")
+
+visit_from_dataset <- function(x) ifelse(grepl("VGO2", x), "VGO2",
+                                  ifelse(grepl("VGO3", x), "VGO3", NA))
+
+severity_order <- list(
+  FEV1_category      = c("Normal","Mild","Moderate","Severe"),
+  FEF25_75_category  = c("Normal","Mild","Moderate","Severe"),
+  FVC_category       = c("Normal","Severely reduced"),
+  FEV1FVC_category   = c("Normal","Obstructive")
+)
+to_severity_rank <- function(varname, x) {
+  lv <- severity_order[[varname]]
+  if (is.null(lv)) return(rep(NA_real_, length(x)))
+  idx <- match(tolower(trimws(as.character(x))), tolower(lv))
+  ifelse(is.na(idx), NA_real_, idx - 1L)
+}
+change_label_from_delta <- function(delta) {
+  dplyr::case_when(
+    is.na(delta) ~ NA_character_,
+    delta > 0    ~ "worse",
+    delta < 0    ~ "better",
+    TRUE         ~ "no_change"
+  )
+}
+
+# Build paired (VGO2/VGO3) analysis frame per person × niche
+sam_data_all <- sd0 %>%
+  dplyr::select(
+    SampleID, all_of(c(id_var, niche_var, dataset_var, date_var,
+                       covars_base, alpha_vars, lung_num_pred, lung_cat_vars))
+  ) %>%
+  dplyr::mutate(
+    visit = visit_from_dataset(.data[[dataset_var]]),
+    !!date_var := suppressWarnings(as.Date(.data[[date_var]]))
+  ) %>%
+  dplyr::filter(visit %in% c("VGO2","VGO3"))
+
+# collapse duplicates within (id × niche × visit)
+sam_data_pair <- sam_data_all %>%
+  dplyr::group_by(.data[[id_var]], .data[[niche_var]], visit) %>%
+  dplyr::summarise(
+    dplyr::across(all_of(c(alpha_vars, lung_num_pred)),
+                  ~ mean(suppressWarnings(as.numeric(.x)), na.rm = TRUE)),
+    dplyr::across(all_of(lung_cat_vars), ~ {
+      x <- .x; x <- x[!is.na(x) & nzchar(trimws(as.character(x)))]
+      if (length(x) == 0) NA_character_ else {
+        ux <- unique(x); ux[which.max(tabulate(match(x, ux)))]
+      }
+    }),
+    dplyr::across(all_of(covars_base), ~ dplyr::first(.x)),
+    !!date_var := suppressWarnings(min(.data[[date_var]], na.rm = TRUE)),
+    .groups = "drop"
+  ) %>%
+  dplyr::group_by(.data[[id_var]], .data[[niche_var]]) %>%
+  dplyr::filter(dplyr::n_distinct(visit) == 2) %>%  # keep paired only
+  dplyr::ungroup()
+
+# wide: *_VGO2 / *_VGO3
+df_wide_models <- sam_data_pair %>%
+  tidyr::pivot_wider(
+    names_from  = visit,
+    values_from = c(all_of(alpha_vars), all_of(lung_num_pred), all_of(lung_cat_vars),
+                    all_of(covars_base), all_of(date_var)),
+    names_sep   = "_"
+  ) %>%
+  dplyr::mutate(
+    years_between = as.numeric(
+      difftime(.data[[paste0(date_var, "_VGO3")]],
+               .data[[paste0(date_var, "_VGO2")]], units = "days")
+    )/365.25
+  ) %>%
+  dplyr::filter(is.finite(years_between), years_between > 0) %>%
+  dplyr::mutate(
+    d_Observed = Observed_VGO3 - Observed_VGO2,
+    d_Shannon  = Shannon_VGO3  - Shannon_VGO2,
+    d_Simpson  = Simpson_VGO3  - Simpson_VGO2
+  )
+
+# annualised change in %-pred (continuous)
+for (v in lung_num_pred) {
+  v_T0 <- paste0(v, "_VGO2"); v_T1 <- paste0(v, "_VGO3")
+  df_wide_models[[paste0(v, "_per_year")]] <-
+    (df_wide_models[[v_T1]] - df_wide_models[[v_T0]]) / df_wide_models$years_between
+}
+
+# categorical change: delta + labels
+for (v in lung_cat_vars) {
+  v_T0 <- paste0(v, "_VGO2"); v_T1 <- paste0(v, "_VGO3")
+  sev0 <- to_severity_rank(v, df_wide_models[[v_T0]])
+  sev1 <- to_severity_rank(v, df_wide_models[[v_T1]])
+  df_wide_models[[paste0(v, "_delta")]]  <- sev1 - sev0
+  df_wide_models[[paste0(v, "_change")]] <- factor(
+    change_label_from_delta(df_wide_models[[paste0(v, "_delta")]]),
+    levels = c("no_change","worse","better")
+  )
+}
+
+# ensure baseline covariates at VGO2 are factors where appropriate
+fac_vgo2 <- c("gender_VGO2","smoke_status_VGO2","season_microbiome_sampling_VGO2")
+fac_vgo2 <- intersect(fac_vgo2, names(df_wide_models))
+df_wide_models[fac_vgo2] <- lapply(df_wide_models[fac_vgo2], factor)
+
+
+# Create season-change (VGO2 to VGO3) and smoking status change (from VGO2 to VGO3)
+same_or_diff <- function(a, b) ifelse(is.na(a) | is.na(b), NA_character_,
+                                      ifelse(a == b, "same", "different"))
+
+df_wide_models <- df_wide_models %>%
+  mutate(
+    season_change = factor(
+      same_or_diff(season_microbiome_sampling_VGO3, season_microbiome_sampling_VGO2),
+      levels = c("same","different")
+    ),
+    smoke_change  = factor(
+      same_or_diff(smoke_status_VGO3, smoke_status_VGO2),
+      levels = c("same","different")
+    )
+  )
+
+
+# Check number of NP and OP longitudinal samples
+sum(df_wide_models$niche == "NP")# 83 matched NP samples
+sum(df_wide_models$niche == "OP")# 71 matched OP samples
+
+#### CONTINUOUS MODELS #### 
+alpha_deltas <- c("d_Observed","d_Shannon","d_Simpson")
+lung_slopes  <- paste0(lung_num_pred, "_per_year")
+
+# fit_one_lm <- function(data, outcome, slope_var) {
+#   alpha0 <- sub("^d_(.*)$", "\\1_VGO2", outcome)          # baseline α
+#   lung0  <- sub("_per_year$", "_VGO2", slope_var)         # baseline lung
+#   rhs    <- c(
+#     slope_var,           # Δ lung (annualised)
+#     alpha0,              # baseline α
+#     lung0,               # baseline lung
+#     "age_VGO2",          # baseline age
+#     "season_change",     # same/different between visits
+#     "smoke_change"       # same/different between visits
+#   )
+#   fml <- reformulate(rhs, response = outcome)
+# 
+#   dat <- data %>% dplyr::select(dplyr::all_of(c(outcome, rhs))) %>% tidyr::drop_na()
+#   if (nrow(dat) < 20) return(NULL)
+# 
+#   fit <- lm(fml, data = dat)
+#   broom::tidy(fit, conf.int = TRUE) %>%
+#     dplyr::filter(term == slope_var) %>%
+#     dplyr::mutate(n = nobs(fit), r.sq = summary(fit)$r.squared)
+# }
+
+
+
+
+
+fit_lung_on_alpha <- function(data, lung_slope, alpha_delta) {
+  lung0  <- sub("_per_year$", "_VGO2", lung_slope)      # baseline lung
+  alpha0 <- sub("^d_(.*)$", "\\1_VGO2", alpha_delta)    # baseline alpha (Observed_VGO2 etc.)
+  rhs <- c(alpha_delta, alpha0, lung0, "age_VGO2", "season_change", "smoke_change")
+  fml <- reformulate(rhs, response = lung_slope)
+  dat <- data %>% dplyr::select(dplyr::all_of(c(lung_slope, rhs))) %>% tidyr::drop_na()
+  if (nrow(dat) < 20) return(NULL)
+  broom::tidy(lm(fml, dat), conf.int = TRUE) %>%
+    dplyr::filter(term == alpha_delta) %>%
+    dplyr::mutate(n = nobs(lm(fml, dat)),
+                  outcome = lung_slope, predictor = alpha_delta)
+}
+
+alpha_deltas <- c("d_Observed","d_Shannon","d_Simpson")
+lung_slopes  <- paste0(lung_num_pred, "_per_year")
+
+res_np <- tidyr::expand_grid(lung = lung_slopes, a = alpha_deltas) %>%
+  purrr::pmap_dfr(~fit_lung_on_alpha(dplyr::filter(df_wide_models, niche=="NP"), ..1, ..2)) %>%
+  dplyr::mutate(niche="NP")
+
+res_op <- tidyr::expand_grid(lung = lung_slopes, a = alpha_deltas) %>%
+  purrr::pmap_dfr(~fit_lung_on_alpha(dplyr::filter(df_wide_models, niche=="OP"), ..1, ..2)) %>%
+  dplyr::mutate(niche="OP")
+
+res_alpha_to_lung <- dplyr::bind_rows(res_np, res_op) %>%
+  dplyr::group_by(niche, outcome) %>%
+  dplyr::mutate(p_adj = p.adjust(p.value, "BH")) %>%
+  dplyr::ungroup()
+
+write.csv(res_alpha_to_lung, "../Output/Alpha_diversity/Longitudinal_analysis/Alpha_vs_lung_continuous.csv", row.names = FALSE)
+
+
+
+#### CATEGORICAL MODELS ####
+alpha_deltas <- c("d_Observed","d_Shannon","d_Simpson")
+lung_cat_outcomes <- c("FEV1_category_change","FVC_category_change",
+                       "FEV1FVC_category_change","FEF25_75_category_change")
+
+safe_tidy_polr_wald <- function(fit, term_keep) {
+  s <- summary(fit)
+  co <- coef(fit)                       # slope coefficients only (not thresholds)
+  V  <- vcov(fit)
+  se <- sqrt(diag(V))[names(co)]
+  est <- co[term_keep]
+  se1 <- se[term_keep]
+  if (is.na(est) || is.na(se1)) return(NULL)
+  z  <- est / se1
+  tibble(
+    term      = term_keep,
+    estimate  = est,
+    std.error = se1,
+    statistic = z,
+    p.value   = 2*pnorm(abs(z), lower.tail = FALSE),
+    conf.low  = est - 1.96*se1,
+    conf.high = est + 1.96*se1
+  )
+}
+
+fit_cat_ordinal <- function(dat, lung_cat, alpha_delta) {
+  dd <- dat %>%
+    dplyr::select(all_of(c(lung_cat, alpha_delta,
+                           "age_VGO2","season_change","smoke_change"))) %>%
+    tidyr::drop_na()
+
+  if (nrow(dd) < 30) return(NULL)
+
+  # Outcome must be ordered with >= 2 levels present
+  dd[[lung_cat]] <- factor(dd[[lung_cat]],
+                           levels = c("no_change","better","worse"),
+                           ordered = TRUE)
+  lvl_tab <- table(dd[[lung_cat]])
+  if (nlevels(dd[[lung_cat]]) < 2 || sum(lvl_tab > 0) < 2) return(NULL)
+
+  # Predictor must vary
+  if (stats::sd(dd[[alpha_delta]]) == 0 || !is.finite(stats::sd(dd[[alpha_delta]]))) return(NULL)
+
+  # Fit with Hessian; catch separation problems
+  fml <- as.formula(paste(
+    lung_cat, "~", paste(c(alpha_delta,"age_VGO2","season_change","smoke_change"), collapse=" + ")
+  ))
+  fit <- tryCatch(MASS::polr(fml, data = dd, Hess = TRUE, method = "logistic"),
+                  error = function(e) NULL)
+  if (is.null(fit)) return(NULL)
+
+  # Wald CI for the alpha term (avoids profile/approx)
+  out <- tryCatch(
+    safe_tidy_polr_wald(fit, term_keep = alpha_delta),
+    error = function(e) NULL
+  )
+  if (is.null(out)) return(NULL)
+
+  out %>% mutate(outcome = lung_cat, predictor = alpha_delta, n = nrow(dd))
+}
+
+run_cat_block <- function(d) {
+  cross_df(list(lung = lung_cat_outcomes, a = alpha_deltas)) %>%
+    pmap_dfr(~ fit_cat_ordinal(d, ..1, ..2))
+}
+
+# Example:
+res_cat_np <- run_cat_block(df_wide_models %>% filter(niche=="NP")) %>% mutate(niche="NP")
+res_cat_op <- run_cat_block(df_wide_models %>% filter(niche=="OP")) %>% mutate(niche="OP")
+
+res_cat_ordinal <- bind_rows(res_cat_np, res_cat_op) %>%
+  group_by(niche, outcome) %>% mutate(p_adj = p.adjust(p.value, "BH")) %>% ungroup()
+
+
+write.csv(res_cat_ordinal, "../Output/Alpha_diversity/Longitudinal_analysis/Alpha_vs_lung_categorical.csv", row.names = FALSE)
+```
+
+## Bubble plots
+```{r}
+# For continuous models
+res_alpha_to_lung$co
+res_cont_plot <- res_alpha_to_lung %>%
+  dplyr::mutate(
+    lung = factor(outcome, levels = names(cont_pred_labs_map), labels = unname(cont_pred_labs_map)),
+    alpha  = factor(predictor, levels = names(alpha_labs_map), labels = unname(alpha_labs_map)),
+    stars = dplyr::case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE          ~ ""
+    ),
+    se   = (conf.high - conf.low) / (2 * 1.96),
+    z    = estimate / se,
+    zabs = pmin(abs(z), 4),
+    sign = dplyr::case_when(estimate > 0 ~ "Positive β",
+                            estimate < 0 ~ "Negative β",
+                            TRUE ~ "≈ 0")
+  )
+
+# choose the same z-range for sizing across facets
+size_limits  <- c(0, 4)                   # cap at |z|=4
+size_breaks  <- c(0.5, 1, 2, 3, 4)
+
+p_cont_bubble <- ggplot(res_cont_plot, aes(x = alpha, y = lung)) +
+  geom_point(aes(size = zabs, fill = sign),
+             shape = 21, color = "white", stroke = 0.4) +
+  geom_text(aes(label = stars), vjust = 0.5, fontface = "bold", size = 3) +
+  facet_wrap(~ niche, nrow = 1) +
+  scale_fill_manual(
+    name   = "Direction",
+    values = c("Negative β" = "#CA562C", "Positive β" = "#2ca0ca", "≈ 0" = "grey80"),
+    guide  = guide_legend(order = 1, override.aes = list(size = 6))  # bigger dots
+  ) +
+  scale_size_continuous(
+    name   = "Effect size |β/SE|",
+    limits = size_limits,
+    breaks = size_breaks,
+    range  = c(3, 12),
+    guide  = guide_legend(
+      order = 2,
+      override.aes = list(shape = 21, fill = "grey70", color = "grey70", alpha = 1) # draw circles
+    )
+  ) +
+  labs(x = "Lung function change", y = "α-diversity change",
+       caption = "Significance codes: *** p < 0.001 | ** p < 0.01 | * p < 0.05 | ns = not significant") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 40, hjust = 1),
+        panel.grid  = element_blank(),
+        legend.key.height = grid::unit(6, "mm"),
+        legend.key.width  = grid::unit(8, "mm"))
+
+
+ggplot2::ggsave("../Output/Alpha_diversity/Longitudinal_analysis/Figures/Alpha_diversity_change_lung_func_change2.svg",
+                p_cont_bubble, width = 7, height = 4)
+
+
+
+
+
+
+# ============================================================
+# Bubble plot — categorical models (lung category change ~ αΔ)
+# ============================================================
+
+# Contrast labels + desired x-axis order:
+contrast_labs_map <- c(
+  worse_vs_no_change  = "Worse",
+  better_vs_no_change = "Better"
+)
+
+lung_order_cat <- c(
+  "Δ FEV1 (category)",
+  "Δ FVC (category)",
+  "Δ FEV1/FVC (category)",
+  "Δ FEF25–75 (category)"
+)
+contrast_order <- c("Worse","Better")
+combo_levels <- unlist(lapply(lung_order_cat, function(lv) paste(lv, contrast_order, sep = "\n")))
+
+
+
+# ---- Labels & desired x-axis order (flipped) ----
+contrast_labs_map <- c(
+  worse_vs_no_change  = "Worse",
+  better_vs_no_change = "Better"
+)
+
+lung_order_cat <- c(
+  "Δ FEV1 (category)",
+  "Δ FVC (category)",
+  "Δ FEV1/FVC (category)",
+  "Δ FEF25–75 (category)"
+)
+
+# We want: "Worse Δ FEV1 (category)", then "Better Δ FEV1 (category)" for each lung metric
+combo_levels <- unlist(lapply(lung_order_cat, function(lv) c(paste("Worse", lv), paste("Better", lv))))
+
+
+# Color palette (robust in print and for most color-vision deficiencies)
+pal_dir <- c(
+  "Negative β" = "#CA562C",  # deep blue
+  "Positive β" = "#2ca0ca",  # deep red
+  "≈ 0"       = "grey80"
+)
+
+# Prepare plotting frame
+res_cat_plot <- res_categorical %>%
+  dplyr::mutate(
+    alpha = factor(outcome, levels = names(alpha_labs_map), labels = unname(alpha_labs_map)),
+    lung  = factor(predictor, levels = names(cat_pred_labs_map), labels = unname(cat_pred_labs_map)),
+    contrast_lab = dplyr::recode(contrast, !!!contrast_labs_map),
+
+    # single-line text to match combo_levels
+    ylab = factor(paste(contrast_lab, lung), levels = combo_levels),
+
+    stars = dplyr::case_when(p_adj < 0.001 ~ "***", p_adj < 0.01 ~ "**", p_adj < 0.05 ~ "*", TRUE ~ ""),
+    se    = (conf.high - conf.low) / (2 * 1.96),
+    z     = estimate / se,
+    zabs  = abs(z),
+    zabs_cap = pmin(pmax(zabs, 0), 4),
+    sign  = dplyr::case_when(estimate > 0 ~ "Positive β",
+                             estimate < 0 ~ "Negative β",
+                             TRUE         ~ "≈ 0")
+  )
+
+
+
+p_cat_bubble <- ggplot2::ggplot(res_cat_plot, ggplot2::aes(x = alpha, y = ylab )) +
+  ggplot2::geom_point(
+    ggplot2::aes(size = zabs_cap, fill = sign),   # <- use clamped size
+    shape = 21, color = "white", stroke = 0.5
+  ) +
+  ggplot2::geom_text(ggplot2::aes(label = stars), vjust = 0.5, fontface = "bold", size = 3) +
+  ggplot2::facet_wrap(~ niche, nrow = 1) +
+  ggplot2::scale_fill_manual(
+    values = pal_dir,
+    name   = "Direction",
+    guide  = ggplot2::guide_legend(
+      title.position = "top",
+      override.aes = list(shape = 21, size = 7, colour = "white", stroke = 0.6)
+    )
+  ) +
+  ggplot2::scale_size_continuous(
+    name   = expression(paste("Effect size  |", beta, "/SE|")),
+    limits = c(0, 4),
+    breaks = c(0.5, 1, 2, 3, 4),
+    labels = c("0.5", "1.0", "2.0", "3.0", "4.0"),
+    range  = c(3, 11),
+    guide  = ggplot2::guide_legend(
+      title.position = "top",
+      override.aes = list(fill = "grey60", shape = 21, colour = "white", stroke = 0.6)
+    )
+  ) +
+  ggplot2::labs(
+    x = "Lung function category change (vs no change)",
+    y = "α-diversity change",
+    caption = "Significance codes: *** p < 0.001 | ** p < 0.01 | * p < 0.05 | ns = not significant"
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    axis.text.x  = ggplot2::element_text(angle = 40, hjust = 1),
+    panel.grid   = ggplot2::element_blank(),
+    legend.box   = "vertical",
+    legend.title = ggplot2::element_text(face = "bold"),
+    legend.key.height = grid::unit(0.7, "cm"),
+    legend.key.width  = grid::unit(1.1, "cm")
+  ) 
+
+
+print(p_cat_bubble)
+
+ggplot2::ggsave(
+  "../Output/Alpha_diversity/Longitudinal_analysis/Figures/Alpha_diversity_change_lung_cat_change.svg",
+  p_cat_bubble, width = 8, height = 5
+)
+
+```
+
+# Beta diversity
+## NP within vs between individual composition
+```{r}
+id_var <- "VGO3_ID"
+
+# Subset & merge (fix the typo) 
+VGO2_NP_ps <- subset_samples(ps_final, study == "VGO2" & niche == "NP")
+VGO3_NP_ps <- subset_samples(ps_final, study == "VGO3" & niche == "NP") 
+VGO_NP_combined <- merge_phyloseq(VGO2_NP_ps, VGO3_NP_ps)
+
+# Filter & RA, then Bray–Curtis 
+VGO_NP_RA <- VGO_NP_combined %>% pres_abund_filter() %>% to_RA()
+np_dist   <- phyloseq::distance(VGO_NP_RA, method = "bray")
+meta_np   <- sample_data(VGO_NP_RA) %>% data.frame(check.names = FALSE)
+
+# Long pairwise distances + subject IDs 
+np_pairs <- as.matrix(np_dist) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample1") %>%
+  tidyr::pivot_longer(-Sample1, names_to = "Sample2", values_to = "Distance") %>%
+  dplyr::filter(Sample1 < Sample2) %>%                        # unique pairs
+  dplyr::mutate(
+    ID1 = meta_np[Sample1, id_var],
+    ID2 = meta_np[Sample2, id_var]
+  ) %>%
+  dplyr::filter(!is.na(ID1) & !is.na(ID2)) %>%                # drop NA IDs
+  dplyr::mutate(Comparison = ifelse(ID1 == ID2, "Within", "Between"))
+
+# Sanity check: need both groups 
+if (!all(c("Within","Between") %in% unique(np_pairs$Comparison))) {
+  stop("You don't have both 'Within' and 'Between' pairs. Check that VGO2 & VGO3 NP samples exist and IDs are populated.")
+}
+
+# Balance the groups (downsample larger to the size of the smaller)
+set.seed(123)
+n_to_sample <- min(table(np_pairs$Comparison))
+np_bal <- np_pairs %>%
+  dplyr::group_by(Comparison) %>%
+  dplyr::slice_sample(n = n_to_sample) %>%
+  dplyr::ungroup()
+
+# Y limits from boxplot whiskers (avoid NA)
+whisk <- np_bal %>%
+  dplyr::group_by(Comparison) %>%
+  dplyr::summarise(
+    whisker_low  = boxplot.stats(Distance)$stats[1],
+    whisker_high = boxplot.stats(Distance)$stats[5],
+    .groups = "drop"
+  )
+
+y_min <- min(whisk$whisker_low,  na.rm = TRUE)
+y_max <- min(1, max(whisk$whisker_high, na.rm = TRUE))
+y_max_ext <- y_max + 0.03 * (y_max - y_min)
+p_y <- y_max_ext - 0.01 * (y_max_ext - y_min)
+
+# --- Test & label ---
+wt <- wilcox.test(Distance ~ Comparison, data = np_bal, exact = FALSE)
+label <- ifelse(is.finite(wt$p.value) && wt$p.value < 0.001,
+                "italic(p) < 0.001",
+                paste0("italic(p) == ", sprintf('%.3f', wt$p.value)))
+
+# --- Plot ---
+np_plot <- ggplot(np_bal, aes(x = Comparison, y = Distance, fill = Comparison)) +
+  geom_jitter(aes(color = Comparison), width = 0.2, alpha = 0.5, size = 1) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  scale_fill_manual(values = c("Within" = "#ad7c8a", "Between" = "#d9b9c2")) +
+  scale_color_manual(values = c("Within" = "#ad7c8a", "Between" = "#d9b9c2")) +
+  coord_cartesian(ylim = c(y_min, y_max_ext)) +
+  labs(
+    title = "NP: Within vs Between-Individual Bray–Curtis\n (VGO2 vs VGO3)",
+    x = "Comparison Type", y = "Bray–Curtis Dissimilarity"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none") +
+  ggsignif::geom_signif(
+    annotations = label, y_position = p_y,
+    xmin = 1, xmax = 2, tip_length = 0.01, parse = TRUE
+  )
+
+ggsave("../Output/Beta_diversity/Longitudinal_analysis/NP_jitter_boxplot_balanced.svg",
+       np_plot, width = 5, height = 5)
+
+```
+## OP within vs between individual composition
+```{r}
+id_var <- "VGO3_ID"
+
+# --- Subset & merge (fix the typo) ---
+VGO2_OP_ps <- subset_samples(ps_final, study == "VGO2" & niche == "OP")
+VGO3_OP_ps <- subset_samples(ps_final, study == "VGO3" & niche == "OP")  # fixed
+VGO_OP_combined <- merge_phyloseq(VGO2_OP_ps, VGO3_OP_ps)
+
+# --- Filter & RA, then Bray–Curtis ---
+VGO_OP_RA <- VGO_OP_combined %>% pres_abund_filter() %>% to_RA()
+op_dist   <- phyloseq::distance(VGO_OP_RA, method = "bray")
+meta_op   <- sample_data(VGO_OP_RA) %>% data.frame(check.names = FALSE)
+
+#  Long pairwise distances + subject IDs 
+op_pairs <- as.matrix(op_dist) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample1") %>%
+  tidyr::pivot_longer(-Sample1, names_to = "Sample2", values_to = "Distance") %>%
+  dplyr::filter(Sample1 < Sample2) %>%                        # unique pairs
+  dplyr::mutate(
+    ID1 = meta_op[Sample1, id_var],
+    ID2 = meta_op[Sample2, id_var]
+  ) %>%
+  dplyr::filter(!is.na(ID1) & !is.na(ID2)) %>%                # drop NA IDs
+  dplyr::mutate(Comparison = ifelse(ID1 == ID2, "Within", "Between"))
+
+#  Sanity check: need both groups 
+if (!all(c("Within","Between") %in% unique(op_pairs$Comparison))) {
+  stop("You don't have both 'Within' and 'Between' pairs. Check that VGO2 & VGO3 NP samples exist and IDs are populated.")
+}
+
+#  Balance the groups (downsample larger to the size of the smaller) 
+set.seed(123)
+n_to_sample <- min(table(op_pairs$Comparison))
+op_bal <- op_pairs %>%
+  dplyr::group_by(Comparison) %>%
+  dplyr::slice_sample(n = n_to_sample) %>%
+  dplyr::ungroup()
+
+# Y limits from boxplot whiskers (avoid NA)
+whisk <- op_bal %>%
+  dplyr::group_by(Comparison) %>%
+  dplyr::summarise(
+    whisker_low  = boxplot.stats(Distance)$stats[1],
+    whisker_high = boxplot.stats(Distance)$stats[5],
+    .groups = "drop"
+  )
+
+y_min <- min(whisk$whisker_low,  na.rm = TRUE)
+y_max <- min(1, max(whisk$whisker_high, na.rm = TRUE))
+y_max_ext <- y_max + 0.03 * (y_max - y_min)
+p_y <- y_max_ext - 0.01 * (y_max_ext - y_min)
+
+# Test & label 
+wt <- wilcox.test(Distance ~ Comparison, data = op_bal, exact = FALSE)
+label <- ifelse(is.finite(wt$p.value) && wt$p.value < 0.001,
+                "italic(p) < 0.001",
+                paste0("italic(p) == ", sprintf('%.3f', wt$p.value)))
+
+# Plot
+op_plot <- ggplot(op_bal, aes(x = Comparison, y = Distance, fill = Comparison)) +
+  geom_jitter(aes(color = Comparison), width = 0.2, alpha = 0.5, size = 1) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  scale_fill_manual(values = c("Within" = "#3f7566", "Between" = "#b2c8c2")) +
+  scale_color_manual(values = c("Within" = "#3f7566", "Between" = "#b2c8c2")) +
+  coord_cartesian(ylim = c(y_min, y_max_ext)) +
+  labs(
+    title = "OP: Within vs Between-Individual Bray–Curtis\n (VGO2 vs VGO3)",
+    x = "Comparison Type", y = "Bray–Curtis Dissimilarity"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none") +
+  ggsignif::geom_signif(
+    annotations = label, y_position = p_y,
+    xmin = 1, xmax = 2, tip_length = 0.01, parse = TRUE
+  )
+
+ggsave("../Output/Beta_diversity/Longitudinal_analysis/OP_jitter_boxplot_balanced.svg",
+       op_plot, width = 5, height = 5)
+```
+
+## Combined plots NP and OP within vs between composition
+```{r}
+combined_plot <- np_plot + op_plot +
+  plot_layout(ncol = 2) +
+  plot_annotation(tag_levels = "A")
+
+# Save combined plot
+ggsave("../Output/Beta_diversity/Longitudinal_analysis/NP_OP_jitter_boxplot_balanced.svg",
+       combined_plot, width = 10, height = 5)
+```
+# NP vs OP 
+## BC distances and visualisation
+```{r}
+# Helper function 
+get_between_individual_distances <- function(ps_obj, niche_label) {
+  # Filter and convert to relative abundance
+  ps_RA <- ps_obj %>% pres_abund_filter() %>% to_RA()
+  dist_mat <- phyloseq::distance(ps_RA, method = "bray")
+  
+  meta <- data.frame(sample_data(ps_RA))
+  meta$SampleID <- rownames(meta)
+  
+  dist_df <- as.matrix(dist_mat) %>%
+    as.data.frame() %>%
+    rownames_to_column("Sample1") %>%
+    pivot_longer(-Sample1, names_to = "Sample2", values_to = "Distance") %>%
+    filter(Sample1 < Sample2) %>%  # Unique pairs only
+    mutate(
+      ID1 = meta[Sample1, "VGO3_ID"],
+      ID2 = meta[Sample2, "VGO3_ID"],
+      Comparison = ifelse(ID1 == ID2, "Within", "Between")
+    ) %>%
+    filter(Comparison == "Between") %>%
+    mutate(Niche = niche_label)
+  
+  return(dist_df)
+}
+
+# Get distances
+# Subset and prepare NP and OP datasets (VGO2+VGO3)
+VGO_NP <- subset_samples(ps_final, niche == "NP" & dataset %in% c("VGO2_NP", "VGO3_NPOP"))
+VGO_OP <- subset_samples(ps_final, niche == "OP" & dataset %in% c("VGO2_OP", "VGO3_NPOP"))
+
+np_between <- get_between_individual_distances(VGO_NP, "NP")
+op_between <- get_between_individual_distances(VGO_OP, "OP")
+
+combined_between <- bind_rows(np_between, op_between)
+
+# Optional: Downsample to balance group sizes
+set.seed(123)
+min_n <- min(table(combined_between$Niche))
+combined_between_bal <- combined_between %>%
+  group_by(Niche) %>%
+  slice_sample(n = min_n) %>%
+  ungroup()
+
+# -- Wilcoxon test -- #
+wt <- wilcox.test(Distance ~ Niche, data = combined_between_bal)
+p_label <- ifelse(
+  wt$p.value < 0.001,
+  "italic(p) < 0.001",
+  paste0("italic(p) == ", sprintf("%.3f", wt$p.value))
+)
+
+# -- Plot -- #
+y_min <- min(combined_between_bal$Distance)
+y_max <- max(combined_between_bal$Distance)
+y_max_extended <- y_max + 0.03 * (y_max - y_min)
+pval_y_pos <- y_max_extended - 0.01 * (y_max_extended - y_min)
+
+between_plot <- ggplot(combined_between_bal, aes(x = Niche, y = Distance, fill = Niche)) +
+  geom_jitter(aes(color = Niche), width = 0.2, alpha = 0.5, size = 1) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  scale_fill_manual(values = c("NP" = "#ad7c8a", "OP" = "#3f7566")) +
+  scale_color_manual(values = c("NP" = "#ad7c8a", "OP" = "#3f7566")) +
+  coord_cartesian(ylim = c(y_min, y_max_extended)) +
+  labs(
+    title = "Between-Individual Bray–Curtis Dissimilarity",
+    subtitle = "Comparison between NP and OP samples (VGO2 + VGO3)",
+    x = "Niche",
+    y = "Bray–Curtis Dissimilarity"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none") +
+  ggsignif::geom_signif(
+    annotations = p_label,
+    y_position = pval_y_pos,
+    xmin = 1, xmax = 2,
+    tip_length = 0.01,
+    parse = TRUE
+  )
+
+# Save
+ggsave("../Output/Beta_diversity/Longitudinal_analysis/NPvsOP/Between_individual_NP_OP_comparison.png", between_plot, width = 6, height = 5)
+
+# Show
+print(between_plot)
+
+```
+## PERMANOVA NP vs OP
+```{r}
+# Subset VGO2 and VGO3 data
+vgo2_ps <- subset_samples(ps_final, dataset %in% c("VGO2_NP", "VGO2_OP") & niche == c("NP", "OP"))
+vgo3_ps <- subset_samples(ps_final, dataset == "VGO3_NPOP" & niche == c("NP", "OP"))
+
+compare_NP_OP <- function(ps_obj, label) {
+  ps_filt <- ps_obj %>%
+    pres_abund_filter() %>%
+    to_RA()
+
+  dist <- phyloseq::distance(ps_filt, method = "bray")
+  meta <- data.frame(sample_data(ps_filt))
+
+  # Run PERMANOVA
+  ad <- adonis2(dist ~ niche, data = meta, permutations = 999)
+  pval <- ad$`Pr(>F)`[1]
+  r2 <- round(ad$R2[1], 3)
+  p_label <- ifelse(pval < 0.001, "italic(p)<0.001", paste0("italic(p)==", sprintf("%.3f", pval)))
+
+  # Ordination plot with manual colors
+  ord <- ordinate(ps_filt, method = "PCoA", distance = dist)
+  plot <- plot_ordination(ps_filt, ord, color = "niche") +
+    geom_point(size = 2, alpha = 0.7) +
+    scale_color_manual(values = c("NP" = "#ad7c8a", "OP" = "#3f7566")) +
+    labs(
+      title = paste0(label, ": NP vs OP (Bray-Curtis)"),
+      subtitle = paste0("PERMANOVA R² = ", r2),
+      color = "Niche"
+    ) +
+    annotate("text", x = Inf, y = Inf, label = p_label, parse = TRUE, hjust = 1.1, vjust = 1.5) +
+    theme_minimal(base_size = 12)
+
+  return(plot)
+}
+
+# Create both plots
+vgo2_plot <- compare_NP_OP(vgo2_ps, "VGO2")
+vgo3_plot <- compare_NP_OP(vgo3_ps, "VGO3")
+
+# Combine plots side-by-side
+combined_np_op_plot <- vgo2_plot + vgo3_plot + 
+  plot_layout(ncol = 2) + 
+  plot_annotation(tag_levels = "A")
+
+# Save
+ggsave("../Output/Beta_diversity/Longitudinal_analysis/NPvsOP/NP_OP_PERMANOVA_ordination.svg",
+       combined_np_op_plot, width = 10, height = 5)
+
+# Show
+print(combined_np_op_plot)
+```
+# Inter-individual differences 
+```{r}
+# --- NP: mean (SD) within vs between ---
+np_desc <- np_pairs %>%
+  dplyr::group_by(Comparison) %>%
+  dplyr::summarise(
+    n    = dplyr::n(),
+    mean = mean(Distance, na.rm = TRUE),
+    sd   = sd(Distance,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# --- OP: mean (SD) within vs between ---
+op_desc <- op_pairs %>%
+  dplyr::group_by(Comparison) %>%
+  dplyr::summarise(
+    n    = dplyr::n(),
+    mean = mean(Distance, na.rm = TRUE),
+    sd   = sd(Distance,   na.rm = TRUE),
+    .groups = "drop"
+  )
+
+np_desc; op_desc
+```
+
+# Change in beta vs change in lung function
+```{r}
+# From my existing dataframes np_pairs / op_pairs, extract each person’s within-person Bray–Curtis (distance between their own VGO2 and VGO3 samples) separately for NP and OP
+bc_np <- np_pairs %>%
+  dplyr::filter(Comparison == "Within") %>%
+  dplyr::transmute(VGO3_ID = ID1, niche = "NP", BC_within = Distance)
+
+bc_op <- op_pairs %>%
+  dplyr::filter(Comparison == "Within") %>%
+  dplyr::transmute(VGO3_ID = ID1, niche = "OP", BC_within = Distance)
+
+bc_within <- dplyr::bind_rows(bc_np, bc_op)
+
+# Join to dataframe containing lung function change variables etc. 
+df_beta <- df_wide_models %>%
+  dplyr::left_join(bc_within, by = c("VGO3_ID","niche"))
+
+
+
+# Continuous lung function variables - association with BC distances
+lung_slopes <- c("FEV1_pred_per_year","FVC_pred_per_year",
+                 "FEV1FVC_pred_per_year","FEF25_75_pred_per_year")
+
+fit_beta_cont <- function(dat, slope, robust_se = FALSE) {
+  # Prepare data
+  dat2 <- dat %>%
+    mutate(
+      season_change = factor(season_change, levels = c("same","different")),
+      smoke_change  = factor(smoke_change,  levels = c("same","different")),
+      BC_centered   = scale(BC_within, center = TRUE, scale = FALSE)[,1]
+    )
+
+  lung0 <- sub("_per_year$", "_VGO2", slope)
+
+  fml <- as.formula(paste(
+    slope, "~ BC_centered +",
+    paste(c(lung0, "age_VGO2", "season_change", "smoke_change"), collapse = " + ")
+  ))
+
+  dd <- dat2 %>% dplyr::select(dplyr::all_of(all.vars(fml))) %>% tidyr::drop_na()
+  if (nrow(dd) < 30) return(NULL)
+
+  fit <- lm(fml, dd)
+
+  if (!robust_se) {
+    out <- broom::tidy(fit, conf.int = TRUE)
+  } else {
+    # HC3 robust SEs (optional)
+    library(sandwich); library(lmtest)
+    ct <- lmtest::coeftest(fit, vcov = sandwich::vcovHC(fit, type = "HC3"))
+    out <- tibble::tibble(
+      term = rownames(ct),
+      estimate = ct[,1],
+      std.error = ct[,2],
+      statistic = ct[,3],
+      p.value   = ct[,4]
+    ) %>%
+      mutate(
+        conf.low  = estimate - 1.96 * std.error,
+        conf.high = estimate + 1.96 * std.error
+      )
+  }
+
+  out %>%
+    dplyr::filter(term == "BC_centered") %>%
+    dplyr::mutate(n = nrow(dd), outcome = slope)
+}
+
+# Run per niche
+res_beta_np <- lapply(lung_slopes, \(v) fit_beta_cont(df_beta %>% filter(niche=="NP"), v)) %>%
+  bind_rows() %>% mutate(niche = "NP")
+
+res_beta_op <- lapply(lung_slopes, \(v) fit_beta_cont(df_beta %>% filter(niche=="OP"), v)) %>%
+  bind_rows() %>% mutate(niche = "OP")
+
+res_beta_cont <- bind_rows(res_beta_np, res_beta_op) %>%
+  group_by(niche) %>% mutate(p_adj = p.adjust(p.value, "BH")) %>% ungroup()
+
+readr::write_csv(res_beta_cont,
+                 "../Output/Beta_diversity/Longitudinal_analysis/BC_within_vs_lung_continuous.csv")
+
+
+
+
+
+
+
+
+# Categorical lung function variables - outcome = lung category change
+lung_cats <- c("FEV1_category_change","FVC_category_change",
+               "FEV1FVC_category_change","FEF25_75_category_change")
+
+fit_beta_cat_ord <- function(dat, catvar) {
+  dd <- dat %>%
+    dplyr::mutate(
+      season_change = factor(season_change, levels = c("same","different")),
+      smoke_change  = factor(smoke_change,  levels = c("same","different")),
+      BC_centered   = scale(BC_within, center = TRUE, scale = FALSE)[,1],
+      !!catvar := factor(.data[[catvar]], levels = c("no_change","better","worse"), ordered = TRUE)
+    ) %>%
+    dplyr::select(BC_centered, dplyr::all_of(catvar), age_VGO2, season_change, smoke_change) %>%
+    tidyr::drop_na()
+
+  if (nrow(dd) < 30 || nlevels(dd[[catvar]]) < 2) return(NULL)
+
+  fml <- stats::as.formula(paste(
+    catvar, "~ BC_centered + age_VGO2 + season_change + smoke_change"
+  ))
+
+  fit <- tryCatch(MASS::polr(fml, data = dd, Hess = TRUE, method = "logistic"),
+                  error = function(e) NULL)
+  if (is.null(fit)) return(NULL)
+
+  V  <- stats::vcov(fit); co <- coef(fit)
+  if (!"BC_centered" %in% names(co)) return(NULL)
+  se <- sqrt(diag(V))["BC_centered"]
+  est <- co["BC_centered"]; z <- est / se
+
+  tibble::tibble(
+    predictor = catvar,
+    term      = "BC_centered",
+    estimate  = est,
+    std.error = se,
+    statistic = z,
+    p.value   = 2*pnorm(abs(z), lower.tail = FALSE),
+    conf.low  = est - 1.96*se,
+    conf.high = est + 1.96*se,
+    n         = nrow(dd)
+  )
+}
+
+res_beta_cat_np <- lapply(lung_cats, \(v) fit_beta_cat_ord(df_beta %>% dplyr::filter(niche=="NP"), v)) %>%
+  dplyr::bind_rows() %>% dplyr::mutate(niche="NP")
+
+res_beta_cat_op <- lapply(lung_cats, \(v) fit_beta_cat_ord(df_beta %>% dplyr::filter(niche=="OP"), v)) %>%
+  dplyr::bind_rows() %>% dplyr::mutate(niche="OP")
+
+res_beta_cat <- dplyr::bind_rows(res_beta_cat_np, res_beta_cat_op) %>%
+  dplyr::group_by(niche, predictor) %>% dplyr::mutate(p_adj = p.adjust(p.value, "BH")) %>%
+  dplyr::ungroup()
+
+
+readr::write_csv(res_beta_cat,
+                 "../Output/Beta_diversity/Longitudinal_analysis/BC_within_vs_lung_categorical.csv")
+
+
+
+
+
+
+
+# Visual check of associations between lung fucntion variables (continuous and BC distance)
+# NP 
+## ΔFEV1 
+p_np_fev1 <- ggplot(df_beta %>% dplyr::filter(niche=="NP"), aes(BC_within, FEV1_pred_per_year)) +
+  geom_point(alpha=.5) + geom_smooth(method="lm") + theme_bw() +
+  labs(x="Within-person Bray–Curtis (VGO2–VGO3)", y="ΔFEV1 per year", title="NP")
+
+## ΔFVC
+p_np_fvc <- ggplot(df_beta %>% dplyr::filter(niche=="NP"), aes(BC_within, FVC_pred_per_year)) +
+  geom_point(alpha=.5) + geom_smooth(method="lm") + theme_bw() +
+  labs(x="Within-person Bray–Curtis (VGO2–VGO3)", y="ΔFVC per year", title="NP")
+
+## ΔFEV1/FVC
+p_np_fev1fvc <- ggplot(df_beta %>% dplyr::filter(niche=="NP"), aes(BC_within, FEV1FVC_pred_per_year)) +
+  geom_point(alpha=.5) + geom_smooth(method="lm") + theme_bw() +
+  labs(x="Within-person Bray–Curtis (VGO2–VGO3)", y="ΔFEV1/FVC per year", title="NP")
+
+## ΔFEF25-75% 
+p_np_fef <- ggplot(df_beta %>% dplyr::filter(niche=="NP"), aes(BC_within, FEF25_75_pred_per_year)) +
+  geom_point(alpha=.5) + geom_smooth(method="lm") + theme_bw() +
+  labs(x="Within-person Bray–Curtis (VGO2–VGO3)", y="ΔFEF25-75% per year", title="NP")
+
+# OP 
+## ΔFEV1 
+p_op_fev1 <- ggplot(df_beta %>% dplyr::filter(niche=="OP"), aes(BC_within, FEV1_pred_per_year)) +
+  geom_point(alpha=.5) + geom_smooth(method="lm") + theme_bw() +
+  labs(x="Within-person Bray–Curtis (VGO2–VGO3)", y="ΔFEV1 per year", title="OP")
+
+## ΔFVC
+p_op_fvc <- ggplot(df_beta %>% dplyr::filter(niche=="OP"), aes(BC_within, FVC_pred_per_year)) +
+  geom_point(alpha=.5) + geom_smooth(method="lm") + theme_bw() +
+  labs(x="Within-person Bray–Curtis (VGO2–VGO3)", y="ΔFVC per year", title="OP")
+
+## ΔFEV1/FVC
+p_op_fev1fvc <- ggplot(df_beta %>% dplyr::filter(niche=="OP"), aes(BC_within, FEV1FVC_pred_per_year)) +
+  geom_point(alpha=.5) + geom_smooth(method="lm") + theme_bw() +
+  labs(x="Within-person Bray–Curtis (VGO2–VGO3)", y="ΔFEV1/FVC per year", title="OP")
+
+## ΔFEF25-75% 
+p_op_fef <- ggplot(df_beta %>% dplyr::filter(niche=="OP"), aes(BC_within, FEF25_75_pred_per_year)) +
+  geom_point(alpha=.5) + geom_smooth(method="lm") + theme_bw() +
+  labs(x="Within-person Bray–Curtis (VGO2–VGO3)", y="ΔFEF25-75% per year", title="OP")
+
+
+combined <-
+  (p_np_fev1 | p_np_fvc | p_np_fev1fvc | p_np_fef) /
+  (p_op_fev1 | p_op_fvc | p_op_fev1fvc | p_op_fef) +
+  plot_annotation(
+    title = "BC distance vs lung function change",
+    subtitle = "Top: NP, Bottom: OP"
+  ) &
+  theme(legend.position = "bottom")
+
+combined
+ggsave("../Output/Beta_diversity/Longitudinal_analysis/BC_vs_lung_change_plots.svg", combined, width = 14, height = 7)
+
+
+
+
+
+# VIsualisation of categorical results
+
+plot_empirical_props <- function(dat, catvar, niche_title, nbins = 6) {
+  dd <- dat %>%
+    dplyr::mutate(
+      !!catvar := factor(.data[[catvar]],
+                         levels = c("no_change","better","worse"),
+                         ordered = TRUE)
+    ) %>%
+    dplyr::select(BC_within, dplyr::all_of(catvar)) %>%
+    tidyr::drop_na()
+
+  if (nrow(dd) < 30 || nlevels(dd[[catvar]]) < 2) {
+    return(ggplot() + labs(title = paste(niche_title, "-", catvar, "(insufficient data)")))
+  }
+
+  dd <- dd %>% dplyr::mutate(bin = cut(BC_within, breaks = nbins, include.lowest = TRUE))
+
+  props <- dd %>%
+    dplyr::group_by(bin, !!rlang::sym(catvar)) %>%
+    dplyr::summarise(
+      n   = dplyr::n(),
+      x   = mean(BC_within),
+      .groups = "drop_last"
+    ) %>%
+    dplyr::mutate(Nbin = sum(n), prop = n / Nbin) %>%
+    dplyr::ungroup() %>%
+    dplyr::rename(category = !!rlang::sym(catvar))
+
+  ggplot(props, aes(x = x, y = prop, color = category)) +
+    geom_point() +
+    geom_line() +
+    theme_bw() +
+    labs(x = "Within-person Bray–Curtis (VGO2–VGO3)",
+         y = "Observed proportion",
+         title = paste(niche_title, "(empirical) -", catvar),
+         color = "Category")
+}
+
+lung_cats <- c("FEV1_category_change","FVC_category_change",
+               "FEV1FVC_category_change","FEF25_75_category_change")
+
+plots_np_emp <- lapply(lung_cats, function(v)
+  plot_empirical_props(df_beta %>% dplyr::filter(niche=="NP"), v, "NP"))
+
+plots_op_emp <- lapply(lung_cats, function(v)
+  plot_empirical_props(df_beta %>% dplyr::filter(niche=="OP"), v, "OP"))
+
+# No clear pattern in the NP 
+# No clear pattern in the OP either 
+```
+
+# Change in cluster composition
+## Data 
+
+```{r}
+# Separate microbiome data per niche (not separate per dataset as before)
+# Subset per study and niche
+# NP niche
+microbiome_NP <- subset_samples(microbiome_all, dataset == c("VGO2_NP", "VGO3_NPOP") & niche == "NP")
+nsamples(microbiome_NP) # 503 NP samples
+
+# OP niche
+microbiome_OP <- subset_samples(microbiome_all, dataset == c("VGO2_OP","VGO3_NPOP") & niche == "OP")
+nsamples(microbiome_OP) # 568 OP samples
+```
+## Filter taxa and convert to relative abundance
+```{r}
+# VGO2 NP 
+# Remove low abundant ASVs and convert counts to relative abundances
+ps_np_filtered <- microbiome_NP %>% 
+  pres_abund_filter() %>% # 0.1% relative abundance in at least 2 samples is default
+  to_RA()
+# A total of 967 ASVs were found to be present at or above a level of confident detection (0.1% relative abundance) in at least 2 samples (n = 22669 ASVs excluded).
+
+# VGO2 OP 
+# Remove low abundant ASVs and convert counts to relative abundances
+ps_op_filtered <- microbiome_OP %>% 
+  pres_abund_filter() %>% 
+  to_RA()
+# A total of 879 ASVs were found to be present at or above a level of confident detection (0.1% relative abundance) in at least 2 samples (n = 22757 ASVs excluded).
+```
+## NP clustering VGO2 and VGO3 combined
+```{r}
+# Check number of taxa
+ntaxa(ps_np_filtered) # 967 ASVs 
+# Extract metadata
+meta_np <- meta_to_df(ps_np_filtered, sample_name = ".row_id")
+# Extract otu table
+otu_np <- as(otu_table(ps_np_filtered), "matrix")
+# Standardise orientation so that downstream analyses always have rows = samples and columns = ASVs
+if(taxa_are_rows(ps_np_filtered)){otu_np <- t(otu_np)} 
+otu_np <- as.data.frame(otu_np)
+# Compute BC distances
+ord_np <- vegdist(otu_np, method = "bray") 
+
+# We used complete linkage to create the phylogenetic tree (hierarchical clustering). The method is based on maximum distance; the similarity of any two clusters is the similarity of their most dissimilar pair.
+hc_np_clust <- hclust(ord_np, method = "complete")
+# Reorder 'otu_np' based on the clustering order
+otu_hc_np_order_clust <- otu_np[hc_np_clust$order,]
+
+# The Calinski-Harabasz and Silhouette methods were used to determine the appropriate location to cut the tree. Higher value of indices means the clusters are dense and well separated. Here, we looked for a peak or at least an abrupt elbow on the line plot of the indices.
+CalHara_sil_indices_np <- clust_ind_plot(ord_np, seq(2, 25, by = 1), clust_method="complete")
+write.csv(CalHara_sil_indices_np$data, "../Output/Cluster_analysis/NP_all/CalHara_silhouette_indices_vgo2_np.csv")
+
+# Calinski-Harabasz Index: A higher value indicates well-separated clusters with high intra-cluster similarity.
+# Silhouette: The optimal number of clusters typically shows the highest silhouette score, suggesting well-separated and compact clusters.
+# look for the points where there are peaks or elbows in the curve
+
+# Create dendogram
+dend_np <- as.dendrogram(hc_np_clust)
+
+# 2 clusters
+dend_2clusters <- color_branches(dend_np, k = 2, groupLabels=T)
+(stats::dendrapply(dend_2clusters, noLabel))
+cluster_assignments_2 <- cutree(dend_np, k = 2)
+cluster_counts_2 <- table(cluster_assignments_2)
+print(cluster_counts_2)
+
+# 3 clusters
+dend_3clusters <- color_branches(dend_np, k = 3, groupLabels=T)
+(stats::dendrapply(dend_3clusters, noLabel))
+cluster_assignments_3 <- cutree(dend_np, k = 3)
+cluster_counts_3 <- table(cluster_assignments_3)
+print(cluster_counts_3)
+ 
+# 4 clusters
+dend_4clusters <- color_branches(dend_np, k = 4, groupLabels=T)
+(stats::dendrapply(dend_4clusters, noLabel))
+cluster_assignments_4 <- cutree(dend_np, k = 4)
+cluster_counts_4 <- table(cluster_assignments_4)
+print(cluster_counts_4)
+
+# 5 clusters
+dend_5clusters <- color_branches(dend_np, k = 5, groupLabels=T)
+plot(stats::dendrapply(dend_5clusters, noLabel))
+cluster_assignments_5 <- cutree(dend_np, k = 5)
+cluster_counts_5 <- table(cluster_assignments_5)
+print(cluster_counts_5)
+
+# 6 clusters
+dend_6clusters <- color_branches(dend_np, k = 6, groupLabels=T)
+plot(stats::dendrapply(dend_6clusters, noLabel))
+cluster_assignments_6 <- cutree(dend_np, k = 6)
+cluster_counts_6 <- table(cluster_assignments_6)
+print(cluster_counts_6)
+
+# 7 clusters
+dend_7clusters <- color_branches(dend_np, k = 7, groupLabels=T)
+plot(stats::dendrapply(dend_7clusters, noLabel))
+cluster_assignments_7 <- cutree(dend_np, k = 7)
+cluster_counts_7 <- table(cluster_assignments_7)
+print(cluster_counts_7)
+
+# 8 clusters
+dend_8clusters <- color_branches(dend_np, k = 8, groupLabels=T)
+plot(stats::dendrapply(dend_8clusters, noLabel))
+cluster_assignments_8 <- cutree(dend_np, k = 8)
+cluster_counts_8 <- table(cluster_assignments_8)
+print(cluster_counts_8)
+
+# 9 clusters
+dend_9clusters <- color_branches(dend_np, k = 9, groupLabels=T)
+plot(stats::dendrapply(dend_9clusters, noLabel))
+cluster_assignments_9 <- cutree(dend_np, k = 9)
+cluster_counts_9 <- table(cluster_assignments_9)
+print(cluster_counts_9)
+
+# 10 clusters
+dend_10clusters <- color_branches(dend_np, k = 10, groupLabels=T)
+plot(stats::dendrapply(dend_10clusters, noLabel))
+cluster_assignments_10 <- cutree(dend_np, k = 10)
+cluster_counts_10 <- table(cluster_assignments_10)
+print(cluster_counts_10)
+
+# 11 clusters
+dend_11clusters <- color_branches(dend_np, k = 11, groupLabels=T)
+plot(stats::dendrapply(dend_11clusters, noLabel))
+cluster_assignments_11 <- cutree(dend_np, k = 11)
+cluster_counts_11 <- table(cluster_assignments_11)
+print(cluster_counts_11)
+
+# 12 clusters
+dend_12clusters <- color_branches(dend_np, k = 12, groupLabels=T)
+plot(stats::dendrapply(dend_12clusters, noLabel))
+# check number per cluster
+cluster_assignments_12 <- cutree(dend_np, k = 12)
+cluster_counts_12 <- table(cluster_assignments_12)
+print(cluster_counts_12)
+
+# 13 clusters
+dend_13clusters <- color_branches(dend_np, k = 13, groupLabels=T)
+plot(stats::dendrapply(dend_13clusters, noLabel))
+cluster_assignments_13 <- cutree(dend_np, k = 13)
+cluster_counts_13 <- table(cluster_assignments_13)
+print(cluster_counts_13)
+
+# 14 clusters
+dend_14clusters <- color_branches(dend_np, k = 14, groupLabels=T)
+plot(stats::dendrapply(dend_14clusters, noLabel))
+cluster_assignments_14 <- cutree(dend_np, k = 14)
+cluster_counts_14 <- table(cluster_assignments_14)
+print(cluster_counts_14)
+
+# 15 clusters
+dend_15clusters <- color_branches(dend_np, k = 15, groupLabels=T)
+plot(stats::dendrapply(dend_15clusters, noLabel))
+cluster_assignments_15 <- cutree(dend_np, k = 15)
+cluster_counts_15 <- table(cluster_assignments_15)
+print(cluster_counts_15)
+
+
+# 7 clusters appears optimal
+# k = 7
+dend_7clusters <- color_branches(dend_np, k = 7, groupLabels=T)
+plot(stats::dendrapply(dend_7clusters, noLabel))
+cluster_assignments_7 <- cutree(dend_7clusters, k = 7)
+cluster_counts_7 <- table(cluster_assignments_7)
+print(cluster_counts_7)
+
+# The function 'cuttree' is used to cut the tree at k = 4
+groups_np_c7 <- cutree(hc_vgo2_np_clust, k = 7)
+ps_np_filtered@sam_data$cluster <- groups_np_c7[order(rownames(ps_np_filtered@sam_data))]
+ps_np_filtered@sam_data$cluster <- ps_np_filtered@sam_data$cluster %>% as.character()
+
+# Determine the top 3 ASVs for each cluster
+otu_np <- as(otu_table(ps_np_filtered), "matrix")
+# if (taxa_are_rows(ps_vgo2_np_filtered)) {
+#   otu_hc_vgo2_np_order_clust <- t(otu_hc_vgo2_np_order_clust)  # Ensure ASVs are columns, samples are rows
+# }
+
+# Extract sample metadata with cluster information
+sample_data_np <- data.frame(ps_np_filtered@sam_data)
+
+# Combine the OTU table with the sample cluster data
+otu_np_with_clusters <- cbind(cluster = sample_data_np$cluster, otu_hc_np_order_clust)
+otu_np_with_clusters <- as.data.frame(otu_np_with_clusters)
+otu_np_with_clusters$cluster <- as.factor(otu_np_with_clusters$cluster)
+# Convert all ASV abundances to numeric
+otu_np_with_clusters[-1] <- lapply(otu_np_with_clusters[-1], as.numeric)
+# Sum ASV abundances for each cluster
+asv_sum_by_cluster_np <- otu_np_with_clusters %>%
+  group_by(cluster) %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE))
+# Convert back to data frame for further processing
+asv_sum_by_cluster_np <- as.data.frame(asv_sum_by_cluster_np)
+# Find the top 3 most abundant ASVs in each cluster and their percentage
+top_3_asvs_np <- apply(asv_sum_by_cluster_np[, -1], 1, function(x) {
+  # Get total abundance in the cluster for calculating percentages
+  total_abundance_np <- sum(x, na.rm = TRUE)
+  # Get names and values of the top 3 ASVs
+  top_3_indices_np <- order(x, decreasing = TRUE)[1:3]
+  top_3_asv_names_np <- names(x)[top_3_indices_np]
+  top_3_asv_values_np <- x[top_3_indices_np]
+  # Calculate percentages
+  top_3_asv_percentages_np <- (top_3_asv_values_np / total_abundance_np) * 100
+  # Combine ASV names and percentages into a string for each cluster
+  result <- paste0(top_3_asv_names_np, ": ", round(top_3_asv_percentages_np, 2), "%", collapse = "; ")
+  return(result)
+})
+
+# Combine results with cluster information
+top_3_asvs_df_np <- data.frame(cluster = asv_sum_by_cluster_np$cluster, Top_3_ASVs = top_3_asvs_np)
+# Display the top 3 ASVs for each cluster along with their percentages
+print(top_3_asvs_df_np)
+
+#### Rename clusters ####
+# If an ASV is >40% of the total abundance in a cluster: Name the cluster after that ASV only, as it is the dominant contributor.
+# If the top ASV is between 20-40% of the total abundance: Use the two most abundant ASVs to name the cluster.
+# If the top ASV is <20% of the total abundance: Use the top three ASVs to name the cluster, as none of the ASVs dominate significantly.
+
+get_cluster_name <- function(top_asvs_string) {
+  asv_info <- strsplit(top_asvs_string, "; ")[[1]]
+  asv_names <- sapply(asv_info, function(x) strsplit(x, ": ")[[1]][1])
+  asv_percentages <- as.numeric(sapply(asv_info, function(x) sub("%", "", strsplit(x, ": ")[[1]][2])))
+  
+  if (asv_percentages[1] > 40) {
+    return(paste0(asv_names[1], "-dominated cluster"))
+  } else if (asv_percentages[1] > 20) {
+    return(paste0(asv_names[1], " and ", asv_names[2], "-dominated cluster"))
+  } else {
+    return(paste0(asv_names[1], ", ", asv_names[2], ", and ", asv_names[3], "-dominated cluster"))
+  }
+}
+
+# Rename based on these rules
+top_3_asvs_df_np$Cluster_Name <- sapply(top_3_asvs_df_np$Top_3_ASVs, get_cluster_name)
+top_3_asvs_df_np$Cluster_Name
+
+# [1] "Corynebacterium_3, Staphylococcus_2, and Moraxella_4-dominated cluster"      
+# [2] "Corynebacterium_3, Moraxella_4, and Staphylococcus_2-dominated cluster"      
+# [3] "Staphylococcus_2, Corynebacterium_6, and Corynebacterium_3-dominated cluster"
+# [4] "Staphylococcus_2-dominated cluster" 
+
+# Shorten the names made above for plotting 
+# Define the new cluster names in the same order as the original clusters
+new_cluster_names_np <- c(
+  "Cor(3)/Staph(2)/Mor(4) clust",
+  "Cor(3)/Mor(4)/Staph(2) clust",
+  "Staph(2)/Cor(6)/Cor(3) clust",
+  "Staph(2) clust"
+)
+
+# Assign the new names to 'Cluster_Name' in 'top_3_asvs_df'
+top_3_asvs_df_np$Cluster_Name <- new_cluster_names_np
+
+# Update the clusters in the sample data to use the new names
+ps_np_filtered@sam_data$cluster <- top_3_asvs_df_np$Cluster_Name[match(ps_np_filtered@sam_data$cluster, top_3_asvs_df_np$cluster)]
+# Convert to character
+ps_np_filtered@sam_data$cluster <- as.character(ps_np_filtered@sam_data$cluster)
+
+# Count the number of samples in each cluster
+cluster_counts_np <- as.data.frame(table(ps_np_filtered@sam_data$cluster))
+colnames(cluster_counts_np) <- c("Cluster", "Count")
+
+# Calculate the relative proportions of each cluster
+cluster_counts_np$Proportion <- cluster_counts_np$Count / sum(cluster_counts_np$Count)
+
+write.csv(cluster_counts_np, "../Output/Cluster_analysis/NP/cluster_counts_np.csv")
+
+# Create the plot with geom_bar for vertical stacking
+bar_clusters_np <- ggplot(data = cluster_counts_np, aes(x = Cluster, y = (Proportion*100), fill = Cluster)) +
+  geom_bar(stat = "identity") +  # Use stat = "identity" to directly use Proportion
+  labs(title = "Bar plot of clusters in VGO2 NP samples",
+       x = "Clusters",            # X-axis now represents clusters
+       y = "% of samples",          # Y-axis represents proportions
+       fill = "Cluster") +
+  scale_fill_manual(values = c(paletteer_d("pals::stepped")[c(13,20,10,16,1,18,21,5,12)])) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),      # Remove x-axis labels if needed
+        axis.ticks.x = element_blank(),     # Remove x-axis ticks if needed
+        legend.position = "right")
+
+bar_clusters_np
+ggsave("../Output/Cluster_analysis/NP/Bar_plot_cluster_proportions_clusters.svg", bar_clusters_np, width = 8, height = 5)
+
+```
+
