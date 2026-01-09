@@ -1107,8 +1107,25 @@ saveRDS(ps_rarefied, "../Output/Cross_sectional/Phyloseq/ps_final_rarefied_VGO3.
 
 # Population summary table
 ```{r}
+# Add the variable RespDx to the sam_data 
+make_respdx <- function(meta) {
+  to_yesno <- function(x) dplyr::case_when(
+    x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes",
+    x %in% c(0,"0","no","No","NO",FALSE)   ~ "no",
+    TRUE ~ NA_character_
+  )
+  a <- to_yesno(meta$Asthma_current)
+  c <- to_yesno(meta$COPD_emphy_doc_diag)
+  y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no")
+  factor(y, levels = c("no","yes"))
+}
+
+# - Apply to ps_final_VGO3 and save
+sd <- as(phyloseq::sample_data(ps4_m), "data.frame")
+phyloseq::sample_data(ps4_m)$RespDx <- make_respdx(sd)
+
 # Pull sample_data and keep only NP/OP samples
-sd <- sample_data(meta_ps4_m) %>%
+sd <- sample_data(ps4_m) %>%
   data.frame(check.names = FALSE, stringsAsFactors = FALSE) %>%
   filter(niche %in% c("NP","OP"))
 
@@ -1119,13 +1136,10 @@ sd_vgo3 <- sd %>%
   select(-niche_rank)
 
 ## Just select the variables for Table 1
-sd_vgo3$T0_wkprior_NH3
-
-sd_vgo3$FEV1_pred
-
+length(sd_vgo3)
 df_vgo3 <- sd_vgo3 %>%
   select(
-    Age, Gender, Height, Weight, BMI, Ethnicity, Education_level,
+    Age, Gender, Height, Weight, BMI, Ethnicity, Education_level,RespDx,
     Lung_med, Asthma_med_current, Antibiotics_lastmonth, Antibiotics_lastyr, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr, COPD_emphy_doc_diag,
     Smoking_status, Farm_childhood, Farm_visit_lastyr, T0_wkprior_NH3, T1_wkprior_NH3, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
@@ -1159,7 +1173,7 @@ cat_summary <- function(x) {
 ## Build the Table 1 rows in the order you want them to appear
 rows_vgo3 <- tibble::tibble(
   Variable = c(
-    "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education_level",
+    "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "RespDx", "Education_level",
     "Lung_med", "Asthma_med_current", "Antibiotics_lastmonth", "Antibiotics_lastyr","Pneumonia_lastyr", "Asthma_ever", "Asthma_doc_diag", "Asthma_attk_lastyr", "COPD_emphy_doc_diag",
     "Smoking_status", "Farm_childhood", "Farm_visit_lastyr","T0_wkprior_NH3", "T1_wkprior_NH3","FEV1", "FVC", "FEV1_FVC", "FEF25_75", 
     "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "FEF25_75_pred"
@@ -1171,6 +1185,7 @@ rows_vgo3 <- tibble::tibble(
     cont_summary(df_vgo3$Weight),
     cont_summary(df_vgo3$BMI),
     cat_summary(df_vgo3$Ethnicity),
+    cat_summary(df_vgo3$RespDx),
     cat_summary(df_vgo3$Education_level),
     cat_summary(df_vgo3$Lung_med),
     cat_summary(df_vgo3$Asthma_med_current),
@@ -1203,6 +1218,7 @@ writexl::write_xlsx(
   path = "../Output/Cross_sectional/Participant_data/Table1_VGO3.xlsx"
 )
 
+median(sd_vgo3$Observed)
 ```
 
 # ANALYSES
@@ -1216,22 +1232,8 @@ ps_final_VGO3 <- ps4_m
 # tax_table()   Taxonomy Table:    [ 16030 taxa by 9 taxonomic ranks ]
 # refseq()      DNAStringSet:      [ 16030 reference sequences ]
 
-# Add the variable RespDx to the sam_data 
-make_respdx <- function(meta) {
-  to_yesno <- function(x) dplyr::case_when(
-    x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes",
-    x %in% c(0,"0","no","No","NO",FALSE)   ~ "no",
-    TRUE ~ NA_character_
-  )
-  a <- to_yesno(meta$Asthma_current)
-  c <- to_yesno(meta$COPD_emphy_doc_diag)
-  y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no")
-  factor(y, levels = c("no","yes"))
-}
-
-# - Apply to ps_final_VGO3 and save
-sd <- as(phyloseq::sample_data(ps_final_VGO3), "data.frame")
-phyloseq::sample_data(ps_final_VGO3)$RespDx <- make_respdx(sd)
+sum(ps_final_VGO3@sam_data$niche=="NP")
+sum(ps_final_VGO3@sam_data$niche=="OP")
 
 # Count number of ASVs, phyla, classes, orders, families, genera, species for the entire dataset
 # total ASVs
@@ -7225,10 +7227,7 @@ ps <- readRDS("../Input/Phyloseq/VGO3_NPOP/1_ps_raw.Rds")
 length(unique(ps@sam_data$VGO3_ID)) # 1299
 
 
-
-
 sum(VGO3_metadata$asthma_ever == "yes" & VGO3_metadata$copd_doc_diag == "yes") # 62 with asthma (ever)
-
 
 summarise_numeric <- function(x) {
   x <- x[!is.na(x)]
