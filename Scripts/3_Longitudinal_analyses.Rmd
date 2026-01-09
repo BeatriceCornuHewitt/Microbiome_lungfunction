@@ -1926,6 +1926,34 @@ cat("Samples:", nsamples(ps_RQ2_pairedOnly), "\n")
 cat("Unique IDs:", length(unique(sd2p$ID)), "\n")
 print(table(sd2p$timepoint))
 print(table(sd2p$niche))
+
+
+
+
+# Add the variable RespDx to the sam_data 
+make_respdx <- function(meta) {
+  to_yesno <- function(x) dplyr::case_when(
+    x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes",
+    x %in% c(0,"0","no","No","NO",FALSE)   ~ "no",
+    TRUE ~ NA_character_
+  )
+  a <- to_yesno(meta$asthma_current)
+  c <- to_yesno(meta$copd_doc_diag)
+  y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no")
+  factor(y, levels = c("no","yes"))
+}
+
+# Apply to ps_RQ1
+sd <- as(phyloseq::sample_data(ps_RQ1), "data.frame")
+phyloseq::sample_data(ps_RQ1)$RespDx <- make_respdx(sd)
+
+# Apply to ps_RQ2 
+sd <- as(phyloseq::sample_data(ps_RQ2), "data.frame")
+phyloseq::sample_data(ps_RQ2)$RespDx <- make_respdx(sd)
+
+# Apply to ps_RQ2_pairedOnly 
+sd <- as(phyloseq::sample_data(ps_RQ2_pairedOnly), "data.frame")
+phyloseq::sample_data(ps_RQ2_pairedOnly)$RespDx <- make_respdx(sd)
 ```
 # Population summary tables
 ## Summary of health data at T0 and T1 for longitudinal participants
@@ -1934,32 +1962,50 @@ ps_VGO3 <- readRDS("../Output/Cross_sectional/Phyloseq/ps_final_VGO3.rds")
 ps_meta_VGO3 <- sample_data(ps_VGO3)
 ps_meta_VGO3$Sam_ID <- rownames(ps_VGO3@sam_data)
 
-ids_both # IDs with BOTH lung function and microbiome at both timepoints - previously created (n = 110)
+length(unique(ps_RQ1@sam_data$ID))# 110
+IDs_long <- unique(ps_RQ1@sam_data$ID)
 
 ## Subset phyloseq to those IDs of participants with longitudinal LF and microbiome data
-samples_keep_VGO3 <- ps_meta_VGO3$Sam_ID[ps_meta_VGO3$VGO3_ID %in% ids_both]
+samples_keep_VGO3 <- ps_meta_VGO3$Sam_ID[ps_meta_VGO3$VGO3_ID %in% IDs_long]
 
-length(samples_keep_VGO3) # 194 microbiome samples kept
+length(samples_keep_VGO3) # 197 microbiome samples kept
 
 ps_VGO3_longitudinal <- prune_samples(samples_keep_VGO3, ps_VGO3)
 ps_VGO3_longitudinal # 197 samples
 
+# Add the variable RespDx to the sam_data 
+make_respdx <- function(meta) {
+  to_yesno <- function(x) dplyr::case_when(
+    x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes",
+    x %in% c(0,"0","no","No","NO",FALSE)   ~ "no",
+    TRUE ~ NA_character_
+  )
+  a <- to_yesno(meta$Asthma_current)
+  c <- to_yesno(meta$COPD_emphy_doc_diag)
+  y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no")
+  factor(y, levels = c("no","yes"))
+}
+
+# - Apply to ps_final_VGO3 and save
+sd_long <- as(phyloseq::sample_data(ps_VGO3_longitudinal), "data.frame")
+phyloseq::sample_data(ps_VGO3_longitudinal)$RespDx <- make_respdx(sd_long)
 
 # Pull sample_data and keep only NP/OP samples
-sd_longitudinal <- sample_data(ps_VGO3_longitudinal) %>%
+sd_long <- sample_data(ps_VGO3_longitudinal) %>%
   data.frame(check.names = FALSE, stringsAsFactors = FALSE) %>%
   filter(niche %in% c("NP","OP"))
 
-sd_vgo3_longitudinal <- sd_longitudinal %>%
+sd_vgo3_long <- sd_long %>%
   mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%   # prefer NP (1) over OP (2)
   arrange(VGO3_ID, niche_rank) %>%                         # put NP first within each ID
   filter(!duplicated(VGO3_ID)) %>%                         # keep first row per VGO3_ID
   select(-niche_rank)
 
+
 ## Just select the variables for Table 1
-df_vgo3_longitudinal <- sd_vgo3_longitudinal %>%
+df_vgo3_longitudinal <- sd_vgo3_long %>%
   select(
-    Age, Gender, Height, Weight, BMI, Ethnicity, Education_level,
+    Age, Gender, Height, Weight, BMI, Ethnicity, Education_level, RespDx,
     Lung_med, Asthma_med_current, Antibiotics_lastmonth, Antibiotics_lastyr, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr, COPD_emphy_doc_diag,
     Smoking_status, Farm_childhood, Farm_visit_lastyr, T0_wkprior_NH3, T1_wkprior_NH3, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
@@ -1992,7 +2038,7 @@ cat_summary <- function(x) {
 ## Build the Table 1 rows in the order you want them to appear
 rows_vgo3_longitudinal <- tibble::tibble(
   Variable = c(
-    "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education_level",
+    "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education_level", "RespDx",
     "Lung_med", "Asthma_med_current", "Antibiotics_lastmonth", "Antibiotics_lastyr","Pneumonia_lastyr", "Asthma_ever", "Asthma_doc_diag", "Asthma_attk_lastyr", "COPD_emphy_doc_diag",
     "Smoking_status", "Farm_childhood", "Farm_visit_lastyr","T0_wkprior_NH3", "T1_wkprior_NH3","FEV1", "FVC", "FEV1_FVC", "FEF25_75", 
     "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "FEF25_75_pred"
@@ -2005,6 +2051,7 @@ rows_vgo3_longitudinal <- tibble::tibble(
     cont_summary(df_vgo3_longitudinal$BMI),
     cat_summary(df_vgo3_longitudinal$Ethnicity),
     cat_summary(df_vgo3_longitudinal$Education_level),
+    cat_summary(df_vgo3_longitudinal$RespDx),
     cat_summary(df_vgo3_longitudinal$Lung_med),
     cat_summary(df_vgo3_longitudinal$Asthma_med_current),
     cat_summary(df_vgo3_longitudinal$Antibiotics_lastmonth),
@@ -2038,29 +2085,47 @@ writexl::write_xlsx(
 
 
 
-
 #### VGO2 longitudinal data ####
 ps_meta_VGO2 <- read.csv("../Output/Cross_sectional/Participant_data/VGO2_data.csv")
 
-ids_both # IDs with BOTH lung function and microbiome at both timepoints - previously created
-
 # Ensure same structure
 str(ps_meta_VGO2$ID)
-str(ids_both)
-ids_both <- as.integer(ids_both)
+str(IDs_long)
+ps_meta_VGO2$ID <- as.character(ps_meta_VGO2$ID)
 
 ## Subset metadata to those IDs of participants with longitudinal LF and microbiome data
-samples_keep_VGO2 <- ps_meta_VGO2[ps_meta_VGO2$ID %in% ids_both,]
+samples_keep_VGO2 <- ps_meta_VGO2[ps_meta_VGO2$ID %in% IDs_long,]
 
 nrow(samples_keep_VGO2) # 110 participants kept - correct
 
 ## Just select the variables needed for Table 1
 samples_keep_VGO2
 
+# Add RespDx category
+make_respdx <- function(meta,
+                        asthma_col = "asthma_current",
+                        copd_col   = "copd_doc_diag") {
+  to_yesno <- function(x) dplyr::case_when(
+    x %in% c(1, "1", "yes", "Yes", "YES", TRUE) ~ "yes",
+    x %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ "no",
+    TRUE ~ NA_character_
+  )
+  a <- to_yesno(meta[[asthma_col]])
+  c <- to_yesno(meta[[copd_col]])
+  y <- dplyr::if_else(
+    (!is.na(a) & a == "yes") | (!is.na(c) & c == "yes"),
+    "yes",
+    "no"
+  )
+  factor(y, levels = c("no", "yes"))
+}
+
+samples_keep_VGO2$RespDx <- make_respdx(samples_keep_VGO2)
+
 ##
 df_vgo2_longitudinal <- samples_keep_VGO2 %>%
   select(
-    age, gender, height, weight, bmi, ethnicity, educationlevel, asthma_med_current, pneumo_lastyr, asthma_ever, asthma_doc_diag, asthma_attk_lastyr, copd_doc_diag,
+    age, gender, height, weight, bmi, ethnicity, educationlevel, RespDx, asthma_med_current, pneumo_lastyr, asthma_ever, asthma_doc_diag, asthma_attk_lastyr, copd_doc_diag,
     smoke_status, farmchild, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
 
@@ -2091,7 +2156,7 @@ cat_summary <- function(x) {
 
 ## Build the Table 1 rows in the order you want them to appear
 rows_vgo2_longitudinal <- tibble::tibble(
-  Variable = c("age", "gender", "height", "weight", "bmi", "ethnicity", "educationlevel", "asthma_med_current", "pneumo_lastyr", "asthma_ever", "asthma_doc_diag", "asthma_attk_lastyr", "copd_doc_diag",
+  Variable = c("age", "gender", "height", "weight", "bmi", "ethnicity", "RespDx","educationlevel", "asthma_med_current", "pneumo_lastyr", "asthma_ever", "asthma_doc_diag", "asthma_attk_lastyr", "copd_doc_diag",
     "smoke_status", "farmchild", "FEV1", "FVC", "FEV1_FVC", "MMEF", "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"
   ),
   `VGO2` = c(
@@ -2101,6 +2166,7 @@ rows_vgo2_longitudinal <- tibble::tibble(
     cont_summary(df_vgo2_longitudinal$weight),
     cont_summary(df_vgo2_longitudinal$bmi),
     cat_summary(df_vgo2_longitudinal$ethnicity),
+    cat_summary(df_vgo2_longitudinal$RespDx),
     cat_summary(df_vgo2_longitudinal$educationlevel),
     cat_summary(df_vgo2_longitudinal$asthma_med_current),
     cat_summary(df_vgo2_longitudinal$pneumo_lastyr),
@@ -2127,6 +2193,264 @@ writexl::write_xlsx(
   path = "../Output/Longitudinal/Participant_data/Table1_longitudinal_T0.xlsx"
 )
 ```
+
+## Summary of health data at T0 and T1 for longitudinal participants (with p values)
+```{r}
+ps_VGO3 <- readRDS("../Output/Cross_sectional/Phyloseq/ps_final_VGO3.rds")
+ps_meta_VGO3 <- sample_data(ps_VGO3)
+ps_meta_VGO3$Sam_ID <- rownames(ps_VGO3@sam_data)
+
+length(unique(ps_RQ1@sam_data$ID))# 110
+IDs_long <- unique(ps_RQ1@sam_data$ID)
+
+## Subset phyloseq to those IDs of participants with longitudinal LF and microbiome data
+samples_keep_VGO3 <- ps_meta_VGO3$Sam_ID[ps_meta_VGO3$VGO3_ID %in% IDs_long]
+
+length(samples_keep_VGO3) # 197 microbiome samples kept
+
+ps_VGO3_longitudinal <- prune_samples(samples_keep_VGO3, ps_VGO3)
+ps_VGO3_longitudinal # 197 samples
+
+# Add the variable RespDx to the sam_data 
+make_respdx <- function(meta) {
+  to_yesno <- function(x) dplyr::case_when(
+    x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes",
+    x %in% c(0,"0","no","No","NO",FALSE)   ~ "no",
+    TRUE ~ NA_character_
+  )
+  a <- to_yesno(meta$Asthma_current)
+  c <- to_yesno(meta$COPD_emphy_doc_diag)
+  y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no")
+  factor(y, levels = c("no","yes"))
+}
+
+# Apply to ps_final_VGO3 and save
+sd_long <- as(phyloseq::sample_data(ps_VGO3_longitudinal), "data.frame")
+phyloseq::sample_data(ps_VGO3_longitudinal)$RespDx <- make_respdx(sd_long)
+
+# Pull sample_data and keep only NP/OP samples
+sd_long <- sample_data(ps_VGO3_longitudinal) %>%
+  data.frame(check.names = FALSE, stringsAsFactors = FALSE) %>%
+  filter(niche %in% c("NP","OP"))
+
+sd_vgo3_long <- sd_long %>%
+  mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%   # prefer NP (1) over OP (2)
+  arrange(VGO3_ID, niche_rank) %>%                         # put NP first within each ID
+  filter(!duplicated(VGO3_ID)) %>%                         # keep first row per VGO3_ID
+  select(-niche_rank)
+
+## Just select the variables for Table 1
+sd_vgo3_long$VGO3_ID
+df_vgo3_longitudinal <- sd_vgo3_long %>%
+  select(
+    VGO3_ID, Age, Gender, Height, Weight, BMI, Ethnicity, Education_level, RespDx,
+    Lung_med, Asthma_med_current, Antibiotics_lastmonth, Antibiotics_lastyr, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr, COPD_emphy_doc_diag,
+    Smoking_status, Farm_childhood, Farm_visit_lastyr, T0_wkprior_NH3, T1_wkprior_NH3, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  )
+
+
+# Create comparable T0 and T1 participant-level data frames with harmonised names
+df_T1 <- df_vgo3_longitudinal %>%
+  transmute(
+    ID = VGO3_ID,
+    Age, Gender, Height, Weight, BMI, Ethnicity, Education_level, RespDx,
+    Asthma_med_current, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr, COPD_emphy_doc_diag,
+    Smoking_status, Farm_childhood,
+    FEV1, FVC, FEV1_FVC, MMEF,
+    FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  )
+
+
+#### VGO2 longitudinal data ####
+ps_meta_VGO2 <- read.csv("../Output/Cross_sectional/Participant_data/VGO2_data.csv")
+
+# Ensure same structure
+str(ps_meta_VGO2$ID)
+str(IDs_long)
+ps_meta_VGO2$ID <- as.character(ps_meta_VGO2$ID)
+
+## Subset metadata to those IDs of participants with longitudinal LF and microbiome data
+samples_keep_VGO2 <- ps_meta_VGO2[ps_meta_VGO2$ID %in% IDs_long,]
+
+nrow(samples_keep_VGO2) # 110 participants kept - correct
+
+# Add RespDx category
+make_respdx <- function(meta,
+                        asthma_col = "asthma_current",
+                        copd_col   = "copd_doc_diag") {
+  to_yesno <- function(x) dplyr::case_when(
+    x %in% c(1, "1", "yes", "Yes", "YES", TRUE) ~ "yes",
+    x %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ "no",
+    TRUE ~ NA_character_
+  )
+  a <- to_yesno(meta[[asthma_col]])
+  c <- to_yesno(meta[[copd_col]])
+  y <- dplyr::if_else(
+    (!is.na(a) & a == "yes") | (!is.na(c) & c == "yes"),
+    "yes",
+    "no"
+  )
+  factor(y, levels = c("no", "yes"))
+}
+
+samples_keep_VGO2$RespDx <- make_respdx(samples_keep_VGO2)
+samples_keep_VGO2$ID
+df_vgo2_longitudinal <- samples_keep_VGO2 %>%
+  select(
+    ID, age, gender, height, weight, bmi, ethnicity, educationlevel, RespDx, asthma_med_current, pneumo_lastyr, asthma_ever, asthma_doc_diag, asthma_attk_lastyr, copd_doc_diag,
+    smoke_status, farmchild, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  )
+
+
+df_T0 <- df_vgo2_longitudinal %>%
+  transmute(
+    ID,
+    Age = age,
+    Gender = gender,
+    Height = height,
+    Weight = weight,
+    BMI = bmi,
+    Ethnicity = ethnicity,
+    Education_level = educationlevel,
+    RespDx = RespDx,
+    Asthma_med_current = asthma_med_current,
+    Pneumonia_lastyr = pneumo_lastyr,
+    Asthma_ever = asthma_ever,
+    Asthma_doc_diag = asthma_doc_diag,
+    Asthma_attk_lastyr = asthma_attk_lastyr,
+    COPD_emphy_doc_diag = copd_doc_diag,
+    Smoking_status = smoke_status,
+    Farm_childhood = farmchild,
+    FEV1, FVC, FEV1_FVC, MMEF,
+    FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  )
+
+df_T1$ID <- as.integer(df_T1$ID)
+df_T0$ID <- as.integer(df_T0$ID)
+
+
+paired_df <- inner_join(df_T0, df_T1, by = "ID", suffix = c("_T0", "_T1"))
+
+# 2) Your existing summary helpers
+cont_summary <- function(x) {
+  x <- x[!is.na(x)]
+  if (!length(x)) return(NA_character_)
+  m  <- mean(x)
+  s  <- sd(x)
+  q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
+  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]",
+          m, s, q[2], q[1], q[3])
+}
+
+cat_summary <- function(x) {
+  x <- factor(x)
+  if (all(is.na(x))) return(NA_character_)
+  n_tot <- sum(!is.na(x))
+  levs <- levels(x)
+  out <- sapply(levs, function(lv) {
+    n <- sum(x == lv, na.rm = TRUE)
+    pct <- if (n_tot > 0) 100 * n / n_tot else NA_real_
+    sprintf("%s: %d (%.1f%%)", lv, n, pct)
+  }, USE.NAMES = FALSE)
+  paste(out, collapse = "\n")
+}
+
+# 3) Paired p-value helpers (continuous = paired t-test; categorical = McNemar (2 levels) / Bowker (>2))
+bowker_test <- function(tab) {
+  k <- nrow(tab)
+  stat <- 0
+  for (i in 1:(k - 1)) for (j in (i + 1):k) {
+    nij <- tab[i, j]; nji <- tab[j, i]
+    if ((nij + nji) > 0) stat <- stat + (nij - nji)^2 / (nij + nji)
+  }
+  df <- k * (k - 1) / 2
+  p <- stats::pchisq(stat, df = df, lower.tail = FALSE)
+  list(statistic = stat, df = df, p.value = p)
+}
+
+paired_pval <- function(x0, x1, type = c("cont", "cat")) {
+  type <- match.arg(type)
+  keep <- stats::complete.cases(x0, x1)
+  x0 <- x0[keep]; x1 <- x1[keep]
+  if (!length(x0)) return(NA_real_)
+
+  if (type == "cont") {
+    # paired t-test; fall back to Wilcoxon if t-test fails
+    out <- try(stats::t.test(x0, x1, paired = TRUE), silent = TRUE)
+    if (inherits(out, "try-error")) {
+      out <- stats::wilcox.test(x0, x1, paired = TRUE, exact = FALSE)
+    }
+    return(out$p.value)
+  } else {
+    # categorical paired test
+    lvls <- sort(unique(c(as.character(x0), as.character(x1))))
+    f0 <- factor(x0, levels = lvls)
+    f1 <- factor(x1, levels = lvls)
+    tab <- table(f0, f1)
+
+    if (nrow(tab) == 2 && ncol(tab) == 2) {
+      return(stats::mcnemar.test(tab)$p.value)
+    } else {
+      return(bowker_test(tab)$p.value)
+    }
+  }
+}
+
+fmt_p <- function(p) {
+  if (is.na(p)) return(NA_character_)
+  format.pval(p, digits = 3, eps = 0.001)
+}
+
+# 4) Specify variables (common across T0/T1) and types
+spec <- tibble::tibble(
+  Variable = c(
+    "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education level", "RespDx",
+    "Asthma medication (current)", "Pneumonia (last year)", "Asthma ever", "Asthma diagnosis (doctor)",
+    "Asthma attack (last year)", "COPD/emphysema diagnosis (doctor)",
+    "Smoking status", "Farm childhood",
+    "FEV1", "FVC", "FEV1/FVC", "MMEF (FEF25-75)",
+    "FEV1 %pred", "FVC %pred", "FEV1/FVC %pred", "MMEF %pred"
+  ),
+  var = c(
+    "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education_level", "RespDx",
+    "Asthma_med_current", "Pneumonia_lastyr", "Asthma_ever", "Asthma_doc_diag",
+    "Asthma_attk_lastyr", "COPD_emphy_doc_diag",
+    "Smoking_status", "Farm_childhood",
+    "FEV1", "FVC", "FEV1_FVC", "MMEF",
+    "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"
+  ),
+  type = c(
+    "cont","cat","cont","cont","cont","cat","cat","cat",
+    "cat","cat","cat","cat","cat","cat",
+    "cat","cat",
+    "cont","cont","cont","cont",
+    "cont","cont","cont","cont"
+  )
+)
+
+# 5) Build Table 1 with T0, T1 and paired p-value
+rows_longitudinal_compare <- spec %>%
+  rowwise() %>%
+  mutate(
+    `VGO2 (T0)` = if (type == "cont") cont_summary(paired_df[[paste0(var, "_T0")]]) else cat_summary(paired_df[[paste0(var, "_T0")]]),
+    `VGO3 (T1)` = if (type == "cont") cont_summary(paired_df[[paste0(var, "_T1")]]) else cat_summary(paired_df[[paste0(var, "_T1")]]),
+    `p-value`   = fmt_p(paired_pval(
+      paired_df[[paste0(var, "_T0")]],
+      paired_df[[paste0(var, "_T1")]],
+      type = type
+    ))
+  ) %>%
+  ungroup() %>%
+  select(Variable, `VGO2 (T0)`, `VGO3 (T1)`, `p-value`)
+
+# 6) Write to Excel
+writexl::write_xlsx(
+  list("Table 1 - T0 vs T1" = rows_longitudinal_compare),
+  path = "../Output/Longitudinal/Participant_data/Table1_longitudinal_T0_vs_T1_with_p.xlsx"
+)
+
+```
+
 
 ## Summary of lung function changes
 ```{r}
@@ -3963,7 +4287,6 @@ ggsave("../Output/Longitudinal/DA/ANCOMBC2/Heatmap_ANCOMBC2_Genus_combined.svg",
 
 
 # RF to predict lung function - CONTINUE 
-
 ```{r}
 library(tidyverse)
 library(phyloseq)
@@ -3971,145 +4294,341 @@ library(mikropml)
 library(furrr)
 library(glue)
 library(here)
-library(vegan)
 library(caret)
 library(ranger)
 library(xgboost)
 library(patchwork)
 
-plan("multisession")  # parallel processing
+plan("multisession")
 
 out_dir <- "../Output/Longitudinal/Machine_learning/"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-# Select your baseline data (T0)
-ps_np_t0 <- T0_np_ps_abs_filt  # or ps_vgo3_op_filtered, or combined
+# -----------------------------
+# User settings
+# -----------------------------
+id_col <- "ID"   # <-- change if your participant ID column is different (e.g., "VGO3_ID")
+seeds_n <- 50
 
-# Use only ASVs found significant in DA analysis
-sig_asvs <- read.csv("../Output/Longitudinal/DA/MaAsLin2/T0_NP/ASV/T0_NP_ASV_delta_FEV1_pred.csv")$feature
-ps_np_t0_sig <- prune_taxa(sig_asvs, ps_np_t0)
-nrow(ps_np_t0_sig@tax_table) # 27 remaining as for DAA
+covars <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
+outcomes <- c("FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1")
 
-# Transform to relative abundance and merge metadata
-ps_rel <- transform_sample_counts(ps_np_t0_sig, function(x) x / sum(x))
-otu_df <- as.data.frame(t(otu_table(ps_rel)))
-meta_df <- as.data.frame(sample_data(ps_rel))
-
-# Merge OTU + metadata
-df <- cbind(meta_df, otu_df)
-
-# Keep only samples with follow-up lung function
-df <- df %>% filter(!is.na(FEV1_FVC))
-ps_np_t0_sig@sam_data$rev
-# Create binary obstruction variable
-df <- df %>%
-  mutate(Obstruction = ifelse(FEV1_FVC < 0.7, "Obstructive", "Normal")) %>%
-  mutate(Obstruction = factor(Obstruction, levels = c("Normal","Obstructive")))
-
-
-# Preprocess features (mikropml-style)
-# Choose outcome type
-# For classification:
-df_ml <- df %>% select(Obstruction, all_of(sig_asvs))
-df
-# For regression (predict continuous FEV1/FVC):
-# df_ml <- df %>% select(FEV1_FVC, all_of(sig_asvs))
-
-# Scale and center features
-preproc <- preprocess_data(df_ml, outcome_colname = names(df_ml)[1])
-m_pre <- preproc$dat_transformed
-
-
-# Define helper functions
-run_ml_models <- function(seed, method, pre_df = m_pre, feat = FALSE) {
-  mikropml::run_ml(pre_df,
-                   method = method,
-                   outcome_colname = names(pre_df)[1],
-                   kfold = 5, cv_times = 50,
-                   training_frac = 0.8,
-                   hyperparameters = test_hp,
-                   seed = seed,
-                   find_feature_importance = feat)
+# -----------------------------
+# Helper functions 
+# -----------------------------
+to_smoke_bin <- function(x) {
+  # tries to make a simple 2-level variable like they did (Smoker vs NonSmoker)
+  x <- as.character(x)
+  dplyr::case_when(
+    x %in% c("Current", "current", "Smoker", "smoker", "Yes", "yes", "1", "2") ~ "Smoker",
+    x %in% c("Never", "never", "Non-smoker", "NonSmoker", "no", "No", "0")     ~ "NonSmoker",
+    TRUE ~ x  # if already nicely coded (e.g., "Former"), keep as-is
+  )
 }
 
-extract_performance <- function(model_list, method_name) {
-  map_dfr(seq_along(model_list),
-          ~ model_list[[.x]]$performance %>%
-            mutate(seed = .x, method = method_name))
+make_covariates <- function(meta) {
+  meta %>%
+    mutate(
+      Other_Age_T0 = as.numeric(.data$age_T0),
+      Other_Gender_T0 = as.character(.data$gender_T0),
+      Other_Smoke_T0 = to_smoke_bin(.data$smoke_status_T0),
+      Other_Season_T0 = ifelse(as.character(.data$season_microbiome_sampling) == "Winter",
+                               "Winter", "Other")
+    ) %>%
+    mutate(
+      Other_Gender_T0 = factor(Other_Gender_T0),
+      Other_Smoke_T0  = factor(Other_Smoke_T0),
+      Other_Season_T0 = factor(Other_Season_T0)
+    )
+}
+
+drop_one_dummy_per_factor <- function(df, factor_prefixes) {
+  # preprocess_data() tends to one-hot encode all levels -> drop one to avoid collinearity
+  for (p in factor_prefixes) {
+    cols <- grep(paste0("^", p, "_"), colnames(df), value = TRUE)
+    if (length(cols) >= 2) {
+      df <- df %>% dplyr::select(-dplyr::all_of(cols[1]))
+    }
+  }
+  df
+}
+
+# Convert phyloseq to df with prefixed taxa columns; keeps metadata too
+ps_to_df_prefixed <- function(ps, prefix, id_col) {
+  otu <- as.data.frame(t(phyloseq::otu_table(ps)))
+  meta <- as.data.frame(phyloseq::sample_data(ps))
+
+  # ensure row alignment
+  if (!identical(rownames(otu), rownames(meta))) {
+    stop("Row names of OTU and metadata do not match; check phyloseq object integrity.")
+  }
+
+  colnames(otu) <- paste0(prefix, colnames(otu))
+  df <- cbind(meta, otu)
+
+  if (!id_col %in% colnames(df)) {
+    stop(glue("ID column '{id_col}' not found in sample_data(). Available: {paste(colnames(df), collapse=', ')}"))
+  }
+  df
+}
+
+# mikropml wrapper (same core settings as their script)
+run_ml_models <- function(seed, method, pre_df, outcome_col, test_hp = NULL, feat = FALSE) {
+  mikropml::run_ml(
+    pre_df,
+    method = method,
+    outcome_colname = outcome_col,
+    kfold = 5,
+    cv_times = 100,      # mirrors their workflow
+    training_frac = 0.8,
+    hyperparameters = test_hp,
+    seed = seed,
+    find_feature_importance = feat
+  )
+}
+
+extract_performance <- function(model_list, method_name, dataset_name, outcome_name) {
+  purrr::map_dfr(seq_along(model_list), function(i) {
+    model_list[[i]]$performance %>%
+      mutate(seed = i, method = method_name, dataset = dataset_name, outcome = outcome_name)
+  })
+}
+
+extract_featimp <- function(model_list, dataset_name, outcome_name) {
+  purrr::map_dfr(seq_along(model_list), function(i) {
+    fi <- model_list[[i]]$feature_importance
+    if (is.null(fi) || nrow(fi) == 0) return(NULL)
+    fi %>% mutate(seed = i, dataset = dataset_name, outcome = outcome_name)
+  })
+}
+
+# -----------------------------
+# 1) Load baseline NP + OP phyloseq and select sig ASVs
+# -----------------------------
+ps_np_t0 <- T0_np_ps_abs_filt
+ps_op_t0 <- T0_op_ps_abs_filt   # <-- change this if your OP object has a different name
+
+# Read significant ASVs for each niche (recommended)
+sig_np <- read.csv("../Output/Longitudinal/DA/MaAsLin2/T0_NP/ASV/T0_NP_ASV_delta_FEV1_pred.csv")$feature
+
+# If you also have OP sig ASVs, use it; otherwise fall back to NP list
+op_sig_path <- "../Output/Longitudinal/DA/MaAsLin2/T0_OP/ASV/T0_OP_ASV_delta_FEV1_pred.csv"
+sig_op <- if (file.exists(op_sig_path)) read.csv(op_sig_path)$feature else sig_np
+
+# Prune taxa
+ps_np_sig <- prune_taxa(sig_np, ps_np_t0)
+ps_op_sig <- prune_taxa(sig_op, ps_op_t0)
+
+# -----------------------------
+# 2) Build NP/OP feature tables with prefixed taxa and covariates
+# -----------------------------
+df_np <- ps_to_df_prefixed(ps_np_sig, prefix = "NP_", id_col = id_col)
+df_op <- ps_to_df_prefixed(ps_op_sig, prefix = "OP_", id_col = id_col)
+
+# Create covariate columns (like their "Other_*" fields)
+df_np <- make_covariates(df_np)
+df_op <- make_covariates(df_op)
+
+# Taxa columns
+np_taxa_cols <- grep("^NP_", names(df_np), value = TRUE)
+op_taxa_cols <- grep("^OP_", names(df_op), value = TRUE)
+
+keep_common <- c(id_col, "age_T0", "gender_T0", "smoke_status_T0",
+                 "season_microbiome_sampling", outcomes)
+
+# Keep covars/outcomes + OP taxa in OP table
+df_op_small <- df_op %>%
+  dplyr::select(dplyr::all_of(intersect(keep_common, names(df_op))),
+                dplyr::all_of(op_taxa_cols)) %>%
+  arrange(.data[[id_col]]) %>%
+  distinct(.data[[id_col]], .keep_all = TRUE)
+
+# Keep ONLY ID + NP taxa in NP table (prevents .x/.y duplicates on join)
+df_np_taxa <- df_np %>%
+  dplyr::select(dplyr::all_of(id_col),
+                dplyr::all_of(np_taxa_cols)) %>%
+  arrange(.data[[id_col]]) %>%
+  distinct(.data[[id_col]], .keep_all = TRUE)
+
+# Join by ID (no duplicated covars/outcomes now)
+m_comb <- inner_join(df_op_small, df_np_taxa, by = id_col)
+
+# (optional sanity check)
+stopifnot(!any(grepl("\\.x$|\\.y$", names(m_comb))))
+
+# NP-only and OP-only tables
+m_np <- df_np_small
+m_op <- df_op_small
+
+# -----------------------------
+# 3) ML training loop (combined: glmnet + rf + xgb; niches: rf only)
+# -----------------------------
+hp_glmnet <- list(alpha = 0, lambda = c(0.001, 0.005, 0.01, 0.05))
+hp_rf     <- list(mtry = c(2, 4, 6))
+# Replace your current hp_xgb with this
+hp_xgb <- expand.grid(
+  nrounds = c(100, 200),
+  max_depth = c(3, 6),
+  eta = c(0.01, 0.05),
+  gamma = c(0),              # keep fixed (or try c(0, 1))
+  colsample_bytree = c(0.8), # keep fixed (or try c(0.6, 0.8, 1.0))
+  min_child_weight = c(1),   # keep fixed (or try c(1, 5))
+  subsample = c(0.7, 1.0)
+)
+
+all_perf <- list()
+all_feat <- list()
+
+datasets <- list(
+  Combined = m_comb,
+  NP = m_np,
+  OP = m_op
+)
+
+preprocess_safe <- function(dat, outcome_col) {
+  dat <- as.data.frame(dat)
+
+  # outcome
+  y <- dat[[outcome_col]]
+  y <- as.numeric(y)  # ensure regression outcome is numeric
+
+  # predictors
+  x <- dat[, setdiff(names(dat), outcome_col), drop = FALSE]
+
+  # make sure covariates are proper types
+  x <- x %>%
+    mutate(
+      age_T0 = as.numeric(age_T0),
+      gender_T0 = factor(gender_T0),
+      smoke_status_T0 = factor(smoke_status_T0),
+      season_microbiome_sampling = factor(season_microbiome_sampling)
+    ) %>%
+    mutate(across(where(is.character), as.factor))
+
+  # model.matrix gives k-1 dummies automatically (with intercept)
+  mm <- stats::model.matrix(~ ., data = x)
+
+  # drop intercept
+  mm <- mm[, colnames(mm) != "(Intercept)", drop = FALSE]
+
+  # center/scale all predictors (like mikropml does)
+  mm <- scale(mm)
+
+  out <- data.frame(y = y, mm, check.names = FALSE)
+  names(out)[1] <- outcome_col
+  out
 }
 
 
-#Train multiple models
-# Logistic regression (classification)
-test_hp <- list(alpha = 0, lambda = c(0.001, 0.005, 0.01, 0.05))
-it_glmnet <- future_map(1:20, ~run_ml_models(.x, "glmnet"), .options = furrr_options(seed = TRUE))
 
-# Random Forest
-test_hp <- list(mtry = c(2, 4, 6))
-it_rf <- future_map(1:20, ~run_ml_models(.x, "rf", feat = TRUE), .options = furrr_options(seed = TRUE))
 
-# XGBoost
-test_hp <- list(nrounds = 200, eta = 0.01, max_depth = 6, subsample = 0.7)
-it_xgb <- future_map(1:20, ~run_ml_models(.x, "xgbTree"), .options = furrr_options(seed = TRUE))
 
-# Evaluate model performance
 
-# Combine performance results
-perf_glmnet <- extract_performance(it_glmnet, "Logistic regression")
-perf_rf <- extract_performance(it_rf, "Random forest")
-perf_xgb <- extract_performance(it_xgb, "XGBoost")
+for (outcome in outcomes) {
+  for (ds_name in names(datasets)) {
+    dat <- datasets[[ds_name]]
+    taxa_cols <- switch(
+      ds_name,
+      Combined = c(grep("^OP_", names(dat), value = TRUE),
+                   grep("^NP_", names(dat), value = TRUE)),
+      NP = grep("^NP_", names(dat), value = TRUE),
+      OP = grep("^OP_", names(dat), value = TRUE)
+    )
 
-perf_all <- bind_rows(perf_glmnet, perf_rf, perf_xgb)
+    m_in <- dat %>%
+      dplyr::select(dplyr::all_of(c(outcome, covars, taxa_cols))) %>%
+      dplyr::filter(!is.na(.data[[outcome]])) %>%
+      dplyr::mutate(
+        age_T0 = as.numeric(age_T0),
+        gender_T0 = factor(gender_T0),
+        smoke_status_T0 = factor(smoke_status_T0),
+        season_microbiome_sampling = factor(season_microbiome_sampling)
+      )
 
-# Reshape for plotting
-perf_trans <- perf_all %>%
-  pivot_longer(c(cv_metric_AUC, AUC), names_to = "AUC_type", values_to = "AUC_val") %>%
-  mutate(AUC_type = recode(AUC_type, cv_metric_AUC = "Cross-validation", AUC = "Testing"))
+    pre <- preprocess_safe(m_in, outcome_col = outcome)
 
-# Compare mean AUC
-perf_summary <- perf_trans %>%
-  group_by(method, AUC_type) %>%
-  summarise(mean_AUC = mean(AUC_val, na.rm = TRUE),
-            sd_AUC = sd(AUC_val, na.rm = TRUE),
-            .groups = "drop")
 
-# Plot
-ggplot(perf_trans, aes(AUC_type, AUC_val, color = method)) +
+    # Decide which methods to run
+    if (ds_name == "Combined") {
+      methods <- c("glmnet", "rf", "xgbTree")
+    } else {
+      methods <- c("rf")  # mirror their "RF per niche" comparison
+    }
+
+    for (method in methods) {
+
+      test_hp <- switch(
+        method,
+        glmnet = hp_glmnet,
+        rf     = hp_rf,
+        xgbTree = hp_xgb
+      )
+
+      message("Running ", method, " on ", ds_name)
+
+      models <- future_map(
+        1:seeds_n,
+        ~ run_ml_models(.x, method = method, pre_df = pre, outcome_col = outcome,
+                        test_hp = test_hp, feat = (method == "rf")),
+        .options = furrr_options(seed = TRUE)
+      )
+
+      perf <- extract_performance(models, method, ds_name, outcome)
+      all_perf[[paste(outcome, ds_name, method, sep = "_")]] <- perf
+
+      # Save performance
+      readr::write_csv(perf, file.path(out_dir, glue("perf_{outcome}_{ds_name}_{method}.csv")))
+      saveRDS(models, file.path(out_dir, glue("models_{outcome}_{ds_name}_{method}.rds")))
+
+      # RF feature importance
+      if (method == "rf") {
+        fi <- extract_featimp(models, ds_name, outcome)
+        all_feat[[paste(outcome, ds_name, "rf", sep = "_")]] <- fi
+        if (!is.null(fi) && nrow(fi) > 0) {
+          readr::write_csv(fi, file.path(out_dir, glue("rf_featimp_{outcome}_{ds_name}.csv")))
+        }
+      }
+    }
+  }
+}
+
+
+
+perf_all <- bind_rows(all_perf)
+readr::write_csv(perf_all, file.path(out_dir, "perf_all_outcomes_all_datasets.csv"))
+
+# -----------------------------
+# 4) Plots: RMSE and R2 (combined + niches)
+# -----------------------------
+rmse_long <- perf_all %>%
+  dplyr::select(outcome, dataset, method, seed, any_of(c("cv_metric_RMSE", "RMSE"))) %>%
+  pivot_longer(cols = any_of(c("cv_metric_RMSE", "RMSE")),
+               names_to = "set", values_to = "RMSE") %>%
+  mutate(set = recode(set, cv_metric_RMSE = "Cross-validation", RMSE = "Test"))
+
+p_rmse <- ggplot(rmse_long, aes(set, RMSE, color = method)) +
   geom_boxplot(outlier.shape = NA, alpha = 0.4) +
-  geom_jitter(width = 0.2, alpha = 0.6) +
-  labs(y = "Area Under Curve (AUC)", x = "", title = "ML model performance") +
+  geom_jitter(width = 0.2, alpha = 0.4) +
+  facet_grid(outcome ~ dataset, scales = "free_y") +
+  labs(x = NULL, y = "RMSE", title = "Performance (RMSE) across datasets") +
   theme_bw()
 
+r2_long <- perf_all %>%
+  dplyr::select(outcome, dataset, method, seed, any_of("Rsquared")) %>%
+  filter(!is.na(Rsquared))
 
-# Feature importance (for Random Forest)
+p_r2 <- ggplot(r2_long, aes(method, Rsquared, color = method)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.4) +
+  geom_jitter(width = 0.2, alpha = 0.4) +
+  facet_grid(outcome ~ dataset, scales = "free_y") +
+  labs(x = NULL, y = "Test R²", title = "Performance (Test R²) across datasets") +
+  theme_bw() +
+  theme(legend.position = "none")
 
-feat_imp <- map_dfr(1:20, ~it_rf[[.x]]$feature_importance %>%
-                      mutate(seed = .x), .id = "model")
-
-feat_summary <- feat_imp %>%
-  group_by(feat) %>%
-  summarise(mean_imp = mean(perf_metric_diff, na.rm = TRUE),
-            sd_imp = sd(perf_metric_diff, na.rm = TRUE)) %>%
-  arrange(desc(mean_imp))
-
-ggplot(feat_summary %>% top_n(20, mean_imp),
-       aes(x = reorder(feat, mean_imp), y = mean_imp)) +
-  geom_col(fill = "#4B8BBE") +
-  coord_flip() +
-  labs(x = "ASV", y = "Mean Importance (ΔAUC)", title = "Top predictors (Random Forest)") +
-  theme_bw()
-
-
-# Save models and results 
-
-saveRDS(it_rf, file.path(out_dir, "rf_models_T0toT1.rds"))
-saveRDS(it_glmnet, file.path(out_dir, "glmnet_models_T0toT1.rds"))
-saveRDS(it_xgb, file.path(out_dir, "xgb_models_T0toT1.rds"))
-write.csv(feat_summary, file.path(out_dir, "RF_feature_importance.csv"), row.names = FALSE)
-
-
-
+p_rmse
+p_r2
 
 ```
+
 
 
