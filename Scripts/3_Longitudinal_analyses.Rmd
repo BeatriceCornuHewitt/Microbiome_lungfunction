@@ -6,10 +6,7 @@ output: html_document
 ---
 
 ```{r}
-library(phyloseq); library(vegan); library(tidyr); library(dplyr); library(ggplot2);library(tidyverse); library(microbiomer); library(paletteer);library(microbiome); library(devtools); library(forcats); library(haven); library(openxlsx); library(vegan); library(ggsignif); library(patchwork); library(decontam); library(RColorBrewer); library(forcats); library(lubridate); library(stringr); library(janitor); library(gtsummary); library(gt)
-
-library(phyloseq); library(tidyverse); library(broom);library(dplyr); library(tidyr); library(stringr); library(ggplot2); library(MASS); library(phyloseq); library(microbiomer)
-
+library(phyloseq); library(vegan); library(tidyr); library(dplyr); library(ggplot2);library(tidyverse); library(microbiomer); library(paletteer);library(microbiome); library(devtools); library(forcats); library(haven); library(openxlsx); library(vegan); library(ggsignif); library(patchwork); library(decontam); library(RColorBrewer); library(forcats); library(lubridate); library(stringr); library(janitor); library(gtsummary); library(gt); library(broom);library(MASS);library(ggh4x); library(microbiomer); library(mikropml); library(furrr); library(glue); library(caret)
 source("0_functions.R")
 
 # Theme for plots in script
@@ -4284,81 +4281,29 @@ ggsave("../Output/Longitudinal/DA/ANCOMBC2/Heatmap_ANCOMBC2_Genus_combined.svg",
 
 ```
 
-
-
-# RF to predict lung function - CONTINUE 
+# Machine learning to predict lung function outcomes at T1
+## Elastic net
 ```{r}
-library(tidyverse)
-library(phyloseq)
-library(mikropml)
-library(furrr)
-library(glue)
-library(here)
-library(caret)
-library(ranger)
-library(xgboost)
-library(patchwork)
-
 plan("multisession")
 
-out_dir <- "../Output/Longitudinal/Machine_learning/"
+out_dir <- "../Output/Longitudinal/Machine_learning/Elastic_net/"
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
-# -----------------------------
 # User settings
-# -----------------------------
-id_col <- "ID"   # <-- change if your participant ID column is different (e.g., "VGO3_ID")
-seeds_n <- 50
+id_col <- "ID"
+
+seeds_n  <- 10  
+cv_times <- 10   
+kfold    <- 5   
 
 covars <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
 outcomes <- c("FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1")
 
-# -----------------------------
-# Helper functions 
-# -----------------------------
-to_smoke_bin <- function(x) {
-  # tries to make a simple 2-level variable like they did (Smoker vs NonSmoker)
-  x <- as.character(x)
-  dplyr::case_when(
-    x %in% c("Current", "current", "Smoker", "smoker", "Yes", "yes", "1", "2") ~ "Smoker",
-    x %in% c("Never", "never", "Non-smoker", "NonSmoker", "no", "No", "0")     ~ "NonSmoker",
-    TRUE ~ x  # if already nicely coded (e.g., "Former"), keep as-is
-  )
-}
-
-make_covariates <- function(meta) {
-  meta %>%
-    mutate(
-      Other_Age_T0 = as.numeric(.data$age_T0),
-      Other_Gender_T0 = as.character(.data$gender_T0),
-      Other_Smoke_T0 = to_smoke_bin(.data$smoke_status_T0),
-      Other_Season_T0 = ifelse(as.character(.data$season_microbiome_sampling) == "Winter",
-                               "Winter", "Other")
-    ) %>%
-    mutate(
-      Other_Gender_T0 = factor(Other_Gender_T0),
-      Other_Smoke_T0  = factor(Other_Smoke_T0),
-      Other_Season_T0 = factor(Other_Season_T0)
-    )
-}
-
-drop_one_dummy_per_factor <- function(df, factor_prefixes) {
-  # preprocess_data() tends to one-hot encode all levels -> drop one to avoid collinearity
-  for (p in factor_prefixes) {
-    cols <- grep(paste0("^", p, "_"), colnames(df), value = TRUE)
-    if (length(cols) >= 2) {
-      df <- df %>% dplyr::select(-dplyr::all_of(cols[1]))
-    }
-  }
-  df
-}
-
-# Convert phyloseq to df with prefixed taxa columns; keeps metadata too
+# Helper functions
 ps_to_df_prefixed <- function(ps, prefix, id_col) {
   otu <- as.data.frame(t(phyloseq::otu_table(ps)))
   meta <- as.data.frame(phyloseq::sample_data(ps))
 
-  # ensure row alignment
   if (!identical(rownames(otu), rownames(meta))) {
     stop("Row names of OTU and metadata do not match; check phyloseq object integrity.")
   }
@@ -4372,130 +4317,16 @@ ps_to_df_prefixed <- function(ps, prefix, id_col) {
   df
 }
 
-# mikropml wrapper (same core settings as their script)
-run_ml_models <- function(seed, method, pre_df, outcome_col, test_hp = NULL, feat = FALSE) {
-  mikropml::run_ml(
-    pre_df,
-    method = method,
-    outcome_colname = outcome_col,
-    kfold = 5,
-    cv_times = 100,      # mirrors their workflow
-    training_frac = 0.8,
-    hyperparameters = test_hp,
-    seed = seed,
-    find_feature_importance = feat
-  )
-}
-
-extract_performance <- function(model_list, method_name, dataset_name, outcome_name) {
-  purrr::map_dfr(seq_along(model_list), function(i) {
-    model_list[[i]]$performance %>%
-      mutate(seed = i, method = method_name, dataset = dataset_name, outcome = outcome_name)
-  })
-}
-
-extract_featimp <- function(model_list, dataset_name, outcome_name) {
-  purrr::map_dfr(seq_along(model_list), function(i) {
-    fi <- model_list[[i]]$feature_importance
-    if (is.null(fi) || nrow(fi) == 0) return(NULL)
-    fi %>% mutate(seed = i, dataset = dataset_name, outcome = outcome_name)
-  })
-}
-
-# -----------------------------
-# 1) Load baseline NP + OP phyloseq and select sig ASVs
-# -----------------------------
-ps_np_t0 <- T0_np_ps_abs_filt
-ps_op_t0 <- T0_op_ps_abs_filt   # <-- change this if your OP object has a different name
-
-# Read significant ASVs for each niche (recommended)
-sig_np <- read.csv("../Output/Longitudinal/DA/MaAsLin2/T0_NP/ASV/T0_NP_ASV_delta_FEV1_pred.csv")$feature
-
-# If you also have OP sig ASVs, use it; otherwise fall back to NP list
-op_sig_path <- "../Output/Longitudinal/DA/MaAsLin2/T0_OP/ASV/T0_OP_ASV_delta_FEV1_pred.csv"
-sig_op <- if (file.exists(op_sig_path)) read.csv(op_sig_path)$feature else sig_np
-
-# Prune taxa
-ps_np_sig <- prune_taxa(sig_np, ps_np_t0)
-ps_op_sig <- prune_taxa(sig_op, ps_op_t0)
-
-# -----------------------------
-# 2) Build NP/OP feature tables with prefixed taxa and covariates
-# -----------------------------
-df_np <- ps_to_df_prefixed(ps_np_sig, prefix = "NP_", id_col = id_col)
-df_op <- ps_to_df_prefixed(ps_op_sig, prefix = "OP_", id_col = id_col)
-
-# Create covariate columns (like their "Other_*" fields)
-df_np <- make_covariates(df_np)
-df_op <- make_covariates(df_op)
-
-# Taxa columns
-np_taxa_cols <- grep("^NP_", names(df_np), value = TRUE)
-op_taxa_cols <- grep("^OP_", names(df_op), value = TRUE)
-
-keep_common <- c(id_col, "age_T0", "gender_T0", "smoke_status_T0",
-                 "season_microbiome_sampling", outcomes)
-
-# Keep covars/outcomes + OP taxa in OP table
-df_op_small <- df_op %>%
-  dplyr::select(dplyr::all_of(intersect(keep_common, names(df_op))),
-                dplyr::all_of(op_taxa_cols)) %>%
-  arrange(.data[[id_col]]) %>%
-  distinct(.data[[id_col]], .keep_all = TRUE)
-
-# Keep ONLY ID + NP taxa in NP table (prevents .x/.y duplicates on join)
-df_np_taxa <- df_np %>%
-  dplyr::select(dplyr::all_of(id_col),
-                dplyr::all_of(np_taxa_cols)) %>%
-  arrange(.data[[id_col]]) %>%
-  distinct(.data[[id_col]], .keep_all = TRUE)
-
-# Join by ID (no duplicated covars/outcomes now)
-m_comb <- inner_join(df_op_small, df_np_taxa, by = id_col)
-
-# (optional sanity check)
-stopifnot(!any(grepl("\\.x$|\\.y$", names(m_comb))))
-
-# NP-only and OP-only tables
-m_np <- df_np_small
-m_op <- df_op_small
-
-# -----------------------------
-# 3) ML training loop (combined: glmnet + rf + xgb; niches: rf only)
-# -----------------------------
-hp_glmnet <- list(alpha = 0, lambda = c(0.001, 0.005, 0.01, 0.05))
-hp_rf     <- list(mtry = c(2, 4, 6))
-# Replace your current hp_xgb with this
-hp_xgb <- expand.grid(
-  nrounds = c(100, 200),
-  max_depth = c(3, 6),
-  eta = c(0.01, 0.05),
-  gamma = c(0),              # keep fixed (or try c(0, 1))
-  colsample_bytree = c(0.8), # keep fixed (or try c(0.6, 0.8, 1.0))
-  min_child_weight = c(1),   # keep fixed (or try c(1, 5))
-  subsample = c(0.7, 1.0)
-)
-
-all_perf <- list()
-all_feat <- list()
-
-datasets <- list(
-  Combined = m_comb,
-  NP = m_np,
-  OP = m_op
-)
-
 preprocess_safe <- function(dat, outcome_col) {
   dat <- as.data.frame(dat)
 
-  # outcome
-  y <- dat[[outcome_col]]
-  y <- as.numeric(y)  # ensure regression outcome is numeric
+  # outcome numeric (regression)
+  y <- as.numeric(dat[[outcome_col]])
 
   # predictors
   x <- dat[, setdiff(names(dat), outcome_col), drop = FALSE]
 
-  # make sure covariates are proper types
+  # enforce types for covariates
   x <- x %>%
     mutate(
       age_T0 = as.numeric(age_T0),
@@ -4505,13 +4336,13 @@ preprocess_safe <- function(dat, outcome_col) {
     ) %>%
     mutate(across(where(is.character), as.factor))
 
-  # model.matrix gives k-1 dummies automatically (with intercept)
+  # one-hot encode factors (k-1 dummies) + intercept
   mm <- stats::model.matrix(~ ., data = x)
 
   # drop intercept
   mm <- mm[, colnames(mm) != "(Intercept)", drop = FALSE]
 
-  # center/scale all predictors (like mikropml does)
+  # center/scale predictors
   mm <- scale(mm)
 
   out <- data.frame(y = y, mm, check.names = FALSE)
@@ -4519,14 +4350,102 @@ preprocess_safe <- function(dat, outcome_col) {
   out
 }
 
+run_glmnet <- function(seed, pre_df, outcome_col, hp) {
+  mikropml::run_ml(
+    pre_df,
+    method = "glmnet",
+    outcome_colname = outcome_col,
+    kfold = kfold,
+    cv_times = cv_times,
+    training_frac = 0.8,
+    hyperparameters = hp,
+    seed = seed,
+    find_feature_importance = TRUE  # lets you extract variable importance (often based on coefficients)
+  )
+}
 
+extract_performance <- function(model_list, dataset_name, outcome_name) {
+  purrr::map_dfr(seq_along(model_list), function(i) {
+    model_list[[i]]$performance %>%
+      mutate(seed = i, method = "glmnet", dataset = dataset_name, outcome = outcome_name)
+  })
+}
 
+extract_featimp <- function(model_list, dataset_name, outcome_name) {
+  purrr::map_dfr(seq_along(model_list), function(i) {
+    fi <- model_list[[i]]$feature_importance
+    if (is.null(fi) || nrow(fi) == 0) return(NULL)
+    fi %>% mutate(seed = i, method = "glmnet", dataset = dataset_name, outcome = outcome_name)
+  })
+}
 
+# Load baseline NP + OP phyloseq and select sig ASVs
+ps_np_t0 <- T0_np_ps_abs_filt
+ps_op_t0 <- T0_op_ps_abs_filt
 
+sig_np <- read.csv("../Output/Longitudinal/DA/MaAsLin2/T0_NP/ASV/T0_NP_ASV_delta_FEV1_pred.csv")$feature
 
+op_sig_path <- "../Output/Longitudinal/DA/MaAsLin2/T0_OP/ASV/T0_OP_ASV_delta_FEV1_pred.csv"
+sig_op <- if (file.exists(op_sig_path)) read.csv(op_sig_path)$feature else sig_np
+
+ps_np_sig <- prune_taxa(sig_np, ps_np_t0)
+ps_op_sig <- prune_taxa(sig_op, ps_op_t0)
+
+# Build NP/OP feature tables
+df_np <- ps_to_df_prefixed(ps_np_sig, prefix = "NP_", id_col = id_col)
+df_op <- ps_to_df_prefixed(ps_op_sig, prefix = "OP_", id_col = id_col)
+
+np_taxa_cols <- grep("^NP_", names(df_np), value = TRUE)
+op_taxa_cols <- grep("^OP_", names(df_op), value = TRUE)
+
+keep_common <- c(id_col, covars, outcomes)
+
+# OP table: covars/outcomes + OP taxa
+df_op_small <- df_op %>%
+  dplyr::select(dplyr::all_of(intersect(keep_common, names(df_op))),
+                dplyr::all_of(op_taxa_cols)) %>%
+  arrange(.data[[id_col]]) %>%
+  distinct(.data[[id_col]], .keep_all = TRUE)
+
+# NP table: covars/outcomes + NP taxa  (FIXED: this was missing in your script)
+df_np_small <- df_np %>%
+  dplyr::select(dplyr::all_of(intersect(keep_common, names(df_np))),
+                dplyr::all_of(np_taxa_cols)) %>%
+  arrange(.data[[id_col]]) %>%
+  distinct(.data[[id_col]], .keep_all = TRUE)
+
+# Combined: join OP (with covars/outcomes) + NP taxa only (to avoid duplicates)
+df_np_taxa <- df_np %>%
+  dplyr::select(dplyr::all_of(id_col), dplyr::all_of(np_taxa_cols)) %>%
+  arrange(.data[[id_col]]) %>%
+  distinct(.data[[id_col]], .keep_all = TRUE)
+
+m_comb <- inner_join(df_op_small, df_np_taxa, by = id_col)
+
+m_np <- df_np_small
+m_op <- df_op_small
+
+datasets <- list(
+  Combined = m_comb,
+  NP = m_np,
+  OP = m_op
+)
+
+# GLMNET hyperparameters (small grid for speed)
+hp_glmnet <- list(
+  alpha  = c(0, 0.5, 1),              # ridge / elastic net / lasso
+  lambda = c(0.001, 0.005, 0.01, 0.05) # small grid for speed
+)
+
+all_perf <- list()
+all_feat <- list()
+
+# Training loop: GLMNET only
 for (outcome in outcomes) {
   for (ds_name in names(datasets)) {
+
     dat <- datasets[[ds_name]]
+
     taxa_cols <- switch(
       ds_name,
       Combined = c(grep("^OP_", names(dat), value = TRUE),
@@ -4547,88 +4466,794 @@ for (outcome in outcomes) {
 
     pre <- preprocess_safe(m_in, outcome_col = outcome)
 
+    message("Running glmnet on ", ds_name, " outcome=", outcome)
 
-    # Decide which methods to run
-    if (ds_name == "Combined") {
-      methods <- c("glmnet", "rf", "xgbTree")
-    } else {
-      methods <- c("rf")  # mirror their "RF per niche" comparison
-    }
+    models <- future_map(
+      1:seeds_n,
+      ~ run_glmnet(.x, pre_df = pre, outcome_col = outcome, hp = hp_glmnet),
+      .options = furrr_options(seed = TRUE)
+    )
 
-    for (method in methods) {
+    perf <- extract_performance(models, ds_name, outcome)
+    all_perf[[paste(outcome, ds_name, "glmnet", sep = "_")]] <- perf
 
-      test_hp <- switch(
-        method,
-        glmnet = hp_glmnet,
-        rf     = hp_rf,
-        xgbTree = hp_xgb
-      )
+    readr::write_csv(perf, file.path(out_dir, glue("perf_{outcome}_{ds_name}_glmnet.csv")))
+    saveRDS(models, file.path(out_dir, glue("models_{outcome}_{ds_name}_glmnet.rds")))
 
-      message("Running ", method, " on ", ds_name)
-
-      models <- future_map(
-        1:seeds_n,
-        ~ run_ml_models(.x, method = method, pre_df = pre, outcome_col = outcome,
-                        test_hp = test_hp, feat = (method == "rf")),
-        .options = furrr_options(seed = TRUE)
-      )
-
-      perf <- extract_performance(models, method, ds_name, outcome)
-      all_perf[[paste(outcome, ds_name, method, sep = "_")]] <- perf
-
-      # Save performance
-      readr::write_csv(perf, file.path(out_dir, glue("perf_{outcome}_{ds_name}_{method}.csv")))
-      saveRDS(models, file.path(out_dir, glue("models_{outcome}_{ds_name}_{method}.rds")))
-
-      # RF feature importance
-      if (method == "rf") {
-        fi <- extract_featimp(models, ds_name, outcome)
-        all_feat[[paste(outcome, ds_name, "rf", sep = "_")]] <- fi
-        if (!is.null(fi) && nrow(fi) > 0) {
-          readr::write_csv(fi, file.path(out_dir, glue("rf_featimp_{outcome}_{ds_name}.csv")))
-        }
-      }
+    fi <- extract_featimp(models, ds_name, outcome)
+    all_feat[[paste(outcome, ds_name, "glmnet", sep = "_")]] <- fi
+    if (!is.null(fi) && nrow(fi) > 0) {
+      readr::write_csv(fi, file.path(out_dir, glue("glmnet_featimp_{outcome}_{ds_name}.csv")))
     }
   }
 }
 
-
-
 perf_all <- bind_rows(all_perf)
-readr::write_csv(perf_all, file.path(out_dir, "perf_all_outcomes_all_datasets.csv"))
+readr::write_csv(perf_all, file.path(out_dir, "perf_all_outcomes_all_datasets_GLMNET.csv"))
 
-# -----------------------------
-# 4) Plots: RMSE and R2 (combined + niches)
-# -----------------------------
-rmse_long <- perf_all %>%
-  dplyr::select(outcome, dataset, method, seed, any_of(c("cv_metric_RMSE", "RMSE"))) %>%
-  pivot_longer(cols = any_of(c("cv_metric_RMSE", "RMSE")),
-               names_to = "set", values_to = "RMSE") %>%
-  mutate(set = recode(set, cv_metric_RMSE = "Cross-validation", RMSE = "Test"))
+feat_all <- bind_rows(all_feat)
+if (!is.null(feat_all) && nrow(feat_all) > 0) {
+  readr::write_csv(feat_all, file.path(out_dir, "featimp_all_outcomes_all_datasets_GLMNET.csv"))
+}
 
-p_rmse <- ggplot(rmse_long, aes(set, RMSE, color = method)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.4) +
-  geom_jitter(width = 0.2, alpha = 0.4) +
-  facet_grid(outcome ~ dataset, scales = "free_y") +
-  labs(x = NULL, y = "RMSE", title = "Performance (RMSE) across datasets") +
-  theme_bw()
+
+# Performance summary
+perf_summary <- perf_all %>%
+  group_by(outcome, dataset) %>%
+  summarise(
+    n_splits = n(),
+    test_R2_median = median(Rsquared, na.rm = TRUE),
+    test_R2_IQR = paste0(
+      round(quantile(Rsquared, 0.25, na.rm = TRUE), 2), "–",
+      round(quantile(Rsquared, 0.75, na.rm = TRUE), 2)
+    ),
+    test_RMSE_median = median(RMSE, na.rm = TRUE),
+    test_RMSE_IQR = paste0(
+      round(quantile(RMSE, 0.25, na.rm = TRUE), 2), "–",
+      round(quantile(RMSE, 0.75, na.rm = TRUE), 2)
+    ),
+    .groups = "drop"
+  ) %>%
+  arrange(outcome, desc(test_R2_median))
+
+perf_summary
+
+write_csv(perf_summary, "../Output/Longitudinal/Machine_learning/Elastic_net_performance.csv")
+
+
+# Boxplot of R2s of all models 
+outcome_labs <- c(
+  FEV1_pred_T1 = "FEV1",
+  FVC_pred_T1 = "FVC",
+  FEV1FVC_pred_T1 = "FEV1/FVC",
+  MMEF_pred_T1 = "MMEF"
+)
+
+# Add median Test R² label per facet (outcome x dataset) -
+annot_df <- perf_summary %>%
+  mutate(
+    outcome = factor(outcome, levels = names(outcome_labs)),
+    dataset = factor(dataset, levels = c("NP", "OP", "Combined")),
+    label = paste0("median R² = ", sprintf("%.2f", test_R2_median))
+  )
 
 r2_long <- perf_all %>%
   dplyr::select(outcome, dataset, method, seed, any_of("Rsquared")) %>%
-  filter(!is.na(Rsquared))
+  filter(!is.na(Rsquared)) %>%
+  mutate(dataset = factor(dataset, levels = c("NP", "OP", "Combined"))) %>%
+  mutate(
+    outcome = factor(outcome, levels = names(outcome_labs)),
+    dataset = factor(dataset, levels = c("NP", "OP", "Combined"))
+  )
 
-p_r2 <- ggplot(r2_long, aes(method, Rsquared, color = method)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.4) +
+p_r2 <- ggplot(r2_long, aes(x = method, y = Rsquared, color = dataset, fill = dataset)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.25) +
   geom_jitter(width = 0.2, alpha = 0.4) +
-  facet_grid(outcome ~ dataset, scales = "free_y") +
+  # annotation in top-left of each facet 
+  geom_text(
+    data = annot_df,
+    aes(label = label),
+    x = -Inf, y = Inf,
+    hjust = -0.05, vjust = 2,
+    inherit.aes = FALSE,
+    size = 2.3,
+    color = "black"
+  ) +
+  facet_grid2(
+    outcome ~ dataset, scales = "free_y",
+    labeller = labeller(outcome = outcome_labs),
+    strip = strip_themed(
+      background_x = list(
+        NP = element_rect(fill = "#7987af", color = NA),
+        OP = element_rect(fill = "#7c674d", color = NA),
+        Combined = element_rect(fill = "grey40", color = NA)
+      ),
+      text_x = element_text(color = "white", face = "bold")
+    )
+  ) +
+  scale_color_manual(values = c(NP = "#7987af", OP = "#7c674d", Combined = "grey40")) +
+  scale_fill_manual(values  = c(NP = "#7987af", OP = "#7c674d", Combined = "grey40")) +
   labs(x = NULL, y = "Test R²", title = "Performance (Test R²) across datasets") +
   theme_bw() +
   theme(legend.position = "none")
 
+p_r2
+
+ggsave("../Output/Longitudinal/Machine_learning/Fig_R2_all_outcomes.svg", p_r2, width =4, height = 5)
+
+#### Best glmnet model ####
+summary_perf <- perf_all %>%
+  group_by(outcome, dataset) %>%
+  summarise(
+    n_splits = n(),
+    test_R2_median   = median(Rsquared, na.rm = TRUE),
+    test_R2_IQR_low  = quantile(Rsquared, 0.25, na.rm = TRUE),
+    test_R2_IQR_high = quantile(Rsquared, 0.75, na.rm = TRUE),
+    test_RMSE_median   = median(RMSE, na.rm = TRUE),
+    test_RMSE_IQR_low  = quantile(RMSE, 0.25, na.rm = TRUE),
+    test_RMSE_IQR_high = quantile(RMSE, 0.75, na.rm = TRUE),
+    cv_RMSE_median   = median(cv_metric_RMSE, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Best dataset per outcome by highest median Test R² and lowest RMSE
+overall_best <- summary_perf %>%
+  arrange(desc(test_R2_median), test_RMSE_median) %>%
+  dplyr::slice(1)
+
+overall_best # Best if FVC_pred_T1 model with NP as input data
+
+# Show R2 for best model
+outcome_plot <- "FVC_pred_T1"
+perf1 <- perf_all %>% filter(outcome == outcome_plot)
+
+# R² on test 
+boxplot_r2 <- perf1 %>%
+  filter(!is.na(Rsquared)) %>%
+  ggplot(aes(dataset, Rsquared)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.4) +
+  geom_jitter(width = 0.2, alpha = 0.4) +
+  labs(x = NULL, y = "Test R²", title = "Test R² across repeated splits") +
+  theme_bw()
+
+boxplot_r2
+
+
+# Top features
+outcome_plot <- "FVC_pred_T1"
+dataset_plot <- "NP"   # "Combined" or "NP" or "OP"
+top_n <- 15
+
+mods <- readRDS(file.path(out_dir, glue("models_{outcome_plot}_{dataset_plot}_glmnet.rds")))
+
+extract_glmnet_coefs <- function(one_run) {
+  tm <- one_run$trained_model  # caret model
+  bt <- tm$bestTune
+  cf <- as.matrix(coef(tm$finalModel, s = bt$lambda))
+  tibble(feature = rownames(cf), coef = as.numeric(cf[, 1]))
+}
+
+coef_df <- map_dfr(mods, extract_glmnet_coefs, .id = "split") %>%
+  filter(feature != "(Intercept)")
+
+coef_sum <- coef_df %>%
+  group_by(feature) %>%
+  summarise(
+    med = median(coef, na.rm = TRUE),
+    lo  = quantile(coef, 0.025, na.rm = TRUE),
+    hi  = quantile(coef, 0.975, na.rm = TRUE),
+    sel_freq = mean(coef != 0, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(abs(med)))
+
+# Label helpers
+get_niche <- function(x) {
+  case_when(
+    str_starts(x, "NP_") ~ "NP",
+    str_starts(x, "OP_") ~ "OP",
+    TRUE ~ "Other"
+  )
+}
+
+format_feature_label <- function(x) {
+  # taxa?
+  if (str_detect(x, "^(NP_|OP_)")) {
+    x2 <- str_remove(x, "^(NP_|OP_)")
+
+    parts <- str_split(x2, "_", simplify = TRUE)
+    parts <- parts[parts != ""]
+
+    last <- parts[length(parts)]
+    is_num <- str_detect(last, "^[0-9]+$")
+
+    if (is_num && length(parts) >= 2) {
+      tax <- paste(parts[-length(parts)], collapse = " ")
+      return(paste0("<i>", tax, "</i> (", last, ")"))
+    } else {
+      tax <- str_replace_all(x2, "_", " ")
+      return(paste0("<i>", tax, "</i>"))
+    }
+  }
+
+  # non-taxa covariates / dummy vars: remove underscores, no italics
+  str_replace_all(x, "_", " ")
+}
+
+top_all <- coef_sum %>%
+  slice_head(n = top_n) %>%
+  mutate(
+    niche = get_niche(feature),
+    label = map_chr(feature, format_feature_label)
+  ) %>%
+  mutate(label = fct_reorder(label, med, .desc = TRUE))
+
+top_FVC_combined <- ggplot(top_all, aes(x = med, y = label, color = niche)) +
+  geom_vline(xintercept = 0, linetype = 2, color = "black") +
+  geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.2) +
+  geom_point(alpha = 0.85, size = 3) +  # fixed size (no size legend)
+  scale_color_manual(
+    values = c(NP = "#7987af", OP = "#7c674d", Other = "grey40"),
+    breaks = c("NP", "OP", "Other")
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.y = ggtext::element_markdown(),
+    legend.title = element_blank()
+  ) +
+  labs(
+    x = "Standardized coefficient (median ± 95% across splits)",
+    y = NULL,
+    title = "Stable features (glmnet): taxa + covariates"
+  )
+
+top_FVC_combined
+
+#  Save plots
+ggsave("../Output/Longitudinal/Machine_learning/Fig_top_features_FVC_Combinedmodel.svg", top_FVC_combined, width = 9, height = 5)
+```
+## Random forest
+```{r}
+# RANDOM FOREST to predict lung function + manuscript-ready figures
+plan("multisession")
+
+out_dir <- "../Output/Longitudinal/Machine_learning/Random_forest/"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+id_col <- "ID"
+seeds_n  <- 10  
+cv_times <- 10   
+kfold    <- 5    
+
+covars <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
+outcomes <- c("FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1")
+
+# RF hyperparameters (small grid for speed)
+# caret RF tuning uses mtry; ranger-specific params can be added, but keep minimal for speed.
+hp_rf <- list(mtry = c(2, 4, 6))
+
+# Helper functions
+ps_to_df_prefixed <- function(ps, prefix, id_col) {
+  otu <- as.data.frame(t(phyloseq::otu_table(ps)))
+  meta <- as.data.frame(phyloseq::sample_data(ps))
+
+  if (!identical(rownames(otu), rownames(meta))) {
+    stop("Row names of OTU and metadata do not match; check phyloseq object integrity.")
+  }
+
+  colnames(otu) <- paste0(prefix, colnames(otu))
+  df <- cbind(meta, otu)
+
+  if (!id_col %in% colnames(df)) {
+    stop(glue("ID column '{id_col}' not found in sample_data(). Available: {paste(colnames(df), collapse=', ')}"))
+  }
+  df
+}
+
+preprocess_safe <- function(dat, outcome_col) {
+  dat <- as.data.frame(dat)
+
+  # outcome numeric (regression)
+  y <- as.numeric(dat[[outcome_col]])
+
+  # predictors
+  x <- dat[, setdiff(names(dat), outcome_col), drop = FALSE]
+
+  # enforce types for covariates
+  x <- x %>%
+    mutate(
+      age_T0 = as.numeric(age_T0),
+      gender_T0 = factor(gender_T0),
+      smoke_status_T0 = factor(smoke_status_T0),
+      season_microbiome_sampling = factor(season_microbiome_sampling)
+    ) %>%
+    mutate(across(where(is.character), as.factor))
+
+  # one-hot encode factors (k-1 dummies) + intercept
+  mm <- stats::model.matrix(~ ., data = x)
+
+  # drop intercept
+  mm <- mm[, colnames(mm) != "(Intercept)", drop = FALSE]
+
+  # RF does not require scaling, but leaving it scaled is fine.
+  # Keeping consistent preprocessing with glmnet for comparability.
+  mm <- scale(mm)
+
+  out <- data.frame(y = y, mm, check.names = FALSE)
+  names(out)[1] <- outcome_col
+  out
+}
+
+run_rf <- function(seed, pre_df, outcome_col, hp) {
+  mikropml::run_ml(
+    pre_df,
+    method = "rf",
+    outcome_colname = outcome_col,
+    kfold = kfold,
+    cv_times = cv_times,
+    training_frac = 0.8,
+    hyperparameters = hp,
+    seed = seed,
+    find_feature_importance = TRUE
+  )
+}
+
+extract_performance <- function(model_list, dataset_name, outcome_name) {
+  purrr::map_dfr(seq_along(model_list), function(i) {
+    model_list[[i]]$performance %>%
+      mutate(seed = i, method = "rf", dataset = dataset_name, outcome = outcome_name)
+  })
+}
+
+extract_featimp <- function(model_list, dataset_name, outcome_name) {
+  purrr::map_dfr(seq_along(model_list), function(i) {
+    fi <- model_list[[i]]$feature_importance
+    if (is.null(fi) || nrow(fi) == 0) return(NULL)
+    fi %>% mutate(seed = i, method = "rf", dataset = dataset_name, outcome = outcome_name)
+  })
+}
+
+# Load baseline NP + OP phyloseq and select sig ASVs
+ps_np_t0 <- T0_np_ps_abs_filt
+ps_op_t0 <- T0_op_ps_abs_filt
+
+sig_np <- read.csv("../Output/Longitudinal/DA/MaAsLin2/T0_NP/ASV/T0_NP_ASV_delta_FEV1_pred.csv")$feature
+
+op_sig_path <- "../Output/Longitudinal/DA/MaAsLin2/T0_OP/ASV/T0_OP_ASV_delta_FEV1_pred.csv"
+sig_op <- if (file.exists(op_sig_path)) read.csv(op_sig_path)$feature else sig_np
+
+ps_np_sig <- prune_taxa(sig_np, ps_np_t0)
+ps_op_sig <- prune_taxa(sig_op, ps_op_t0)
+
+# Build NP/OP feature tables
+df_np <- ps_to_df_prefixed(ps_np_sig, prefix = "NP_", id_col = id_col)
+df_op <- ps_to_df_prefixed(ps_op_sig, prefix = "OP_", id_col = id_col)
+
+np_taxa_cols <- grep("^NP_", names(df_np), value = TRUE)
+op_taxa_cols <- grep("^OP_", names(df_op), value = TRUE)
+
+keep_common <- c(id_col, covars, outcomes)
+
+# OP table: covars/outcomes + OP taxa
+df_op_small <- df_op %>%
+  select(all_of(intersect(keep_common, names(df_op))), all_of(op_taxa_cols)) %>%
+  arrange(.data[[id_col]]) %>%
+  distinct(.data[[id_col]], .keep_all = TRUE)
+
+# NP table: covars/outcomes + NP taxa
+df_np_small <- df_np %>%
+  select(all_of(intersect(keep_common, names(df_np))), all_of(np_taxa_cols)) %>%
+  arrange(.data[[id_col]]) %>%
+  distinct(.data[[id_col]], .keep_all = TRUE)
+
+# Combined: OP (with covars/outcomes) + NP taxa only (avoid duplicates)
+df_np_taxa <- df_np %>%
+  select(all_of(id_col), all_of(np_taxa_cols)) %>%
+  arrange(.data[[id_col]]) %>%
+  distinct(.data[[id_col]], .keep_all = TRUE)
+
+m_comb <- inner_join(df_op_small, df_np_taxa, by = id_col)
+
+m_np <- df_np_small
+m_op <- df_op_small
+
+datasets <- list(
+  Combined = m_comb,
+  NP = m_np,
+  OP = m_op
+)
+
+# Train RF only across outcomes & datasets
+all_perf <- list()
+all_feat <- list()
+
+for (outcome in outcomes) {
+  for (ds_name in names(datasets)) {
+
+    dat <- datasets[[ds_name]]
+
+    taxa_cols <- switch(
+      ds_name,
+      Combined = c(grep("^OP_", names(dat), value = TRUE),
+                   grep("^NP_", names(dat), value = TRUE)),
+      NP = grep("^NP_", names(dat), value = TRUE),
+      OP = grep("^OP_", names(dat), value = TRUE)
+    )
+
+    m_in <- dat %>%
+      select(all_of(c(outcome, covars, taxa_cols))) %>%
+      filter(!is.na(.data[[outcome]])) %>%
+      mutate(
+        age_T0 = as.numeric(age_T0),
+        gender_T0 = factor(gender_T0),
+        smoke_status_T0 = factor(smoke_status_T0),
+        season_microbiome_sampling = factor(season_microbiome_sampling)
+      )
+
+    pre <- preprocess_safe(m_in, outcome_col = outcome)
+
+    message("Running RF on ", ds_name, " outcome=", outcome)
+
+    models <- future_map(
+      1:seeds_n,
+      ~ run_rf(.x, pre_df = pre, outcome_col = outcome, hp = hp_rf),
+      .options = furrr_options(seed = TRUE)
+    )
+
+    perf <- extract_performance(models, ds_name, outcome)
+    all_perf[[paste(outcome, ds_name, "rf", sep = "_")]] <- perf
+
+    readr::write_csv(perf, file.path(out_dir, glue("perf_{outcome}_{ds_name}_rf.csv")))
+    saveRDS(models, file.path(out_dir, glue("models_{outcome}_{ds_name}_rf.rds")))
+
+    fi <- extract_featimp(models, ds_name, outcome)
+    all_feat[[paste(outcome, ds_name, "rf", sep = "_")]] <- fi
+    if (!is.null(fi) && nrow(fi) > 0) {
+      readr::write_csv(fi, file.path(out_dir, glue("rf_featimp_{outcome}_{ds_name}.csv")))
+    }
+  }
+}
+
+perf_all <- bind_rows(all_perf)
+readr::write_csv(perf_all, file.path(out_dir, "perf_all_outcomes_all_datasets_RF.csv"))
+
+feat_all <- bind_rows(all_feat)
+if (!is.null(feat_all) && nrow(feat_all) > 0) {
+  readr::write_csv(feat_all, file.path(out_dir, "featimp_all_outcomes_all_datasets_RF.csv"))
+}
+
+
+# Figures: RMSE and R²
+# RMSE: CV vs Test
+rmse_long <- perf_all %>%
+  select(outcome, dataset, seed, any_of(c("cv_metric_RMSE", "RMSE"))) %>%
+  pivot_longer(cols = any_of(c("cv_metric_RMSE", "RMSE")),
+               names_to = "set", values_to = "RMSE") %>%
+  mutate(set = recode(set, cv_metric_RMSE = "Cross-validation", RMSE = "Test"))
+
+p_rmse <- ggplot(rmse_long, aes(set, RMSE)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.4, color = "red") +
+  geom_jitter(width = 0.2, alpha = 0.4, color = "red") +
+  facet_grid(outcome ~ dataset, scales = "free_y") +
+  labs(x = NULL, y = "RMSE", title = "RF performance (RMSE) across datasets") +
+  theme_bw()
+
+# Test R²
+r2_long <- perf_all %>%
+  select(outcome, dataset, seed, any_of("Rsquared")) %>%
+  filter(!is.na(Rsquared))
+
+p_r2 <- ggplot(r2_long, aes(dataset, Rsquared)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.4, color = "red") +
+  geom_jitter(width = 0.2, alpha = 0.4, color = "red") +
+  facet_wrap(~outcome, scales = "free_y") +
+  labs(x = NULL, y = "Test R²", title = "RF performance (Test R²) across datasets") +
+  theme_bw()
+
 p_rmse
 p_r2
 
+
+# Redone R2 plot 
+# labels for outcomes
+outcome_labs <- c(
+  FEV1_pred_T1 = "FEV1",
+  FVC_pred_T1 = "FVC",
+  FEV1FVC_pred_T1 = "FEV1/FVC",
+  MMEF_pred_T1 = "MMEF"
+)
+
+# long df for plotting
+r2_long <- perf_all %>%
+  dplyr::select(outcome, dataset, method, seed, any_of("Rsquared")) %>%
+  dplyr::filter(!is.na(Rsquared)) %>%
+  mutate(
+    outcome = factor(outcome, levels = names(outcome_labs)),
+    dataset = factor(dataset, levels = c("NP", "OP", "Combined"))
+  )
+
+# performance summary for median labels per facet
+perf_summary <- perf_all %>%
+  group_by(outcome, dataset) %>%
+  summarise(
+    test_R2_median = median(Rsquared, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    outcome = factor(outcome, levels = names(outcome_labs)),
+    dataset = factor(dataset, levels = c("NP", "OP", "Combined")),
+    label = paste0("median R\u00B2 = ", sprintf("%.2f", test_R2_median))
+  )
+
+# RF R² plot (elastic-net style)
+p_r2_rf <- ggplot(r2_long, aes(x = method, y = Rsquared, color = dataset, fill = dataset)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.25) +
+  geom_jitter(width = 0.2, alpha = 0.4) +
+  # median label in top-left of each facet
+  geom_text(
+    data = perf_summary,
+    aes(label = label),
+    x = -Inf, y = Inf,
+    hjust = -0.05, vjust = 2,
+    inherit.aes = FALSE,
+    size = 2.3,
+    color = "black"
+  ) +
+  facet_grid2(
+    outcome ~ dataset, scales = "free_y",
+    labeller = labeller(outcome = outcome_labs),
+    strip = strip_themed(
+      background_x = list(
+        NP = element_rect(fill = "#7987af", color = NA),
+        OP = element_rect(fill = "#7c674d", color = NA),
+        Combined = element_rect(fill = "grey40", color = NA)
+      ),
+      text_x = element_text(color = "white", face = "bold")
+    )
+  ) +
+  scale_color_manual(values = c(NP = "#7987af", OP = "#7c674d", Combined = "grey40")) +
+  scale_fill_manual(values  = c(NP = "#7987af", OP = "#7c674d", Combined = "grey40")) +
+  labs(x = NULL, y = "Test R²", title = "RF performance (Test R²) across datasets") +
+  theme_bw() +
+  theme(legend.position = "none")
+
+p_r2_rf
+
+# Identify best-performing (outcome x dataset) by median Test R²
+summary_perf <- perf_all %>%
+  group_by(outcome, dataset) %>%
+  summarise(
+    n_splits = n(),
+    test_R2_median   = median(Rsquared, na.rm = TRUE),
+    test_R2_IQR_low  = quantile(Rsquared, 0.25, na.rm = TRUE),
+    test_R2_IQR_high = quantile(Rsquared, 0.75, na.rm = TRUE),
+    test_RMSE_median   = median(RMSE, na.rm = TRUE),
+    test_RMSE_IQR_low  = quantile(RMSE, 0.25, na.rm = TRUE),
+    test_RMSE_IQR_high = quantile(RMSE, 0.75, na.rm = TRUE),
+    cv_RMSE_median   = median(cv_metric_RMSE, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+overall_best <- summary_perf %>%
+  arrange(desc(test_R2_median), test_RMSE_median) %>%
+  dplyr::slice(1)
+
+overall_best # Again the best model is for FVC % predicted and the NP variables
+
+# Top features plot for a chosen outcome/dataset (RF importance)
+outcome_plot <- "FVC_pred_T1"
+dataset_plot <- "NP"      
+top_n <- 15
+
+# Read models + feature importance for this outcome/dataset
+mods <- readRDS(file.path(out_dir, glue("models_{outcome_plot}_{dataset_plot}_rf.rds")))
+
+# Extract feature importance per split
+# Featrure importance is computed based on RMSE
+get_rf_importance <- function(one_run) {
+  fi <- one_run$feature_importance
+  if (is.null(fi) || nrow(fi) == 0) return(NULL)
+
+  # Your mikropml output uses: feat + perf_metric_diff (+ pvalue, lower, upper)
+  if (!all(c("feat", "perf_metric_diff") %in% names(fi))) {
+    stop("Unexpected feature_importance columns: ", paste(names(fi), collapse = ", "))
+  }
+
+  fi %>%
+    transmute(
+      feature = feat,
+      importance = as.numeric(perf_metric_diff),
+      pvalue = if ("pvalue" %in% names(fi)) pvalue else NA_real_,
+      lower  = if ("lower"  %in% names(fi)) lower  else NA_real_,
+      upper  = if ("upper"  %in% names(fi)) upper  else NA_real_,
+      perf_metric = if ("perf_metric" %in% names(fi)) perf_metric else NA_character_,
+      perf_metric_name = if ("perf_metric_name" %in% names(fi)) perf_metric_name else NA_character_
+    )
+}
+
+imp_df <- map_dfr(mods, get_rf_importance, .id = "split")
+
+#  Label helpers
+get_niche <- function(x) {
+  case_when(
+    str_starts(x, "NP_") ~ "NP",
+    str_starts(x, "OP_") ~ "OP",
+    TRUE ~ "Other"
+  )
+}
+
+format_feature_label <- function(x) {
+
+    if (str_detect(x, "^(NP_|OP_)")) {
+    x2 <- str_remove(x, "^(NP_|OP_)")
+    parts <- str_split(x2, "_", simplify = TRUE)
+    parts <- parts[parts != ""]
+    last <- parts[length(parts)]
+    is_num <- str_detect(last, "^[0-9]+$")
+
+    if (is_num && length(parts) >= 2) {
+      tax <- paste(parts[-length(parts)], collapse = " ")
+      return(paste0("<i>", tax, "</i> (", last, ")"))
+    } else {
+      tax <- str_replace_all(x2, "_", " ")
+      return(paste0("<i>", tax, "</i>"))
+    }
+  }
+
+  # non-taxa covariates / dummy vars: remove underscores, no italics
+  str_replace_all(x, "_", " ")
+}
+
+
+# present as ΔRMSE = RMSE_perturbed - RMSE_original
+# If your perf_metric_diff is the opposite (original - perturbed), flip the sign.
+# Most often, negative values for "important" features implies it is original - perturbed.
+imp_df2 <- imp_df %>%
+  mutate(delta_RMSE = -importance)  # flip sign to become "worse when removed = positive"
+
+# Summarise across splits + order by median ΔRMSE
+imp_sum <- imp_df2 %>%
+  group_by(feature) %>%
+  summarise(
+    med = median(delta_RMSE, na.rm = TRUE),
+    lo  = quantile(delta_RMSE, 0.025, na.rm = TRUE),
+    hi  = quantile(delta_RMSE, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(med))   # now descending matches x-axis (bigger ΔRMSE at top)
+
+imp_sum_clean <- imp_sum %>%
+  mutate(feature_clean = case_when(
+    str_detect(feature, "^smoke_status_T0") ~ "Smoking status (baseline)",
+    TRUE ~ feature
+  )) %>%
+  group_by(feature_clean) %>%
+  summarise(
+    med = median(med),
+    lo  = median(lo),
+    hi  = median(hi),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(med))
+
+
+
+top_imp <- imp_sum %>%
+  slice_head(n = top_n) %>%
+  mutate(
+    niche = get_niche(feature),
+    label = map_chr(feature, format_feature_label)
+  ) %>%
+  mutate(label = fct_reorder(label, med, .desc = TRUE))  # order matches x-axis
+
+# Plot (ΔRMSE)
+top_features_rf <- ggplot(top_imp, aes(x = med, y = label, color = niche)) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.2) +
+  geom_point(alpha = 0.85, size = 3) +
+  scale_color_manual(
+    values = c(NP = "#7987af", OP = "#7c674d", Other = "grey40"),
+    breaks = c("NP", "OP", "Other")
+  ) +
+  scale_y_discrete(limits = rev) +   # <-- puts highest at the top
+  theme_bw() +
+  theme(
+    axis.text.y = ggtext::element_markdown(),
+    legend.title = element_blank()
+  ) +
+  labs(
+    x = expression(Delta*"RMSE when feature perturbed (median ± 95% across splits)"),
+    y = NULL,
+    title = paste0("Top features by impact (RF): ", outcome_plot, " (", dataset_plot, ")")
+  )
+
+top_features_rf
+
+# Save plots 
+ggsave(file.path(out_dir, "Fig_RF_RMSE_all_outcomes.svg"), p_rmse, width = 12, height = 8)
+ggsave(file.path(out_dir, "Fig_RF_R2_all_outcomes.svg"), p_r2_rf, width = 4, height = 5)
+ggsave(file.path(out_dir, glue("Fig_RF_top_features_{outcome_plot}_{dataset_plot}.svg")),
+      top_features_rf, width = 9, height = 5)
+
+
+
 ```
 
+### R2 plots from elastic net and RF
+```{r}
+# Combine R² plot: glmnet vs random forest in the same facets
+outcome_labs <- c(
+  FEV1_pred_T1 = "FEV1",
+  FVC_pred_T1 = "FVC",
+  FEV1FVC_pred_T1 = "FEV1/FVC",
+  MMEF_pred_T1 = "MMEF"
+)
+
+
+perf_glmnet <- readr::read_csv("../Output/Longitudinal/Machine_learning/Elastic_net/perf_all_outcomes_all_datasets_GLMNET.csv") %>%
+  mutate(model = "Elastic net")
+
+perf_rf <- readr::read_csv("../Output/Longitudinal/Machine_learning/Random_forest/perf_all_outcomes_all_datasets_RF.csv") %>%
+  mutate(model = "Random forest")
+
+perf_both <- bind_rows(perf_glmnet, perf_rf) %>%
+  filter(!is.na(Rsquared)) %>%
+  mutate(
+    outcome = factor(outcome, levels = names(outcome_labs)),
+    dataset = factor(dataset, levels = c("NP", "OP", "Combined")),
+    model   = factor(model, levels = c("Elastic net", "Random forest"))
+  )
+
+# Summary medians per facet x model for annotation
+annot_df <- perf_both %>%
+  group_by(outcome, dataset, model) %>%
+  summarise(test_R2_median = median(Rsquared, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    label = paste0(ifelse(model == "Elastic net", "EN", "RF"),
+                   " median R\u00B2 = ", sprintf("%.2f", test_R2_median))
+  ) %>%
+  arrange(outcome, dataset, model) %>%
+  group_by(outcome, dataset) %>%
+  summarise(label = paste(label, collapse = "\n"), .groups = "drop")
+
+# Main plot
+p_r2_both <- ggplot(perf_both, aes(x = model, y = Rsquared, color = dataset, fill = dataset)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.25, width = 0.7) +
+  geom_jitter(width = 0.15, alpha = 0.35, size = 1) +
+  geom_text(
+    data = annot_df,
+    aes(label = label),
+    x = -Inf, y = Inf,
+    hjust = -0.05, vjust = 1.5,
+    inherit.aes = FALSE,
+    size = 2.3,
+    color = "black",
+    lineheight = 0.95
+  ) +
+  facet_grid2(
+    outcome ~ dataset, scales = "free_y",
+    labeller = labeller(outcome = outcome_labs),
+    strip = strip_themed(
+      background_x = list(
+        NP = element_rect(fill = "#7987af", color = NA),
+        OP = element_rect(fill = "#7c674d", color = NA),
+        Combined = element_rect(fill = "grey40", color = NA)
+      ),
+      text_x = element_text(color = "white", face = "bold")
+    )
+  ) +
+  scale_color_manual(values = c(NP = "#7987af", OP = "#7c674d", Combined = "grey40")) +
+  scale_fill_manual(values  = c(NP = "#7987af", OP = "#7c674d", Combined = "grey40")) +
+  labs(x = NULL, y = "Test R²", title = "Performance (Test R²) across datasets") +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1)  )
+
+p_r2_both
+
+ggsave("../Output/Longitudinal/Machine_learning/Fig_R2_glmnet_vs_rf.svg", p_r2_both, width = 4.5, height = 5)
+
+```
 
 
