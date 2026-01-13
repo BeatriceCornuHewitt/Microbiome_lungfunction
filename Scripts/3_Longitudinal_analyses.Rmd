@@ -5122,27 +5122,36 @@ imp_sum <- imp_df2 %>%
   ) %>%
   arrange(desc(med))   # now descending matches x-axis (bigger ΔRMSE at top)
 
-imp_sum_clean <- imp_sum %>%
+# imp_df2 is your split-level df with delta_RMSE
+# (i.e. one row per split per feature)
+imp_df_clean <- imp_df2 %>%
   mutate(feature_clean = case_when(
-    str_detect(feature, "^smoke_status_T0") ~ "Smoking status (baseline)",
+    str_detect(feature, "smoke_status_T0") ~ "Smoking status (baseline)",
+    str_detect(feature, "season_microbiome_sampling") ~ "Sampling season (baseline)",
+    str_detect(feature, "gender_T0") ~ "Sex (baseline)",
+    str_detect(feature, "age_T0") ~ "Age (baseline)",
     TRUE ~ feature
   )) %>%
+  group_by(split, feature_clean) %>%
+  summarise(delta_RMSE = sum(delta_RMSE, na.rm = TRUE), .groups = "drop")
+# ^ sum is reasonable here because you are combining multiple dummy/contrast columns
+#   that represent the SAME original variable within a split.
+
+imp_sum_clean <- imp_df_clean %>%
   group_by(feature_clean) %>%
   summarise(
-    med = median(med),
-    lo  = median(lo),
-    hi  = median(hi),
+    med = median(delta_RMSE, na.rm = TRUE),
+    lo  = quantile(delta_RMSE, 0.025, na.rm = TRUE),
+    hi  = quantile(delta_RMSE, 0.975, na.rm = TRUE),
     .groups = "drop"
   ) %>%
   arrange(desc(med))
 
-
-
-top_imp <- imp_sum %>%
+top_imp <- imp_sum_clean %>%
   slice_head(n = top_n) %>%
   mutate(
-    niche = get_niche(feature),
-    label = map_chr(feature, format_feature_label)
+    niche = get_niche(feature_clean),
+    label = map_chr(feature_clean, format_feature_label)
   ) %>%
   mutate(label = fct_reorder(label, med, .desc = TRUE))  # order matches x-axis
 
@@ -5170,12 +5179,10 @@ top_features_rf <- ggplot(top_imp, aes(x = med, y = label, color = niche)) +
 top_features_rf
 
 # Save plots 
-ggsave(file.path(out_dir, "Fig_RF_RMSE_all_outcomes.svg"), p_rmse, width = 12, height = 8)
+ggsave(file.path(out_dir, "Fig_RF_RMSE_all_outcomes.svg"), p_rmse, width = 4, height = 5)
 ggsave(file.path(out_dir, "Fig_RF_R2_all_outcomes.svg"), p_r2_rf, width = 4, height = 5)
 ggsave(file.path(out_dir, glue("Fig_RF_top_features_{outcome_plot}_{dataset_plot}.svg")),
-      top_features_rf, width = 9, height = 5)
-
-
+      top_features_rf, width = 6, height = 5)
 
 ```
 
