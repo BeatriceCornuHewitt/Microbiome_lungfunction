@@ -82,7 +82,7 @@ VGO3_NPOP_dedup <- prune_samples(keep_samples, VGO3_NPOP)
 
 # Confirm counts
 cat("Samples before:", nsamples(VGO3_NPOP), "\n") # 2397 
-cat("Samples after deduplication:", nsamples(VGO3_NPOP_dedup), "\n") # 2364 
+cat("Samples after deduplication:", nsamples(VGO3_NPOP_dedup), "\n") # 2331 
 
 
 # Realised that some niche values are assigned as NP or OP but they are actually the blanks for these niches 
@@ -157,8 +157,9 @@ cat("Remaining NAs in niche:", sum(is.na(sample_data(VGO3_NPOP_dedup)$niche)), "
 
 
 # Check remaining unique participants in NP and OP niches (population CP)
-length(unique(VGO3_NPOP_dedup@sam_data$VGO3_ID[VGO3_NPOP_dedup@sam_data$niche == "NP" & VGO3_NPOP_dedup@sam_data$population == "CP"])) # 956
-length(unique(VGO3_NPOP_dedup@sam_data$VGO3_ID[VGO3_NPOP_dedup@sam_data$niche == "OP" & VGO3_NPOP_dedup@sam_data$population == "CP"])) # 954
+length(unique(VGO3_NPOP_dedup@sam_data$VGO3_ID[VGO3_NPOP_dedup@sam_data$niche == "NP" & VGO3_NPOP_dedup@sam_data$population == "CP"])) # 955
+
+length(unique(VGO3_NPOP_dedup@sam_data$VGO3_ID[VGO3_NPOP_dedup@sam_data$niche == "OP" & VGO3_NPOP_dedup@sam_data$population == "CP"])) # 922
 
 # Remove taxa with 0 sum
 # VGO3_NPOP_dedup <- prune_taxa(taxa_sums(VGO3_NPOP_dedup) > 0, VGO3_NPOP_dedup) # 2434  samples, 24134 taxa
@@ -169,7 +170,7 @@ sample_data(VGO3_NPOP_dedup)$dataset <- "VGO3_NPOP"
 # Add 'timepoint' column to each phyloseq object's sample_data
 sample_data(VGO3_NPOP_dedup)$timepoint <- "T1"
 
-
+# Clean up metadata
 # filter metadata in each dataset
 names(VGO3_NPOP_dedup@sam_data) # keep: sample_identifier, DI.Run, qPCR, VGO3_ID,  dataset, niche, timepoint
 
@@ -180,7 +181,6 @@ sample_data(VGO3_NPOP_dedup) <- sample_data(VGO3_NPOP_dedup)[, c("sample_identif
 colnames(sample_data(VGO3_NPOP_dedup))[
   colnames(sample_data(VGO3_NPOP_dedup)) == "sample_identifier"
 ] <- "sample_ID"
-
 ```
 # Save
 ```{r}
@@ -923,6 +923,30 @@ ps_meta_joined <- ps4_meta %>%
     by = c("VGO3_ID")
   )
 
+sum(is.na(ps_meta_joined$Age)) # 207
+sum(is.na(metadata_VGO3$Age)) # 3 missing
+
+
+unmatched_ids <- ps_meta_joined %>%
+  filter(is.na(Age)) %>%                # or another metadata-only variable
+  distinct(VGO3_ID)
+
+nrow(unmatched_ids)
+write.csv(unmatched_ids,"../Output/Cross_sectional/Participant_data/unmatched_ids.csv")
+write.csv 
+
+ps4_meta$VGO3_ID <- as.character(ps4_meta$VGO3_ID)
+metadata_VGO3$VGO3_ID <- as.character(metadata_VGO3$VGO3_ID)
+
+anti_join(
+  ps4_meta %>% distinct(VGO3_ID),
+  metadata_VGO3 %>% distinct(VGO3_ID),
+  by = "VGO3_ID"
+) %>% nrow() # 111 VGO3_IDs that exist in my microbiome phyloseq object are not present at all in the spirometry dataset (did not have spirometry done at T1)
+
+ps4_meta$VGO3_ID <- trimws(as.character(ps4_meta$VGO3_ID))
+metadata_VGO3$VGO3_ID <- trimws(as.character(metadata_VGO3$VGO3_ID))
+
 # Remove column X from dataframe
 ps_meta_joined$X <- NULL
 
@@ -1107,6 +1131,11 @@ saveRDS(ps_rarefied, "../Output/Cross_sectional/Phyloseq/ps_final_rarefied_VGO3.
 
 # Population summary table
 ```{r}
+# Read in spiro data 
+VGO3_metadata <- read.csv("../Output/Cross_sectional/Participant_data/VGO3_data.csv"
+)
+VGO3_metadata$VGO3_ID <- as.character(VGO3_metadata$VGO3_ID)
+
 # Add the variable RespDx to the sam_data 
 make_respdx <- function(meta) {
   to_yesno <- function(x) dplyr::case_when(
@@ -1129,14 +1158,39 @@ sd <- sample_data(ps4_m) %>%
   data.frame(check.names = FALSE, stringsAsFactors = FALSE) %>%
   filter(niche %in% c("NP","OP"))
 
+# IDs with microbiome
+ids_micro <- sd %>% distinct(VGO3_ID)
+
+# IDs with cleaned spirometry (from VGO3_metadata)
+ids_spiro <- VGO3_metadata %>%
+  distinct(VGO3_ID)
+
+# Intersection: microbiome + spirometry
+ids_table1 <- inner_join(ids_micro, ids_spiro, by = "VGO3_ID")
+
+cat("Table 1 participants (unique IDs):", nrow(ids_table1), "\n") #853
+
 sd_vgo3 <- sd %>%
-  mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%   # prefer NP (1) over OP (2)
-  arrange(VGO3_ID, niche_rank) %>%                         # put NP first within each ID
-  filter(!duplicated(VGO3_ID)) %>%                         # keep first row per VGO3_ID
+  semi_join(ids_table1, by = "VGO3_ID") %>%   # keep only intersection IDs
+  mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%  # prefer NP
+  arrange(VGO3_ID, niche_rank) %>%
+  filter(!duplicated(VGO3_ID)) %>%
   select(-niche_rank)
 
+nrow(sd_vgo3)  # 853
+
+# identify overlapping columns automatically
+overlap_cols <- intersect(names(sd_vgo3), names(VGO3_metadata))
+overlap_cols
+# drop overlaps from sd_vgo3 (except the join key)
+sd_vgo3 <- sd_vgo3 %>%
+  select(-all_of(setdiff(overlap_cols, "VGO3_ID")))
+
+# Join datasets together now
+sd_vgo3 <- sd_vgo3 %>%
+  left_join(VGO3_metadata, by = "VGO3_ID")
+
 ## Just select the variables for Table 1
-length(sd_vgo3)
 df_vgo3 <- sd_vgo3 %>%
   select(
     Age, Gender, Height, Weight, BMI, Ethnicity, Education_level,RespDx,
@@ -1144,6 +1198,7 @@ df_vgo3 <- sd_vgo3 %>%
     Smoking_status, Farm_childhood, Farm_visit_lastyr, T0_wkprior_NH3, T1_wkprior_NH3, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
 
+miss_n <- function(x) sum(is.na(x))
 # Helper functions for summary
 cont_summary <- function(x) {
   x <- x[!is.na(x)]
@@ -1151,8 +1206,8 @@ cont_summary <- function(x) {
   m  <- mean(x)
   s  <- sd(x)
   q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
-  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]",
-          m, s, q[2], q[1], q[3])
+  sprintf("%.3f (%.3f)\n%.3f [%.3f, %.3f]",
+        m, s, q[2], q[1], q[3])
 }
 
 cat_summary <- function(x) {
@@ -1163,8 +1218,8 @@ cat_summary <- function(x) {
   out <- sapply(levs, function(lv) {
     n <- sum(x == lv, na.rm = TRUE)
     pct <- if (n_tot > 0) 100 * n / n_tot else NA_real_
-    sprintf("%s: %d (%.1f%%)", lv, n, pct)
-  }, USE.NAMES = FALSE)
+    sprintf("%s: %d (%.3f%%)", lv, n, pct)
+    }, USE.NAMES = FALSE)
   paste(out, collapse = "\n")
 }
 
@@ -1174,9 +1229,11 @@ cat_summary <- function(x) {
 rows_vgo3 <- tibble::tibble(
   Variable = c(
     "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "RespDx", "Education_level",
-    "Lung_med", "Asthma_med_current", "Antibiotics_lastmonth", "Antibiotics_lastyr","Pneumonia_lastyr", "Asthma_ever", "Asthma_doc_diag", "Asthma_attk_lastyr", "COPD_emphy_doc_diag",
-    "Smoking_status", "Farm_childhood", "Farm_visit_lastyr","T0_wkprior_NH3", "T1_wkprior_NH3","FEV1", "FVC", "FEV1_FVC", "FEF25_75", 
-    "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "FEF25_75_pred"
+    "Lung_med", "Asthma_med_current", "Antibiotics_lastmonth", "Antibiotics_lastyr","Pneumonia_lastyr",
+    "Asthma_ever", "Asthma_doc_diag", "Asthma_attk_lastyr", "COPD_emphy_doc_diag",
+    "Smoking_status", "Farm_childhood", "Farm_visit_lastyr","T0_wkprior_NH3", "T1_wkprior_NH3",
+    "FEV1", "FVC", "FEV1_FVC", "MMEF",
+    "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"
   ),
   `VGO3` = c(
     cont_summary(df_vgo3$Age),
@@ -1209,6 +1266,38 @@ rows_vgo3 <- tibble::tibble(
     cont_summary(df_vgo3$FVC_pred),
     cont_summary(df_vgo3$FEV1FVC_pred),
     cont_summary(df_vgo3$MMEF_pred)
+  ),
+  `Missing (n)` = c(
+    miss_n(df_vgo3$Age),
+    miss_n(df_vgo3$Gender),
+    miss_n(df_vgo3$Height),
+    miss_n(df_vgo3$Weight),
+    miss_n(df_vgo3$BMI),
+    miss_n(df_vgo3$Ethnicity),
+    miss_n(df_vgo3$RespDx),
+    miss_n(df_vgo3$Education_level),
+    miss_n(df_vgo3$Lung_med),
+    miss_n(df_vgo3$Asthma_med_current),
+    miss_n(df_vgo3$Antibiotics_lastmonth),
+    miss_n(df_vgo3$Antibiotics_lastyr),
+    miss_n(df_vgo3$Pneumonia_lastyr),
+    miss_n(df_vgo3$Asthma_ever),
+    miss_n(df_vgo3$Asthma_doc_diag),
+    miss_n(df_vgo3$Asthma_attk_lastyr),
+    miss_n(df_vgo3$COPD_emphy_doc_diag),
+    miss_n(df_vgo3$Smoking_status),
+    miss_n(df_vgo3$Farm_childhood),
+    miss_n(df_vgo3$Farm_visit_lastyr),
+    miss_n(df_vgo3$T0_wkprior_NH3),
+    miss_n(df_vgo3$T1_wkprior_NH3),
+    miss_n(df_vgo3$FEV1),
+    miss_n(df_vgo3$FVC),
+    miss_n(df_vgo3$FEV1_FVC),
+    miss_n(df_vgo3$MMEF),
+    miss_n(df_vgo3$FEV1_pred),
+    miss_n(df_vgo3$FVC_pred),
+    miss_n(df_vgo3$FEV1FVC_pred),
+    miss_n(df_vgo3$MMEF_pred)
   )
 )
 
@@ -1218,7 +1307,7 @@ writexl::write_xlsx(
   path = "../Output/Cross_sectional/Participant_data/Table1_VGO3.xlsx"
 )
 
-median(sd_vgo3$Observed)
+
 ```
 
 # ANALYSES
@@ -1226,14 +1315,13 @@ Firstly we look at the relationship between the microbiome and lung function cro
 # Data 
 ```{r}
 ps_final_VGO3 <- ps4_m
+
+ps_final_VGO3
 # phyloseq-class experiment-level object
 # otu_table()   OTU Table:         [ 16030 taxa and 1692 samples ]
 # sample_data() Sample Data:       [ 1692 samples by 53 sample variables ]
 # tax_table()   Taxonomy Table:    [ 16030 taxa by 9 taxonomic ranks ]
 # refseq()      DNAStringSet:      [ 16030 reference sequences ]
-
-sum(ps_final_VGO3@sam_data$niche=="NP")
-sum(ps_final_VGO3@sam_data$niche=="OP")
 
 # Count number of ASVs, phyla, classes, orders, families, genera, species for the entire dataset
 # total ASVs
@@ -1463,6 +1551,107 @@ write_xlsx(results, "../Output/Variable_associations/Covariate_association_resul
 
 # Alpha diversity
 We run linear models to assess the association between lung function values (% predicted lung function measures (FEV1, FVC, FEV1/FVC) and alpha diversity (Observed, Shannon, Simpson)
+
+## Violin plot of alpha diversity
+```{r}
+alpha_metrics <- c("Observed", "Shannon", "Simpson")
+
+# Combine and label niche
+alpha_long <- bind_rows(
+  meta_vgo3_np %>%
+    mutate(niche = "NP") %>%
+    select(any_of(c("niche", alpha_metrics))),
+  meta_vgo3_op %>%
+    mutate(niche = "OP") %>%
+    select(any_of(c("niche", alpha_metrics)))
+) %>%
+  # Coerce metrics to numeric safely
+  mutate(across(any_of(alpha_metrics), ~ suppressWarnings(as.numeric(.x)))) %>%
+  pivot_longer(
+    cols = any_of(alpha_metrics),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  filter(is.finite(value)) %>%
+  mutate(
+    niche  = factor(niche, levels = c("NP", "OP")),
+    metric = factor(metric, levels = alpha_metrics)
+  )
+
+# Harmonious niche colours
+niche_cols <- c(
+  NP = "#7987AF",  # blue
+  OP = "#7c674d"   # orange
+)
+
+base_theme <- theme_minimal(base_size = 12) +
+  theme(
+    panel.grid = element_blank(),
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title.x = element_blank()
+  )
+
+base_theme <- theme_minimal(base_size = 12) +
+  theme(
+    # Grid lines
+    panel.grid.major = element_line(color = "grey85", linewidth = 0.4),
+    panel.grid.minor = element_line(color = "grey92", linewidth = 0.25),
+
+    # Black border around each facet panel
+    panel.border = element_rect(
+      colour = "black",
+      fill = NA,
+      linewidth = 0.7
+    ),
+
+    strip.text = element_text(face = "bold"),
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.title.x = element_blank()
+  )
+
+
+p_violin <- ggplot(alpha_long, aes(x = niche, y = value, fill = niche)) +
+  # Violin (slightly more transparent)
+  geom_violin(trim = FALSE, alpha = 0.55, linewidth = 0.35, colour = "black") +
+
+  # Points first (so boxplot is on top); coloured by niche
+  geom_jitter(
+    aes(colour = niche),
+    width = 0.10, alpha = 0.6, size = 1.2
+  ) +
+
+  # Boxplot on top, white fill so it pops inside the violin
+  geom_boxplot(
+    width = 0.16, outlier.shape = NA,
+    fill = "white", colour = "black",
+    linewidth = 0.45, alpha = 1
+  ) +
+
+  facet_wrap(~ metric, scales = "free_y", nrow = 1) +
+  scale_fill_manual(values = niche_cols) +
+  scale_colour_manual(values = niche_cols) +
+  labs(
+    title = "Alpha diversity stratified by niche (NP vs OP)",
+    y = "Alpha diversity value"
+  ) +
+  base_theme +
+  guides(fill = "none", colour = "none")
+
+print(p_violin)
+
+# Optional save
+outdir <- "../Output/Cross_sectional/Alpha_diversity/Violinplots"
+dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(
+  filename = file.path(outdir, "alpha_diversity_violin_by_niche.svg"),
+  plot = p_violin,
+  width = 6,
+  height = 3
+)
+```
+
 ## Visualise associations between lung function variables and diversity
 ```{r}
 # Input
@@ -1627,10 +1816,10 @@ pretty_alpha <- c(
   "Simpson_z"  = "Simpson diversity"
 )
 pretty_lung <- c(
-  "FEV1_pred_decline_z"     = "FEV1 % predicted (decline)",
-  "FVC_pred_decline_z"      = "FVC % predicted (decline)",
-  "FEV1FVC_pred_decline_z"  = "FEV1/FVC % predicted (decline)",
-  "MMEF_pred_decline_z"     = "MMEF % predicted (decline)"
+  "FEV1_pred_decline_z"     = "FEV1 % predicted",
+  "FVC_pred_decline_z"      = "FVC % predicted",
+  "FEV1FVC_pred_decline_z"  = "FEV1/FVC % predicted",
+  "MMEF_pred_decline_z"     = "MMEF % predicted"
 )
 
 # ---- Your RespDx builder (used only if RespDx not present) ----
@@ -1853,10 +2042,10 @@ readr::write_csv(
 int_df <- res_labeled %>%
   mutate(
     lung_var = factor(lung_var, levels = c(
-      "FEV1 % predicted (decline)",
-      "FVC % predicted (decline)",
-      "FEV1/FVC % predicted (decline)",
-      "MMEF % predicted (decline)"
+      "FEV1 % predicted",
+      "FVC % predicted",
+      "FEV1/FVC % predicted",
+      "MMEF % predicted"
     )),
     alpha_metric = factor(alpha_metric, levels = c(
       "Observed richness","Shannon diversity","Simpson diversity"
@@ -1874,7 +2063,7 @@ heat_int <- ggplot(int_df, aes(x = alpha_metric, y = lung_var, fill = neglog10_p
         axis.text.x = element_text(angle = 30, hjust = 1),
         strip.text = element_text(face = "bold")) +
   labs(title = "Interaction test (RespDx × lung function) — should you stratify?",
-       x = "Alpha diversity metric", y = "Lung function metric (decline)")
+       x = "Alpha diversity metric", y = "Lung function metric")
 
 ggsave(file.path(out_dir, "alpha_diversity_interaction_heatmap.svg"),
        heat_int, width = 7.5, height = 3.8)
@@ -1899,7 +2088,7 @@ test_vars <- c(
   "FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred"
 )
 
-# Pretty labels
+# Pretty labels (remove "(decline)" wording)
 pretty_labels <- c(
   "Age"="Age","Gender"="Gender (Female vs Male)","BMI"="Body Mass Index",
   "season_microbiome_sampling"="Season of sampling","Education_level"="Education level",
@@ -1909,8 +2098,8 @@ pretty_labels <- c(
   "Pneumonia_lastyr"="Pneumonia in last year",
   "Antibiotics_lastmonth"="Antibiotics last month","Antibiotics_lastyr"="Antibiotics last year",
   "Farm_childhood"="Grew up on a farm","T1_wkprior_NH3"="NH3 week prior to sampling",
-  "FEV1_pred"="FEV1 % predicted (decline)","FVC_pred"="FVC % predicted (decline)",
-  "FEV1FVC_pred"="FEV1/FVC % predicted (decline)","MMEF_pred"="MMEF % predicted (decline)",
+  "FEV1_pred"="FEV1 % predicted","FVC_pred"="FVC % predicted",
+  "FEV1FVC_pred"="FEV1/FVC % predicted","MMEF_pred"="MMEF % predicted",
   "Observed"="Observed richness","Shannon"="Shannon diversity","Simpson"="Simpson diversity"
 )
 
@@ -1919,11 +2108,8 @@ desired_order <- c(
   "Smoking status","Respiratory disease (COPD/asthma)","Pneumonia in last year","COVID-19 in last month","Atopic",
   "Corticosteroid inhaler (last year)","Antibiotics last month","Antibiotics last year",
   "Grew up on a farm","NH3 week prior to sampling",
-  "FEV1 % predicted (decline)","FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)","MMEF % predicted (decline)"
+  "FEV1 % predicted","FVC % predicted","FEV1/FVC % predicted","MMEF % predicted"
 )
-
-lung_fun_cont <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
 
 # ---- Preprocess: coerce types; ensure existing RespDx; z-score alpha ----
 preprocess_dataset <- function(df){
@@ -1948,7 +2134,6 @@ preprocess_dataset <- function(df){
                                levels = c("Winter","Spring","Summer","Autumn"), ordered = TRUE)
     )
 
-  # Use existing RespDx only
   if (!"RespDx" %in% names(df)) stop("RespDx not found in data; please add it first.")
   df$RespDx <- factor(tolower(as.character(df$RespDx)), levels = c("no","yes"))
 
@@ -2005,9 +2190,6 @@ univ_all <- dplyr::bind_rows(
   run_univ_unadjusted(dataset_list$VGO3_OP, "VGO3_OP")
 )
 
-# Optional: flip sign for lung (higher = worse)
-univ_all <- univ_all %>% dplyr::mutate(estimate = dplyr::if_else(variable %in% lung_fun_cont, -estimate, estimate))
-
 # Labels + BH (within dataset × alpha metric)
 univ_all <- univ_all %>%
   dplyr::mutate(
@@ -2044,11 +2226,11 @@ p_univ <- ggplot2::ggplot(plot_df, aes(x = alpha_metric, y = variable_lab, fill 
   ggplot2::labs(x="Alpha diversity metric", y="Predictor")
 
 dir.create("../Output/Cross_sectional/Alpha_diversity/Univariable/Non_stratified", recursive=TRUE, showWarnings=FALSE)
-ggplot2::ggsave("../Output/Cross_sectional/Alpha_diversity/Univariable/Non_stratified/Univariable_alpha_heatmap_nonstratified.svg",
+ggplot2::ggsave("../Output/Cross_sectional/Alpha_diversity/Univariable/Non_stratified/Univariable_alpha_heatmap_nonstratified_noneg.svg",
                 p_univ, width=7.5, height=5)
 
 readr::write_csv(univ_all,
-  "../Output/Cross_sectional/Alpha_diversity/Univariable/Non_stratified/Univariable_alpha_results_nonstratified.csv")
+  "../Output/Cross_sectional/Alpha_diversity/Univariable/Non_stratified/Univariable_alpha_results_nonstratified_noneg.csv")
 
 ```
 ### Multivariable
@@ -2059,10 +2241,10 @@ lung_fun_cont <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
 core_covariates <- c("Age","Gender","Smoking_status","season_microbiome_sampling")
 
 pretty_alpha <- c("Observed_z"="Observed richness","Shannon_z"="Shannon diversity","Simpson_z"="Simpson diversity")
-pretty_lung  <- c("FEV1_pred_decline_z"="FEV1 % predicted (decline)",
-                  "FVC_pred_decline_z"="FVC % predicted (decline)",
-                  "FEV1FVC_pred_decline_z"="FEV1/FVC % predicted (decline)",
-                  "MMEF_pred_decline_z"="MMEF % predicted (decline)")
+pretty_lung  <- c("FEV1_pred_z"="FEV1 % predicted",
+                  "FVC_pred_z"="FVC % predicted",
+                  "FEV1FVC_pred_z"="FEV1/FVC % predicted",
+                  "MMEF_pred_z"="MMEF % predicted")
 
 preprocess_dataset <- function(df){
   df <- df %>%
@@ -2082,9 +2264,6 @@ preprocess_dataset <- function(df){
                               levels=c("Winter","Spring","Summer","Autumn"), ordered=TRUE)
     )
 
-  if (!"RespDx" %in% names(df)) stop("RespDx not found in data; please add it first.")
-  df$RespDx <- factor(tolower(as.character(df$RespDx)), levels = c("no","yes"))
-
   df <- df %>%
     dplyr::mutate(
       Observed_z = as.numeric(scale(Observed)),
@@ -2092,9 +2271,9 @@ preprocess_dataset <- function(df){
       Simpson_z  = as.numeric(scale(Simpson))
     )
 
-  # z-scored "decline" lung vars (higher = worse)
+  # z-scored lung vars (NO sign flip)
   for (lf in lung_fun_cont) if (lf %in% names(df))
-    df[[paste0(lf, "_decline_z")]] <- as.numeric(scale(-1 * df[[lf]]))
+    df[[paste0(lf, "_z")]] <- as.numeric(scale(df[[lf]]))
 
   df
 }
@@ -2102,7 +2281,7 @@ preprocess_dataset <- function(df){
 fit_pooled_mv <- function(df, dataset_name){
   df <- preprocess_dataset(df)
   alpha_z <- c("Observed_z","Shannon_z","Simpson_z")
-  lung_z  <- paste0(lung_fun_cont, "_decline_z")
+  lung_z  <- paste0(lung_fun_cont, "_z")
 
   out <- list()
   for (a in alpha_z){
@@ -2151,10 +2330,10 @@ lim <- max(abs(mv_all$estimate), na.rm=TRUE); if (!is.finite(lim)) lim <- 1
 
 plot_df <- mv_all %>%
   dplyr::mutate(
-    lung_var = factor(lung_var, levels = rev(c("FEV1 % predicted (decline)",
-                                               "FVC % predicted (decline)",
-                                               "FEV1/FVC % predicted (decline)",
-                                               "MMEF % predicted (decline)"))),
+    lung_var = factor(lung_var, levels = rev(c("FEV1 % predicted",
+                                               "FVC % predicted",
+                                               "FEV1/FVC % predicted",
+                                               "MMEF % predicted"))),
     alpha_metric = factor(alpha_metric, levels=c("Observed richness","Shannon diversity","Simpson diversity")),
     niche = factor(dplyr::recode(dataset, VGO3_NP="NP", VGO3_OP="OP"), levels=c("NP","OP"))
   )
@@ -2163,144 +2342,20 @@ p_mv <- ggplot2::ggplot(plot_df, aes(x = alpha_metric, y = lung_var, fill = esti
   ggplot2::geom_tile(color="white") +
   ggplot2::geom_text(aes(label = stars), size=4) +
   ggplot2::scale_fill_gradient2(low=pal[1], mid=pal[4], high=pal[7], midpoint=0, limits=c(-lim,lim),
-                                name="Std. β (per 1 SD worse)") +
+                                name="Std. β (per 1 SD higher)") +
   ggplot2::facet_wrap(~ niche, nrow=1) +
   ggplot2::theme_minimal(base_size=12) +
   ggplot2::theme(panel.grid=element_blank(), axis.text.x=element_text(angle=30,hjust=1),
                  strip.text=element_text(face="bold")) +
-  ggplot2::labs(x="Alpha diversity metric", y="Lung function metric (decline)",
-                title="Multivariable models (pooled; adjusted for Age, Gender, Smoking, Season, RespDx)")
-
-dir.create("../Output/Cross_sectional/Alpha_diversity/Multivariable/Non_stratified", recursive=TRUE, showWarnings=FALSE)
-ggplot2::ggsave("../Output/Cross_sectional/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_heatmap.svg",
-                p_mv, width=7.0, height=4)
-readr::write_csv(mv_all,
-  "../Output/Cross_sectional/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_results.csv")
-
-```
-
-### Multivariable (no RespDx covariate) 
-```{r}
-dataset_list <- list(VGO3_NP = meta_vgo3_np, VGO3_OP = meta_vgo3_op)
-alpha_vars   <- c("Observed","Shannon","Simpson")
-lung_fun_cont <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
-core_covariates <- c("Age","Gender","Smoking_status","season_microbiome_sampling")
-
-pretty_alpha <- c("Observed_z"="Observed richness","Shannon_z"="Shannon diversity","Simpson_z"="Simpson diversity")
-pretty_lung  <- c("FEV1_pred_decline_z"="FEV1 % predicted (decline)",
-                  "FVC_pred_decline_z"="FVC % predicted (decline)",
-                  "FEV1FVC_pred_decline_z"="FEV1/FVC % predicted (decline)",
-                  "MMEF_pred_decline_z"="MMEF % predicted (decline)")
-
-preprocess_dataset <- function(df){
-  df <- df %>%
-    dplyr::mutate(
-      Age = suppressWarnings(as.numeric(as.character(Age))),
-      FEV1_pred = suppressWarnings(as.numeric(as.character(FEV1_pred))),
-      FVC_pred  = suppressWarnings(as.numeric(as.character(FVC_pred))),
-      FEV1FVC_pred = suppressWarnings(as.numeric(as.character(FEV1FVC_pred))),
-      MMEF_pred = suppressWarnings(as.numeric(as.character(MMEF_pred))),
-      Observed  = suppressWarnings(as.numeric(as.character(Observed))),
-      Shannon   = suppressWarnings(as.numeric(as.character(Shannon))),
-      Simpson   = suppressWarnings(as.numeric(as.character(Simpson))),
-      Gender = factor(as.character(Gender), levels=c("Male","Female")),
-      Smoking_status = factor(tolower(as.character(Smoking_status)),
-                              levels=c("never","former","current"), ordered=TRUE),
-      season_microbiome_sampling = factor(as.character(season_microbiome_sampling),
-                              levels=c("Winter","Spring","Summer","Autumn"), ordered=TRUE)
-    )
-
-  df <- df %>%
-    dplyr::mutate(
-      Observed_z = as.numeric(scale(Observed)),
-      Shannon_z  = as.numeric(scale(Shannon)),
-      Simpson_z  = as.numeric(scale(Simpson))
-    )
-
-  # z-scored "decline" lung vars (higher = worse)
-  for (lf in lung_fun_cont) if (lf %in% names(df))
-    df[[paste0(lf, "_decline_z")]] <- as.numeric(scale(-1 * df[[lf]]))
-
-  df
-}
-
-fit_pooled_mv <- function(df, dataset_name){
-  df <- preprocess_dataset(df)
-  alpha_z <- c("Observed_z","Shannon_z","Simpson_z")
-  lung_z  <- paste0(lung_fun_cont, "_decline_z")
-
-  out <- list()
-  for (a in alpha_z){
-    for (lz in lung_z){
-      need <- c(a, lz, core_covariates)
-      if (!all(need %in% names(df))) next
-      dat <- df %>% dplyr::select(dplyr::all_of(need)) %>% tidyr::drop_na()
-      if (nrow(dat) < 20) next
-
-      fml <- as.formula(paste(a, "~", paste(c(lz, core_covariates), collapse = " + ")))
-      fit <- tryCatch(stats::lm(fml, data = dat), error=function(e) NULL)
-      if (is.null(fit)) next
-      row <- broom::tidy(fit) %>% dplyr::filter(term == lz)
-      if (!nrow(row)) next
-
-      out[[length(out)+1]] <- tibble::tibble(
-        dataset = dataset_name,
-        niche = dplyr::recode(dataset_name, VGO3_NP="NP", VGO3_OP="OP"),
-        alpha_metric = a,
-        lung_var = lz,
-        estimate = row$estimate, std.error = row$std.error, p.value = row$p.value,
-        n_used = stats::nobs(fit)
-      )
-    }
-  }
-  dplyr::bind_rows(out)
-}
-
-mv_all <- dplyr::bind_rows(
-  fit_pooled_mv(dataset_list$VGO3_NP, "VGO3_NP"),
-  fit_pooled_mv(dataset_list$VGO3_OP, "VGO3_OP")
-) %>%
-  dplyr::mutate(
-    alpha_metric = dplyr::recode(alpha_metric, !!!pretty_alpha),
-    lung_var     = dplyr::recode(lung_var, !!!pretty_lung)
-  ) %>%
-  dplyr::group_by(dataset) %>%
-  dplyr::mutate(q.value = p.adjust(p.value, method="BH"),
-                stars   = dplyr::case_when(q.value<=0.05~"***", q.value<=0.10~"**", q.value<=0.25~"*", TRUE~"")) %>%
-  dplyr::ungroup()
-
-# Plot heatmap
-pal <- try(rcartocolor::carto_pal(7, "Geyser"), silent=TRUE)
-if (inherits(pal, "try-error")) pal <- c("#2166ac","#67a9cf","#d1e5f0","#f7f7f7","#fddbc7","#ef8a62","#b2182b")
-lim <- max(abs(mv_all$estimate), na.rm=TRUE); if (!is.finite(lim)) lim <- 1
-
-plot_df <- mv_all %>%
-  dplyr::mutate(
-    lung_var = factor(lung_var, levels = rev(c("FEV1 % predicted (decline)",
-                                               "FVC % predicted (decline)",
-                                               "FEV1/FVC % predicted (decline)",
-                                               "MMEF % predicted (decline)"))),
-    alpha_metric = factor(alpha_metric, levels=c("Observed richness","Shannon diversity","Simpson diversity")),
-    niche = factor(dplyr::recode(dataset, VGO3_NP="NP", VGO3_OP="OP"), levels=c("NP","OP"))
-  )
-
-p_mv <- ggplot2::ggplot(plot_df, aes(x = alpha_metric, y = lung_var, fill = estimate)) +
-  ggplot2::geom_tile(color="white") +
-  ggplot2::geom_text(aes(label = stars), size=4) +
-  ggplot2::scale_fill_gradient2(low=pal[1], mid=pal[4], high=pal[7], midpoint=0, limits=c(-lim,lim),
-                                name="Std. β (per 1 SD worse)") +
-  ggplot2::facet_wrap(~ niche, nrow=1) +
-  ggplot2::theme_minimal(base_size=12) +
-  ggplot2::theme(panel.grid=element_blank(), axis.text.x=element_text(angle=30,hjust=1),
-                 strip.text=element_text(face="bold")) +
-  ggplot2::labs(x="Alpha diversity metric", y="Lung function metric (decline)",
+  ggplot2::labs(x="Alpha diversity metric", y="Lung function metric",
                 title="Multivariable models (pooled; adjusted for Age, Gender, Smoking, Season)")
 
 dir.create("../Output/Cross_sectional/Alpha_diversity/Multivariable/Non_stratified", recursive=TRUE, showWarnings=FALSE)
-ggplot2::ggsave("../Output/Cross_sectional/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_heatmap.svg",
+ggplot2::ggsave("../Output/Cross_sectional/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_heatmap_noneg.svg",
                 p_mv, width=7.0, height=4)
 readr::write_csv(mv_all,
-  "../Output/Cross_sectional/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_results.csv")
+  "../Output/Cross_sectional/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_results_noneg.csv")
+
 
 ```
 
@@ -2319,7 +2374,6 @@ test_vars <- c(
   "T1_wkprior_NH3","FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred"
 )
 
-lung_fun_cont <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
 phenotype_components <- c("Asthma_current","COPD_emphy_doc_diag")
 
 pretty_labels <- c(
@@ -2331,8 +2385,8 @@ pretty_labels <- c(
   "Pneumonia_lastyr"="Pneumonia in last year","Antibiotics_lastmonth"="Antibiotics last month",
   "Antibiotics_lastyr"="Antibiotics last year","Farm_childhood"="Grew up on a farm",
   "T1_wkprior_NH3"="NH3 week prior to sampling",
-  "FEV1_pred"="FEV1 % predicted (decline)","FVC_pred"="FVC % predicted (decline)",
-  "FEV1FVC_pred"="FEV1/FVC % predicted (decline)","MMEF_pred"="MMEF % predicted (decline)",
+  "FEV1_pred"="FEV1 % predicted","FVC_pred"="FVC % predicted",
+  "FEV1FVC_pred"="FEV1/FVC % predicted","MMEF_pred"="MMEF % predicted",
   "Observed"="Observed richness","Shannon"="Shannon diversity","Simpson"="Simpson diversity"
 )
 
@@ -2342,8 +2396,7 @@ desired_order <- c(
   "COPD/emphysema (doctor diagnosed)","COVID-19 in last month","Atopic",
   "Corticosteroid inhaler (last year)","Antibiotics last month","Antibiotics last year",
   "Grew up on a farm","NH3 week prior to sampling",
-  "FEV1 % predicted (decline)","FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)","MMEF % predicted (decline)"
+  "FEV1 % predicted","FVC % predicted","FEV1/FVC % predicted","MMEF % predicted"
 )
 
 # ---- Helpers ----
@@ -2363,7 +2416,6 @@ preprocess_dataset <- function(df) {
     df$season_microbiome_sampling <- factor(as.character(df$season_microbiome_sampling),
                                             levels = c("Winter","Spring","Summer","Autumn"), ordered = TRUE)
   }
-  # Ensure RespDx is present and correctly leveled
   if (!"RespDx" %in% names(df)) stop("RespDx not found in data; please add it first.")
   df$RespDx <- factor(tolower(as.character(df$RespDx)), levels = c("no","yes"))
   df
@@ -2388,7 +2440,6 @@ std_coef_one <- function(y_scaled, x) {
 
 # Use RespDx to create two labeled strata
 stratum_levels <- c("No respiratory diagnosis","Respiratory diagnosis")
-add_stratum_label <- function(respdx) ifelse(respdx == "yes", stratum_levels[2], stratum_levels[1])
 
 run_univ_stratum <- function(df0, dataset_name, stratum_name) {
   if (nrow(df0) < 5) return(tibble::tibble())
@@ -2441,10 +2492,9 @@ univ_strat <- purrr::imap_dfr(dataset_list, function(dat, ds_name) {
   purrr::imap_dfr(strata, ~ run_univ_stratum(.x, ds_name, .y))
 })
 
-# Clean, flip signs, stars, join labels/counts
+# Clean, stars, join labels/counts (NO sign flips)
 univ_strat <- univ_strat %>%
   dplyr::mutate(
-    coefficient = dplyr::if_else(variable %in% lung_fun_cont, -coefficient, coefficient),
     significance = dplyr::case_when(
       p_value < 0.001 ~ "***",
       p_value < 0.01  ~ "**",
@@ -2525,9 +2575,9 @@ dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 long_xlsx <- univ_strat %>%
   dplyr::transmute(
     dataset,
-    niche,                                           # NP / OP
-    niche_label = as.character(niche_stratum_lab),   # "NP (n=..)" or "OP (n=..)" per stratum
-    stratum,                                         # factor (two levels)
+    niche,
+    niche_label = as.character(niche_stratum_lab),
+    stratum,
     stratum_label = counts$stratum_lab_xlsx[
       match(paste(dataset, stratum), paste(counts$dataset, counts$stratum))
     ],
@@ -2540,8 +2590,8 @@ writexl::write_xlsx(
   list("univariable_results" = long_xlsx),
   file.path(out_dir, "Univar_alpha_diversity_stratified.xlsx")
 )
-
 ```
+
 ### Multivariable
 ```{r}
 dataset_list <- list(
@@ -2588,22 +2638,23 @@ preprocess_dataset <- function(df) {
       Simpson_z  = as.numeric(scale(Simpson))
     )
 
+  # z-scored lung vars (NO sign flip)
   for (lf in lung_fun_cont) {
     if (lf %in% names(df)) {
-      df[[paste0(lf, "_decline_z")]] <- as.numeric(scale(-1 * df[[lf]]))
+      df[[paste0(lf, "_z")]] <- as.numeric(scale(df[[lf]]))
     }
   }
   df
 }
 
 fit_models_for_dataset <- function(df, dataset_name, stratum_label) {
-  alpha_z_vars     <- c("Observed_z","Shannon_z","Simpson_z")
-  lung_decline_var <- paste0(lung_fun_cont, "_decline_z")
+  alpha_z_vars  <- c("Observed_z","Shannon_z","Simpson_z")
+  lung_var_z    <- paste0(lung_fun_cont, "_z")
   results_list <- list()
 
   for (alpha_col in alpha_z_vars) {
     if (!alpha_col %in% names(df)) next
-    for (lung_col in lung_decline_var) {
+    for (lung_col in lung_var_z) {
       if (!lung_col %in% names(df)) next
       needed <- c(alpha_col, lung_col, core_covariates)
       if (!all(needed %in% names(df))) next
@@ -2634,10 +2685,10 @@ pretty_alpha <- c(
   "Simpson_z"  = "Simpson diversity"
 )
 pretty_lung <- c(
-  "FEV1_pred_decline_z"     = "FEV1 % predicted (decline)",
-  "FVC_pred_decline_z"      = "FVC % predicted (decline)",
-  "FEV1FVC_pred_decline_z"  = "FEV1/FVC % predicted (decline)",
-  "MMEF_pred_decline_z"     = "MMEF % predicted (decline)"
+  "FEV1_pred_z"     = "FEV1 % predicted",
+  "FVC_pred_z"      = "FVC % predicted",
+  "FEV1FVC_pred_z"  = "FEV1/FVC % predicted",
+  "MMEF_pred_z"     = "MMEF % predicted"
 )
 
 postprocess_results <- function(res_df) {
@@ -2704,10 +2755,10 @@ combined_two <- dplyr::bind_rows(res_noResp_clean, res_yesResp_clean) %>%
   dplyr::mutate(niche_label = paste0(niche, " (n=", n_in_stratum, ")"))
 
 desired_order <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
 )
 
 plot_df <- combined_two %>%
@@ -2729,7 +2780,7 @@ heatmap_two <- ggplot2::ggplot(plot_df, aes(x = alpha_metric, y = lung_var, fill
   ggplot2::scale_fill_gradient2(
     low = pal[1], mid = pal[4], high = pal[7],
     midpoint = 0, limits = c(-lim, lim),
-    name = "Std. β (per 1 SD\nworse lung function)"
+    name = "Std. β (per 1 SD\nhigher lung function)"
   ) +
   ggplot2::facet_grid(rows = vars(stratum), cols = vars(niche), scales = "free_y", space = "free_y") +
   ggplot2::theme_minimal(base_size = 12) +
@@ -2740,14 +2791,14 @@ heatmap_two <- ggplot2::ggplot(plot_df, aes(x = alpha_metric, y = lung_var, fill
   ) +
   ggplot2::labs(
     x = "Alpha diversity metric",
-    y = "Lung function metric (decline)"
+    y = "Lung function metric"
   )
 
 print(heatmap_two)
 
 ggplot2::ggsave(
   "../Output/Cross_sectional/Alpha_diversity/Multivariable/Stratified/Multivar_alpha_diversity_heatmap_stratified.svg",
-  heatmap_two, width = 6.5, height = 4.5
+  heatmap_two, width = 6, height = 4.5
 )
 
 readr::write_csv(
@@ -4542,7 +4593,7 @@ OPvsNP_PCoA <- make_pretty_pcoa_cat(
   legend_title = "Niche (OP vs NP)"
 )
 
-ggsave(file.path(out_dir, "Niche_OPvsNP_PCoA2.svg"), OPvsNP_PCoA, width=7, height=5)
+ggsave(file.path(out_dir, "Niche_OPvsNP_PCoA.svg"), OPvsNP_PCoA, width=6, height=5)
 
 ```
 # DA analysis
@@ -4664,109 +4715,124 @@ ps_list_DA_genus <- list(
 )
 ```
 ## Non-stratified analysis
-### MaAsLin2 
+#### MaAsLin2
 ```{r}
-#### Function #### 
-# MaAsLin function 
-do_maaslin2 <- function(ps, var, other_var, ref = NULL, out_dir = NULL,
+### MaAsLin2  
+# MaAsLin2 wrapper that:
+# - never creates *_decline variables
+# - coerces ONLY model variables (fixed effects) to factors/numerics as needed
+# - optionally filters returned results by q_cutoff (set q_cutoff = NULL to disable)
+do_maaslin2 <- function(ps, var, other_var = NULL, ref = NULL, out_dir = NULL,
                         stratify_by = NULL, strata_levels = NULL,
                         q_cutoff = 0.10, min_n = 10, verbose = TRUE) {
+
   stopifnot(inherits(ps, "phyloseq"))
   if (is.null(other_var)) other_var <- character(0)
 
-  # Helper: base (non-stratified) run
   .run_single <- function(ps, var, other_var, ref, out_dir, q_cutoff) {
+
     fixed <- unique(c(var, other_var))
 
-    # Drop samples with NA in model vars (based on a clean, flattened meta first)
+    # 1) Check metadata has needed columns, drop rows with missing model vars
     meta0 <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
     miss <- setdiff(fixed, colnames(meta0))
     if (length(miss)) stop("Missing columns in metadata: ", paste(miss, collapse = ", "))
 
     keep <- stats::complete.cases(meta0[, fixed, drop = FALSE])
-    ps <- phyloseq::prune_samples(keep, ps)
+    ps   <- phyloseq::prune_samples(keep, ps)
 
-    ## 2) Rebuild and sanitize metadata (NO sample_id column)
+    # 2) Rebuild metadata after pruning
     meta <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
 
-    # Drop/flatten non-atomic columns
+    # 3) Flatten non-atomic columns (rare, but can break MaAsLin2)
     is_bad <- vapply(meta, function(x) is.list(x) || is.data.frame(x) || is.matrix(x), logical(1))
     if (any(is_bad)) {
       for (nm in names(meta)[is_bad]) meta[[nm]] <- as.character(meta[[nm]])
     }
 
-    # Make ordered factors plain factors; characters -> factors; logical -> factors
-    for (nm in names(meta)) {
-      x <- meta[[nm]]
-      if (is.ordered(x))             meta[[nm]] <- factor(x, ordered = FALSE)
-      else if (is.character(x))      meta[[nm]] <- factor(x)
-      else if (is.logical(x))        meta[[nm]] <- factor(x, levels = c(FALSE, TRUE))
-      # leave numeric/integer as-is
-    }
-    
-    if ("RespDx" %in% names(meta)) {
+    # 4) Special handling for RespDx if used in model
+    #    (strict: unrecognized values -> NA so they are dropped)
+    if ("RespDx" %in% fixed && "RespDx" %in% names(meta)) {
       raw <- trimws(tolower(as.character(meta$RespDx)))
-      # be forgiving: map common labels to yes/no
-      raw <- dplyr::recode(
+      raw2 <- dplyr::recode(
         raw,
         "no respiratory diagnosis" = "no",
         "respiratory diagnosis"    = "yes",
-        "0" = "no", "1" = "yes",
-        .default = raw
+        "0" = "no",
+        "1" = "yes",
+        "no" = "no",
+        "yes" = "yes",
+        .default = NA_character_
       )
-      meta$RespDx <- factor(raw, levels = c("no","yes"))
-      if (any(is.na(meta$RespDx))) {
-        warning("Some RespDx values were not recognized and became NA.")
-      }
+      meta$RespDx <- factor(raw2, levels = c("no", "yes"))
+      if (any(is.na(meta$RespDx))) warning("RespDx had unrecognized values -> NA (samples will be dropped).")
     }
-    # Strongly expected numerics -> numeric  (remove Smoking_status; include caps)
+
+    # 5) Coerce ONLY fixed-effect columns
+    #    - characters -> factors
+    #    - logical -> 2-level factor
+    for (nm in fixed) {
+      x <- meta[[nm]]
+      if (is.ordered(x))        meta[[nm]] <- factor(x, ordered = FALSE)
+      else if (is.character(x)) meta[[nm]] <- factor(x)
+      else if (is.logical(x))   meta[[nm]] <- factor(x, levels = c(FALSE, TRUE))
+    }
+
+    # 6) Strongly-expected numeric predictors -> numeric
     num_candidates <- intersect(
-      c("age","Age","bmi","BMI","packyears",
-        "FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred",
-        "FEV1_pred_decline","FVC_pred_decline","FEV1FVC_pred_decline","MMEF_pred_decline"),
+      c("age", "Age", "bmi", "BMI", "packyears",
+        "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"),
       fixed
     )
-    for (nm in num_candidates) if (nm %in% names(meta))
+    for (nm in num_candidates) {
       meta[[nm]] <- suppressWarnings(as.numeric(as.character(meta[[nm]])))
+    }
 
-    # Drop rows with NA in fixed effects after coercion
+    # 7) Drop rows with NA in fixed effects after coercion
     keep2 <- stats::complete.cases(meta[, fixed, drop = FALSE])
     if (!all(keep2)) {
       meta <- meta[keep2, , drop = FALSE]
       ps   <- phyloseq::prune_samples(rownames(meta), ps)
     }
 
-    # Drop zero-variance predictors (single-level factors or constant numerics)
+    # 8) Drop zero-variance predictors
     drop_fx <- vapply(fixed, function(nm) {
       x <- meta[[nm]]
       if (is.factor(x)) nlevels(x) < 2
-      else if (is.numeric(x)) sd(x, na.rm = TRUE) == 0
+      else if (is.numeric(x)) isTRUE(all.equal(stats::sd(x, na.rm = TRUE), 0))
       else FALSE
     }, logical(1))
+
     if (any(drop_fx)) {
-      msg <- paste(fixed[drop_fx], collapse = ", ")
-      warning("Dropping zero-variance predictors: ", msg)
+      warning("Dropping zero-variance predictors: ", paste(fixed[drop_fx], collapse = ", "))
       fixed <- fixed[!drop_fx]
     }
     if (!length(fixed)) stop("All predictors dropped (zero variance).")
 
-    # Build OTU (samples as rows) and align strictly
+    # 9) Build OTU with samples as rows, ensure numeric
     otu <- phyloseq::otu_table(ps)
-    otu_df <- as.data.frame(otu)
+    otu_df <- as.data.frame(otu, check.names = FALSE)
     if (phyloseq::taxa_are_rows(ps)) otu_df <- t(otu_df)
     otu_df <- as.data.frame(otu_df, check.names = FALSE)
-    # numeric ensure
     otu_df[] <- lapply(otu_df, function(x) suppressWarnings(as.numeric(x)))
+    if (anyNA(otu_df)) warning("NA introduced in OTU table during numeric coercion.")
 
+    # 10) Align rows strictly
     common <- intersect(rownames(meta), rownames(otu_df))
     meta   <- meta[common, , drop = FALSE]
     otu_df <- otu_df[common, , drop = FALSE]
     stopifnot(identical(rownames(meta), rownames(otu_df)))
+    
+    if (verbose) {
+  message("Running: ", var,
+          " | n_samples=", nrow(meta),
+          " | n_features=", ncol(otu_df))
+}
 
-    # Output dir
+    # 11) Output dir
     if (is.null(out_dir)) out_dir <- file.path(tempdir(), paste0("Maaslin2_", var))
 
-    # Run MaAsLin2
+    # 12) Run MaAsLin2
     ms <- Maaslin2::Maaslin2(
       input_data     = otu_df,
       input_metadata = meta,
@@ -4781,62 +4847,84 @@ do_maaslin2 <- function(ps, var, other_var, ref = NULL, out_dir = NULL,
       reference      = ref
     )
 
-    # Post-process
+    # 13) Post-process
     res <- ms$results
     if (is.null(res) || !nrow(res)) return(res)
-    for (nm in c("coef","stderr","qval")) if (nm %in% names(res))
+
+    for (nm in intersect(c("coef", "stderr", "qval"), names(res))) {
       res[[nm]] <- suppressWarnings(as.numeric(res[[nm]]))
+    }
+
     res$var <- var
     res <- res[res$metadata == var, , drop = FALSE]
     if (!nrow(res)) return(res)
+
+    # optional q filter on RETURNED results
+    # if (!is.null(q_cutoff)) {
+    #   res <- res[!is.na(res$qval) & res$qval <= q_cutoff, , drop = FALSE]
+    #   if (!nrow(res)) return(res)
+    # }
+    # optional q filter on RETURNED results
+    filtered_out <- FALSE
+    if (!is.null(q_cutoff)) {
+      res2 <- res[!is.na(res$qval) & res$qval <= q_cutoff, , drop = FALSE]
+      if (!nrow(res2)) {
+        filtered_out <- TRUE
+        attr(res, "filtered_out_by_q") <- TRUE
+        return(res[0, , drop = FALSE])  # return empty but tag it via attribute
+        }
+      res <- res2
+      }
+
     res$conf.low  <- res$coef - 1.96 * res$stderr
     res$conf.high <- res$coef + 1.96 * res$stderr
     res$label <- dplyr::case_when(
-      is.na(res$qval)        ~ NA_character_,
-      res$qval <= 0.05       ~ "***",
-      res$qval <= 0.10       ~ "**",
-      res$qval <= 0.25       ~ "*",
-      TRUE                   ~ NA_character_
-)
+      is.na(res$qval)  ~ NA_character_,
+      res$qval <= 0.05 ~ "***",
+      res$qval <= 0.10 ~ "**",
+      res$qval <= 0.25 ~ "*",
+      TRUE             ~ NA_character_
+    )
+
     res
   }
 
-  # If no stratification requested, just run once
+  # Non-stratified
   if (is.null(stratify_by)) {
     return(.run_single(ps, var, other_var, ref, out_dir, q_cutoff))
   }
 
-  # Stratified path 
+  # Stratified
   meta_all <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
-  if (!stratify_by %in% names(meta_all))
+  if (!stratify_by %in% names(meta_all)) {
     stop("stratify_by column not found in metadata: ", stratify_by)
+  }
 
-  # Determine levels to iterate over
   strat_fac <- factor(meta_all[[stratify_by]])
   lvls <- if (!is.null(strata_levels)) strata_levels else levels(strat_fac)
-
   safe_name <- function(x) gsub("[^[:alnum:]_.-]+", "_", as.character(x))
 
   out_list <- list()
   for (lv in lvls) {
-    idx <- which(strat_fac == lv & !is.na(strat_fac))
+    idx <- which(!is.na(strat_fac) & strat_fac == lv)
     if (length(idx) < min_n) {
       if (verbose) message("Skipping stratum '", lv, "' (n=", length(idx), " < ", min_n, ").")
       next
     }
-    samp_ids <- rownames(meta_all)[idx]
-    ps_sub <- phyloseq::prune_samples(samp_ids, ps)
 
-    odir <- if (is.null(out_dir)) NULL else file.path(out_dir, paste0(stratify_by, "=", safe_name(lv)))
+    samp_ids <- rownames(meta_all)[idx]
+    ps_sub   <- phyloseq::prune_samples(samp_ids, ps)
+    odir     <- if (is.null(out_dir)) NULL else file.path(out_dir, paste0(stratify_by, "=", safe_name(lv)))
 
     res_lv <- try(.run_single(ps_sub, var, other_var, ref, odir, q_cutoff), silent = TRUE)
     if (inherits(res_lv, "try-error") || is.null(res_lv) || !nrow(res_lv)) {
       if (verbose) message("No results for stratum '", lv, "'.")
       next
     }
+
     res_lv[[stratify_by]] <- lv
     res_lv$n_samples <- phyloseq::nsamples(ps_sub)
-    out_list[[lv]] <- res_lv
+    out_list[[as.character(lv)]] <- res_lv
   }
 
   if (!length(out_list)) return(invisible(data.frame()))
@@ -4845,84 +4933,87 @@ do_maaslin2 <- function(ps, var, other_var, ref = NULL, out_dir = NULL,
   res_all
 }
 
-# Variables
-vars_cont <- c("FEV1_pred_decline","FVC_pred_decline","FEV1FVC_pred_decline","MMEF_pred_decline")
+# Variables + covariates (NOTE: no *_decline anywhere here)
+vars_cont <- c("FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred")
+covars    <- c("Age", "Gender", "season_microbiome_sampling", "Smoking_status")  # add "RespDx" only if you want it in-model
 
-# Covariates (fixed across all runs)
-covars <- c("Age","Gender","season_microbiome_sampling","Smoking_status", "RespDx")
-
-# Batch MaAsLin2 runner (kept your structure, but removed var_set + set label in filenames)
 safe_name <- function(x) gsub("[^A-Za-z0-9._-]+", "_", x)
 
 ensure_dirs <- function(out_root, ps_lists) {
   for (lvl in names(ps_lists)) {
     for (ds in names(ps_lists[[lvl]])) {
-      subdir <- file.path(out_root, ds, lvl)  # <root>/<niche>/<ASV|Genus>
+      subdir <- file.path(out_root, ds, lvl)
       dir.create(subdir, recursive = TRUE, showWarnings = FALSE)
       if (!dir.exists(subdir)) stop("Cannot create output dir: ", subdir)
     }
   }
 }
 
-run_maaslin_batch <- function(
-  ps_lists,
-  vars, 
-  covars,
-  out_root,
-  refs = NULL,
-  arrange_by = "coef",
-  cont_decline = c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
-) {
-  all_out <- list()
+run_maaslin_batch <- function(ps_lists, vars, covars, out_root,
+                             refs = NULL, arrange_by = "coef",
+                             q_cutoff = 0.10,
+                             verbose = TRUE) {
 
-  # 0) pre-create all dirs exactly as requested
+  all_out <- list()
   ensure_dirs(out_root, ps_lists)
 
-  for (level in names(ps_lists)) {    
-    ps_list <- ps_lists[[level]]
+  for (level in names(ps_lists)) {
+    for (dataset in names(ps_lists[[level]])) {
 
-    for (dataset in names(ps_list)) {
-      ps <- ps_list[[dataset]]
-
-      # 1) create decline versions in sample_data (if present)
-      meta <- as.data.frame(sample_data(ps), check.names = FALSE)
-      for (v in cont_decline) {
-        if (v %in% names(meta)) {
-          meta[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(meta[[v]]))
-        }
+      ps <- ps_lists[[level]][[dataset]]
+      if (is.null(ps)) {
+        message("Skipping NULL phyloseq: ", dataset, " | ", level)
+        next
       }
-      sample_data(ps) <- sample_data(meta)
 
       for (v in vars) {
+
         ref_spec <- if (!is.null(refs) && v %in% names(refs)) refs[[v]] else NULL
 
-        res <- try(do_maaslin2(
-          ps  = ps,
-          var = v,
-          other_var = covars,
-          ref = ref_spec
-        ), silent = TRUE)
+        res <- tryCatch(
+          do_maaslin2(
+            ps        = ps,
+            var       = v,
+            other_var = covars,
+            ref       = ref_spec,
+            q_cutoff  = NULL,
+            verbose   = verbose
+          ),
+          error = function(e) {
+            message("ERROR: ", dataset, " | ", level, " | ", v, " -> ", conditionMessage(e))
+            return(NULL)
+          }
+        )
 
-        if (inherits(res, "try-error") || is.null(res) || !nrow(res)) {
-          message("No results for: ", dataset, " | ", level, " | ", v)
+        # NULL means ERROR (caught above) or explicit NULL return
+        if (is.null(res)) {
           next
         }
 
-        if (arrange_by %in% colnames(res)) {
+        # Empty data.frame means: MaAsLin ran but returned nothing OR filtered out by q
+        if (!nrow(res)) {
+          # If we tagged filtered-out cases, say so (see patch above)
+          filtered_out <- isTRUE(attr(res, "filtered_out_by_q"))
+          if (filtered_out) {
+            message("FILTERED OUT by q_cutoff (", q_cutoff, "): ", dataset, " | ", level, " | ", v)
+          } else {
+            message("EMPTY results: ", dataset, " | ", level, " | ", v)
+          }
+          next
+        }
+
+        if (!is.null(arrange_by) && arrange_by %in% names(res)) {
           res <- dplyr::arrange(res, dplyr::desc(.data[[arrange_by]]))
         }
 
         res$dataset <- dataset
         res$level   <- level
-        # (no var_set column anymore)
 
         key <- paste(level, dataset, v, sep = "___")
         all_out[[key]] <- res
 
-        # 2) write to standardized folder (ASV / Genus), no "continuous" in filename
         subdir <- file.path(out_root, dataset, level)
-        if (!dir.exists(subdir)) dir.create(subdir, recursive = TRUE, showWarnings = FALSE)
-        if (!dir.exists(subdir)) stop("Output dir still missing: ", subdir)
+        dir.create(subdir, recursive = TRUE, showWarnings = FALSE)
 
         fn <- paste0(safe_name(dataset), "_", level, "_", safe_name(v), ".csv")
         utils::write.csv(res, file.path(subdir, fn), row.names = FALSE)
@@ -4933,294 +5024,32 @@ run_maaslin_batch <- function(
   dplyr::bind_rows(all_out)
 }
 
-# Where to write outputs
-out_root <- "../Output/Cross_sectional/DA/MaAsLin2/Non_stratified"
-
-# Run all (ASV + Genus) and collect a single summary table
-maaslin_summary <- run_maaslin_batch(
-  ps_lists  = list(ASV = ps_list_DA_ASV, Genus = ps_list_DA_genus),
-  vars      = vars_cont,  
-  covars    = c("Age","Gender","season_microbiome_sampling","Smoking_status"),
-  out_root  = out_root
-)
-
-# Optional combined summary file (CSV; you mentioned XLSX—no “continuous” label here)
-readr::write_csv(maaslin_summary, file.path(out_root, "Maaslin2_all_results_summary.csv"))
 
 
-```
-#### MaAsLin2 redone (no RespDx covariate)
-```{r}
-### MaAsLin2 
-#### Function #### 
-# MaAsLin function 
-do_maaslin2 <- function(ps, var, other_var, ref = NULL, out_dir = NULL,
-                        stratify_by = NULL, strata_levels = NULL,
-                        q_cutoff = 0.10, min_n = 10, verbose = TRUE) {
-  stopifnot(inherits(ps, "phyloseq"))
-  if (is.null(other_var)) other_var <- character(0)
 
-  # Helper: base (non-stratified) run
-  .run_single <- function(ps, var, other_var, ref, out_dir, q_cutoff) {
-    fixed <- unique(c(var, other_var))
-
-    # Drop samples with NA in model vars (based on a clean, flattened meta first)
-    meta0 <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
-    miss <- setdiff(fixed, colnames(meta0))
-    if (length(miss)) stop("Missing columns in metadata: ", paste(miss, collapse = ", "))
-
-    keep <- stats::complete.cases(meta0[, fixed, drop = FALSE])
-    ps <- phyloseq::prune_samples(keep, ps)
-
-    ## 2) Rebuild and sanitize metadata (NO sample_id column)
-    meta <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
-
-    # Drop/flatten non-atomic columns
-    is_bad <- vapply(meta, function(x) is.list(x) || is.data.frame(x) || is.matrix(x), logical(1))
-    if (any(is_bad)) {
-      for (nm in names(meta)[is_bad]) meta[[nm]] <- as.character(meta[[nm]])
-    }
-
-    # Make ordered factors plain factors; characters -> factors; logical -> factors
-    for (nm in names(meta)) {
-      x <- meta[[nm]]
-      if (is.ordered(x))             meta[[nm]] <- factor(x, ordered = FALSE)
-      else if (is.character(x))      meta[[nm]] <- factor(x)
-      else if (is.logical(x))        meta[[nm]] <- factor(x, levels = c(FALSE, TRUE))
-      # leave numeric/integer as-is
-    }
-
-    # Strongly expected numerics -> numeric  (remove Smoking_status; include caps)
-    num_candidates <- intersect(
-      c("age","Age","bmi","BMI","packyears",
-        "FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred",
-        "FEV1_pred_decline","FVC_pred_decline","FEV1FVC_pred_decline","MMEF_pred_decline"),
-      fixed
-    )
-    for (nm in num_candidates) if (nm %in% names(meta))
-      meta[[nm]] <- suppressWarnings(as.numeric(as.character(meta[[nm]])))
-
-    # Drop rows with NA in fixed effects after coercion
-    keep2 <- stats::complete.cases(meta[, fixed, drop = FALSE])
-    if (!all(keep2)) {
-      meta <- meta[keep2, , drop = FALSE]
-      ps   <- phyloseq::prune_samples(rownames(meta), ps)
-    }
-
-    # Drop zero-variance predictors (single-level factors or constant numerics)
-    drop_fx <- vapply(fixed, function(nm) {
-      x <- meta[[nm]]
-      if (is.factor(x)) nlevels(x) < 2
-      else if (is.numeric(x)) sd(x, na.rm = TRUE) == 0
-      else FALSE
-    }, logical(1))
-    if (any(drop_fx)) {
-      msg <- paste(fixed[drop_fx], collapse = ", ")
-      warning("Dropping zero-variance predictors: ", msg)
-      fixed <- fixed[!drop_fx]
-    }
-    if (!length(fixed)) stop("All predictors dropped (zero variance).")
-
-    # Build OTU (samples as rows) and align strictly
-    otu <- phyloseq::otu_table(ps)
-    otu_df <- as.data.frame(otu)
-    if (phyloseq::taxa_are_rows(ps)) otu_df <- t(otu_df)
-    otu_df <- as.data.frame(otu_df, check.names = FALSE)
-    # numeric ensure
-    otu_df[] <- lapply(otu_df, function(x) suppressWarnings(as.numeric(x)))
-
-    common <- intersect(rownames(meta), rownames(otu_df))
-    meta   <- meta[common, , drop = FALSE]
-    otu_df <- otu_df[common, , drop = FALSE]
-    stopifnot(identical(rownames(meta), rownames(otu_df)))
-
-    # Output dir
-    if (is.null(out_dir)) out_dir <- file.path(tempdir(), paste0("Maaslin2_", var))
-
-    # Run MaAsLin2
-    ms <- Maaslin2::Maaslin2(
-      input_data     = otu_df,
-      input_metadata = meta,
-      output         = out_dir,
-      fixed_effects  = fixed,
-      normalization  = "NONE",
-      transform      = "LOG",
-      min_abundance  = 0,
-      min_prevalence = 0,
-      plot_heatmap   = FALSE,
-      plot_scatter   = FALSE,
-      reference      = ref
-    )
-
-    # Post-process
-    res <- ms$results
-    if (is.null(res) || !nrow(res)) return(res)
-    for (nm in c("coef","stderr","qval")) if (nm %in% names(res))
-      res[[nm]] <- suppressWarnings(as.numeric(res[[nm]]))
-    res$var <- var
-    res <- res[res$metadata == var, , drop = FALSE]
-    if (!nrow(res)) return(res)
-    res$conf.low  <- res$coef - 1.96 * res$stderr
-    res$conf.high <- res$coef + 1.96 * res$stderr
-    res$label <- dplyr::case_when(
-      is.na(res$qval)        ~ NA_character_,
-      res$qval <= 0.05       ~ "***",
-      res$qval <= 0.10       ~ "**",
-      res$qval <= 0.25       ~ "*",
-      TRUE                   ~ NA_character_
-    )
-    res
-  }
-
-  # If no stratification requested, just run once
-  if (is.null(stratify_by)) {
-    return(.run_single(ps, var, other_var, ref, out_dir, q_cutoff))
-  }
-
-  # Stratified path 
-  meta_all <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
-  if (!stratify_by %in% names(meta_all))
-    stop("stratify_by column not found in metadata: ", stratify_by)
-
-  # Determine levels to iterate over
-  strat_fac <- factor(meta_all[[stratify_by]])
-  lvls <- if (!is.null(strata_levels)) strata_levels else levels(strat_fac)
-
-  safe_name <- function(x) gsub("[^[:alnum:]_.-]+", "_", as.character(x))
-
-  out_list <- list()
-  for (lv in lvls) {
-    idx <- which(strat_fac == lv & !is.na(strat_fac))
-    if (length(idx) < min_n) {
-      if (verbose) message("Skipping stratum '", lv, "' (n=", length(idx), " < ", min_n, ").")
-      next
-    }
-    samp_ids <- rownames(meta_all)[idx]
-    ps_sub <- phyloseq::prune_samples(samp_ids, ps)
-
-    odir <- if (is.null(out_dir)) NULL else file.path(out_dir, paste0(stratify_by, "=", safe_name(lv)))
-
-    res_lv <- try(.run_single(ps_sub, var, other_var, ref, odir, q_cutoff), silent = TRUE)
-    if (inherits(res_lv, "try-error") || is.null(res_lv) || !nrow(res_lv)) {
-      if (verbose) message("No results for stratum '", lv, "'.")
-      next
-    }
-    res_lv[[stratify_by]] <- lv
-    res_lv$n_samples <- phyloseq::nsamples(ps_sub)
-    out_list[[lv]] <- res_lv
-  }
-
-  if (!length(out_list)) return(invisible(data.frame()))
-  res_all <- do.call(rbind, out_list)
-  rownames(res_all) <- NULL
-  res_all
-}
-
-# Variables
-vars_cont <- c("FEV1_pred_decline","FVC_pred_decline","FEV1FVC_pred_decline","MMEF_pred_decline")
-
-# Covariates (fixed across all runs) - RespDx removed
-covars <- c("Age","Gender","season_microbiome_sampling","Smoking_status")
-
-# Batch MaAsLin2 runner (kept your structure, but removed var_set + set label in filenames)
-safe_name <- function(x) gsub("[^A-Za-z0-9._-]+", "_", x)
-
-ensure_dirs <- function(out_root, ps_lists) {
-  for (lvl in names(ps_lists)) {
-    for (ds in names(ps_lists[[lvl]])) {
-      subdir <- file.path(out_root, ds, lvl)  # <root>/<niche>/<ASV|Genus>
-      dir.create(subdir, recursive = TRUE, showWarnings = FALSE)
-      if (!dir.exists(subdir)) stop("Cannot create output dir: ", subdir)
-    }
-  }
-}
-
-run_maaslin_batch <- function(
-  ps_lists,
-  vars, 
-  covars,
-  out_root,
-  refs = NULL,
-  arrange_by = "coef",
-  cont_decline = c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
-) {
-  all_out <- list()
-
-  # 0) pre-create all dirs exactly as requested
-  ensure_dirs(out_root, ps_lists)
-
-  for (level in names(ps_lists)) {    
-    ps_list <- ps_lists[[level]]
-
-    for (dataset in names(ps_list)) {
-      ps <- ps_list[[dataset]]
-
-      # 1) create decline versions in sample_data (if present)
-      meta <- as.data.frame(sample_data(ps), check.names = FALSE)
-      for (v in cont_decline) {
-        if (v %in% names(meta)) {
-          meta[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(meta[[v]]))
-        }
-      }
-      sample_data(ps) <- sample_data(meta)
-
-      for (v in vars) {
-        ref_spec <- if (!is.null(refs) && v %in% names(refs)) refs[[v]] else NULL
-
-        res <- try(do_maaslin2(
-          ps  = ps,
-          var = v,
-          other_var = covars,   # uses covars without RespDx
-          ref = ref_spec
-        ), silent = TRUE)
-
-        if (inherits(res, "try-error") || is.null(res) || !nrow(res)) {
-          message("No results for: ", dataset, " | ", level, " | ", v)
-          next
-        }
-
-        if (arrange_by %in% colnames(res)) {
-          res <- dplyr::arrange(res, dplyr::desc(.data[[arrange_by]]))
-        }
-
-        res$dataset <- dataset
-        res$level   <- level
-        # (no var_set column anymore)
-
-        key <- paste(level, dataset, v, sep = "___")
-        all_out[[key]] <- res
-
-        # 2) write to standardized folder (ASV / Genus), no "continuous" in filename
-        subdir <- file.path(out_root, dataset, level)
-        if (!dir.exists(subdir)) dir.create(subdir, recursive = TRUE, showWarnings = FALSE)
-        if (!dir.exists(subdir)) stop("Output dir still missing: ", subdir)
-
-        fn <- paste0(safe_name(dataset), "_", level, "_", safe_name(v), ".csv")
-        utils::write.csv(res, file.path(subdir, fn), row.names = FALSE)
-      }
-    }
-  }
-
-  dplyr::bind_rows(all_out)
-}
 
 # Where to write outputs
 out_root <- "../Output/Cross_sectional/DA/MaAsLin2/Non_stratified"
 
+
+
 # Run all (ASV + Genus) and collect a single summary table
 maaslin_summary <- run_maaslin_batch(
-  ps_lists  = list(ASV = ps_list_DA_ASV, Genus = ps_list_DA_genus),
-  vars      = vars_cont,  
-  covars    = c("Age","Gender","season_microbiome_sampling","Smoking_status"),  # RespDx removed
-  out_root  = out_root
+  ps_lists = list(ASV = ps_list_DA_ASV, Genus = ps_list_DA_genus),
+  vars     = vars_cont,
+  covars   = covars,           # <- currently WITHOUT RespDx
+  out_root = out_root,
+  q_cutoff = NULL,             # <- IMPORTANT for debugging
+  verbose  = TRUE
 )
 
-# Optional combined summary file (CSV; you mentioned XLSX—no “continuous” label here)
+
 readr::write_csv(maaslin_summary, file.path(out_root, "Maaslin2_all_results_summary.csv"))
+
+
 ```
 
-
-#### MaAsLin2 heatmaps 
+#### MaAsLin2 heatmaps (all results) 
 ```{r}
 # Settings
 root_dir <- "../Output/Cross_sectional/DA/MaAsLin2/Non_stratified"
@@ -5238,44 +5067,48 @@ genus_folders <- list(
 )
 
 # Order on the x-axis (raw metadata names in CSV)
-custom_metadata_order <- c(
-  "FEV1_pred_decline","FVC_pred_decline", "FEV1FVC_pred_decline",  "MMEF_pred_decline"
-)
+custom_metadata_order <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
+
 
 # Pretty names to display on x-axis (same order)
 pretty_labels <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
 )
 
 names(pretty_labels) <- custom_metadata_order
 
 # Helper functions
 # Read + tidy one dataset/level folder
+
 read_heatmap_data <- function(folder) {
   files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
   if (!length(files)) return(NULL)
 
   df <- lapply(files, function(f) {
     tryCatch(readr::read_csv(f, show_col_types = FALSE), error = function(e) NULL)
-  }) |> bind_rows()
+  }) |> dplyr::bind_rows()
 
   if (is.null(df) || !nrow(df)) return(NULL)
 
-  # Keep required columns; tolerate missing 'label'
   if (!"label" %in% names(df)) df$label <- NA_character_
-  df <- df |> select(feature, metadata, coef, label)
 
-  # x-axis handling: keep raw + pretty factor
-  df$metadata_raw <- factor(df$metadata, levels = custom_metadata_order)
-  # map to pretty labels with same order
+  df <- df |> 
+    dplyr::select(feature, metadata, coef, label) |>
+    dplyr::mutate(metadata = trimws(as.character(metadata))) |>
+    dplyr::filter(metadata %in% custom_metadata_order)   # <-- this prevents NA column
+
+  if (!nrow(df)) return(NULL)
+
+  df$metadata_raw  <- factor(df$metadata, levels = custom_metadata_order)
   df$metadata_plot <- factor(pretty_labels[as.character(df$metadata_raw)],
                              levels = pretty_labels)
 
   df
 }
+
 
 
 #  Y-axis label formatter:
@@ -5414,42 +5247,43 @@ genus_grid <- (p_VGO3_NP_Gen | p_VGO3_OP_Gen) +
               patchwork::plot_annotation(title = "MaAsLin2 Heatmaps — Genus Level")
 
 ggsave(file.path(root_dir, "Heatmap_Maaslin_results_ASV.svg"),
-       asv_grid, width = 10, height = 8)
+       asv_grid, width = 9.5, height = 8)
 
 ggsave(file.path(root_dir, "Heatmap_Maaslin_results_Genus.svg"),
-       genus_grid, width = 10, height = 8)
+       genus_grid, width = 8, height = 8)
 ```
-#### MaAsLin2 volcano plots
+#### MaAsLin2 heatmaps (only q<0.25 results) 
 ```{r}
-# settings 
+#### MaAsLin2 heatmaps — show only ASVs with q <= 0.25 in ANY analysis ####
+
+# Settings
 root_dir <- "../Output/Cross_sectional/DA/MaAsLin2/Non_stratified"
 
 asv_folders <- list(
   VGO3_NP = file.path(root_dir, "VGO3_NP", "ASV"),
   VGO3_OP = file.path(root_dir, "VGO3_OP", "ASV")
 )
+
 genus_folders <- list(
   VGO3_NP = file.path(root_dir, "VGO3_NP", "Genus"),
   VGO3_OP = file.path(root_dir, "VGO3_OP", "Genus")
 )
 
-custom_metadata_order <- c(
-  "FEV1_pred_decline","FVC_pred_decline","FEV1FVC_pred_decline","MMEF_pred_decline"
-)
+custom_metadata_order <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
+
 pretty_labels <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
 )
 names(pretty_labels) <- custom_metadata_order
 
 
-# Helper to prettify taxon labels for display
-format_tax_label <- function(x) gsub("_", " ", x)
-
-# 1) Reader (unchanged)
-read_maaslin_folder <- function(folder) {
+# -------------------------
+# Reader: one folder -> tidy df
+# -------------------------
+read_heatmap_data <- function(folder, q_show = 0.25) {
   files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
   if (!length(files)) return(NULL)
 
@@ -5459,378 +5293,146 @@ read_maaslin_folder <- function(folder) {
 
   if (is.null(df) || !nrow(df)) return(NULL)
 
+  # Ensure required columns exist
   if (!"label" %in% names(df)) df$label <- NA_character_
+  if (!"qval"  %in% names(df)) df$qval  <- NA_real_
 
   df <- df |>
+    dplyr::select(feature, metadata, coef, qval, label) |>
     dplyr::mutate(
-      # order by your raw variable names
-      metadata_raw  = factor(metadata, levels = custom_metadata_order),
-      # pretty labels with full set of levels so empty facets still show
-      metadata_plot = factor(pretty_labels[as.character(metadata_raw)],
-                             levels = pretty_labels),
-      sign          = ifelse(coef >= 0, "↑ worse lung function", "↓ worse lung function")
-    )
+      metadata = trimws(as.character(metadata)),
+      feature  = as.character(feature)
+    ) |>
+    dplyr::filter(metadata %in% custom_metadata_order)   # prevents NA column
+
+  if (!nrow(df)) return(NULL)
+
+  # --- KEY PART ---
+  # Keep only features that are significant (q <= q_show) in ANY of the analyses
+  keep_features <- df |>
+    dplyr::filter(!is.na(qval) & qval <= q_show) |>
+    dplyr::distinct(feature) |>
+    dplyr::pull(feature)
+
+  df <- df |> dplyr::filter(feature %in% keep_features)
+
+  if (!nrow(df)) return(NULL)
+
+  # X-axis factor mapping
+  df$metadata_raw  <- factor(df$metadata, levels = custom_metadata_order)
+  df$metadata_plot <- factor(pretty_labels[as.character(df$metadata_raw)],
+                             levels = pretty_labels)
+
+  # Optional: keep y-axis ordered by strongest evidence somewhere
+  feat_order <- df |>
+    dplyr::group_by(feature) |>
+    dplyr::summarise(best_q = min(qval, na.rm = TRUE), .groups = "drop") |>
+    dplyr::arrange(best_q) |>
+    dplyr::pull(feature)
+
+  df$feature <- factor(df$feature, levels = rev(feat_order))
+
   df
 }
 
 
-
-# Build plotmath label: italicised taxon name (underscores -> spaces), number not italic
-# e.g. "Faecalibacterium_prausnitzii_1294" ->
-#      italic(Faecalibacterium)~italic(prausnitzii)~'1294'
-# Build plotmath label for ASV or Genus
-format_tax_label_expr <- function(feature, stars = "") {
-  m <- regexpr("_(\\d+)$", feature)
-  has_id <- m[[1]] != -1
-
-  if (has_id) {
-    num <- substr(feature, m[[1]] + 1, nchar(feature))
-    tax <- substr(feature, 1, m[[1]] - 1)
-  } else {
-    num <- NA_character_
-    tax <- feature
-  }
-
-  # Split on underscores, drop empties, keep only safe chars for plotmath symbols
-  tokens <- strsplit(tax, "_")[[1]]
-  tokens <- tokens[tokens != ""]
-  tokens <- gsub("[^A-Za-z0-9]", "", tokens)
-  if (!length(tokens)) return(NA_character_)
-
-  # italic(Genus)~italic(species)~...
-  italic_part <- paste0("italic(", tokens, ")", collapse = "~")
-
-  # Append number if present (plain text in parentheses)
-  expr <- italic_part
-  if (!is.na(num) && nzchar(num)) expr <- paste0(expr, "~'(", num, ")'")
-
-  # Append significance stars (also plain text)
-  if (!is.na(stars) && nzchar(stars)) expr <- paste0(expr, "~'", stars, "'")
-
-  expr
+# -------------------------
+# Y-axis label formatter (ASV style)
+# -------------------------
+format_asv_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    if (grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)
+      bquote(italic(.(trimws(text))) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
 }
 
-# 2) Volcano plotter with fixes
-plot_volcano <- function(df, title, top_n_labels = 8) {
-  if (is.null(df) || !nrow(df) || !"qval" %in% names(df)) {
+format_genus_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    bquote(italic(.(lab)))
+  })
+}
+
+
+# -------------------------
+# Plotter
+# -------------------------
+make_heatmap <- function(df, title, level = c("ASV","Genus")) {
+  level <- match.arg(level)
+
+  if (is.null(df) || !nrow(df)) {
     return(ggplot2::ggplot() + ggplot2::theme_void() +
-             ggplot2::ggtitle(paste0(title, " (no data)")))
+             ggplot2::ggtitle(paste0(title, " (no data at q<=0.25)")))
   }
 
-  pal <- rcartocolor::carto_pal(7, "Geyser")
-  col_neg <- pal[2]
-  col_pos <- pal[6]
-
-  df2 <- df |>
-    dplyr::mutate(
-      qval_plot  = pmax(qval, 1e-300),
-      neglog10q  = -log10(qval_plot),
-      stars      = dplyr::case_when(
-        qval <= 0.05 ~ "***",
-        qval <= 0.10 ~ "**",
-        qval <= 0.25 ~ "*",
-        TRUE         ~ ""
-      ),
-      colour_group = dplyr::case_when(
-        qval <= 0.25 & coef <  0 ~ "Significant (↓ worse)",
-        qval <= 0.25 & coef >= 0 ~ "Significant (↑ worse)",
-        TRUE                      ~ "Not significant"
-      ) |> factor(levels = c("Not significant",
-                             "Significant (↓ worse)", "Significant (↑ worse)"))
-    )
-
-  # Label only top hits per facet
-  top_lab <- df2 |>
-    dplyr::filter(qval <= 0.25) |>
-    dplyr::group_by(metadata_plot) |>
-    dplyr::arrange(qval, dplyr::desc(abs(coef))) |>
-    dplyr::slice_head(n = top_n_labels) |>
-    dplyr::ungroup() |>
-    dplyr::mutate(
-      label_expr = vapply(
-        seq_len(n()),
-        function(i) format_tax_label_expr(feature[i], stars[i]),
-        character(1)
-      )
-    )
-
-  ggplot2::ggplot(df2, ggplot2::aes(x = coef, y = neglog10q, color = colour_group)) +
-    ggplot2::geom_point(alpha = 0.7) +
-    ggplot2::scale_color_manual(
-      values = c(
-        "Not significant"         = "grey80",
-        "Significant (↓ worse)"   = col_neg,
-        "Significant (↑ worse)"   = col_pos
-      ),
-      name = "Points"
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = metadata_plot, y = feature, fill = coef)) +
+    ggplot2::geom_tile(color = "white") +
+    ggplot2::scale_x_discrete(na.translate = FALSE) +   # extra guardrail
+    ggplot2::scale_fill_gradient2(
+      low = rcartocolor::carto_pal(7, "Geyser")[1],
+      mid = rcartocolor::carto_pal(7, "Geyser")[4],
+      high = rcartocolor::carto_pal(7, "Geyser")[7],
+      midpoint = 0,
+      name = "Coefficient"
     ) +
-    # IMPORTANT: parse = TRUE to use plotmath; labels from label_expr
-    ggrepel::geom_text_repel(
-  data = top_lab,
-  ggplot2::aes(label = label_expr),
-  parse = TRUE,
-  seed = 2025, show.legend = FALSE,
-  size = 3,
-  max.overlaps = 100, box.padding = 0.35, point.padding = 0.2,
-  min.segment.length = 0, segment.size = 0.3
-
-    
-    
-    
-    
-    
-    ) +
-    ggplot2::facet_wrap(~ metadata_plot, scales = "free_x", drop = FALSE, nrow = 2) +
-    ggplot2::labs(
-      title = title,
-      x = "Coefficient (effect per 1% predicted decrease)",
-      y = expression(-log[10](q))
-    ) +
+    ggplot2::geom_text(ggplot2::aes(label = label),
+                       color = "black", size = 5,
+                       hjust = 0.5, vjust = 0.8, na.rm = TRUE) +
     ggplot2::theme_minimal(base_size = 11) +
-    ggplot2::coord_cartesian(clip = "off") +
     ggplot2::theme(
-      panel.background = ggplot2::element_rect(fill = "white", color = NA),
-      strip.placement  = "outside",
-      strip.background = ggplot2::element_rect(fill = "grey40", color = NA),
-      strip.text       = ggplot2::element_text(face = "bold", colour = "white",
-                                               margin = ggplot2::margin(2, 4, 2, 4)),
-      panel.grid.minor = ggplot2::element_blank(),
-      panel.border     = ggplot2::element_rect(color = "grey40", fill = NA, linewidth = 0.2),
-      panel.spacing    = grid::unit(8, "pt"),
-      legend.title     = ggplot2::element_text(),
-      legend.key       = ggplot2::element_rect(fill = "white", colour = NA)
-    )
+      axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1),
+      axis.title.x = ggplot2::element_blank(),
+      axis.title.y = ggplot2::element_blank(),
+      panel.grid   = ggplot2::element_blank(),
+      plot.title   = ggplot2::element_text(hjust = 0.5),
+      plot.margin  = grid::unit(c(6, 6, 6, 12), "pt")
+    ) +
+    ggplot2::ggtitle(title)
+
+  if (level == "ASV") {
+    p + ggplot2::scale_y_discrete(labels = format_asv_labels)
+  } else {
+    p + ggplot2::scale_y_discrete(labels = format_genus_labels)
+  }
 }
 
-# --- Build & save (ASV and Genus) ---
 
-# ASV
-np_asv <- read_maaslin_folder(asv_folders$VGO3_NP)
-op_asv <- read_maaslin_folder(asv_folders$VGO3_OP)
+# -------------------------
+# Build & save
+# -------------------------
 
-p_asv_volcano <- (plot_volcano(np_asv, "VGO3 NP — ASV") |
-                  plot_volcano(op_asv, "VGO3 OP — ASV")) +
-  patchwork::plot_annotation(title = "MaAsLin2 — Volcano plots (ASV)")
+# ASV heatmaps (ONLY ASVs with q<=0.25 somewhere)
+p_VGO3_NP_ASV <- make_heatmap(read_heatmap_data(asv_folders$VGO3_NP, q_show = 0.25),
+                              "VGO3 NP (ASV)", "ASV")
+p_VGO3_OP_ASV <- make_heatmap(read_heatmap_data(asv_folders$VGO3_OP, q_show = 0.25),
+                              "VGO3 OP (ASV)", "ASV")
 
-ggplot2::ggsave(file.path(root_dir, "Volcano_Maaslin_ASV.svg"),
-                p_asv_volcano, width = 12, height = 7)
+asv_grid <- (p_VGO3_NP_ASV | p_VGO3_OP_ASV) 
 
-# Genus
-np_gen <- read_maaslin_folder(genus_folders$VGO3_NP)
-op_gen <- read_maaslin_folder(genus_folders$VGO3_OP)
+ggplot2::ggsave(file.path(root_dir, "Heatmap_Maaslin_results_ASV_q025_anywhere.svg"),
+                asv_grid, width = 5, height = 3)
 
-p_gen_volcano <- (plot_volcano(np_gen, "VGO3 NP — Genus") |
-                  plot_volcano(op_gen, "VGO3 OP — Genus")) +
-  patchwork::plot_annotation(title = "MaAsLin2 — Volcano plots (Genus)")
 
-ggplot2::ggsave(file.path(root_dir, "Volcano_Maaslin_Genus.svg"),
-                p_gen_volcano, width = 12, height = 7)
+# Genus heatmaps (same idea; optional — remove if you don’t want this filtered)
+p_VGO3_NP_Gen <- make_heatmap(read_heatmap_data(genus_folders$VGO3_NP, q_show = 0.25),
+                              "VGO3 NP (Genus)", "Genus")
+p_VGO3_OP_Gen <- make_heatmap(read_heatmap_data(genus_folders$VGO3_OP, q_show = 0.25),
+                              "VGO3 OP (Genus)", "Genus")
+
+genus_grid <- (p_VGO3_NP_Gen | p_VGO3_OP_Gen) 
+ggplot2::ggsave(file.path(root_dir, "Heatmap_Maaslin_results_Genus_q025_anywhere.svg"),
+                genus_grid, width = 7, height = 3)
 
 ```
-### ANCOMBC2 
-```{r}
-# Make tree summarised experiment data
-np_asv_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(vgo3_np_ps_abs_filt)
-op_asv_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(vgo3_op_ps_abs_filt)
-np_genus_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(vgo3_np_ps_genus_abs_filt)
-op_genus_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(vgo3_op_ps_genus_abs_filt)
-
-custom_metadata_order <- c(
-  "FEV1_pred_decline","FVC_pred_decline","FEV1FVC_pred_decline","MMEF_pred_decline"
-)
-pretty_labels <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
-)
-
-models <- list(
-  FEV1 = "FEV1_pred_decline + Age + Gender + season_microbiome_sampling + Smoking_status + RespDx",
-  FVC = "FVC_pred_decline + Age + Gender + season_microbiome_sampling + Smoking_status + RespDx",
-  FEV1FVC = "FEV1FVC_pred_decline + Age + Gender + season_microbiome_sampling + Smoking_status + RespDx",
-  staph = "MMEF_pred_decline + Age + Gender + season_microbiome_sampling + Smoking_status + RespDx"
-)
 
 
-# create *_decline variables in your metadata 
-# vars to convert
-decline_vars <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
-
-add_decline_vars <- function(obj, vars = decline_vars) {
-  if (inherits(obj, c("TreeSummarizedExperiment","SummarizedExperiment"))) {
-    cd <- SummarizedExperiment::colData(obj)
-    for (v in vars) {
-      if (v %in% colnames(cd)) {
-        cd[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(as.character(cd[[v]])))
-      } else {
-        warning("Column not found in colData: ", v)
-      }
-    }
-    SummarizedExperiment::colData(obj) <- cd
-    return(obj)
-  }
-
-  # phyloseq
-  if (inherits(obj, "phyloseq")) {
-    md <- data.frame(phyloseq::sample_data(obj), check.names = FALSE)
-    for (v in vars) {
-      if (v %in% names(md)) {
-        md[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(as.character(md[[v]])))
-      } else {
-        warning("Column not found in sample_data: ", v)
-      }
-    }
-    phyloseq::sample_data(obj) <- phyloseq::sample_data(md)
-    return(obj)
-  }
-
-  stop("Unsupported object class: ", class(obj)[1])
-}
-
-# Apply to the object(s) you are analyzing
-np_asv_tse <- add_decline_vars(np_asv_tse)
-op_asv_tse <- add_decline_vars(op_asv_tse)
-np_genus_tse <- add_decline_vars(np_genus_tse)
-op_genus_tse <- add_decline_vars(op_genus_tse)
-
-
-np_asv_tse@colData  %>%
-  mutate(
-    Gender = factor(Gender, levels = c("Male", "Female")),
-    season_microbiome_sampling = factor(season_microbiome_sampling, levels = c("Winter",  "Spring",  "Summer", "Autumn")),
-    Smoking_status = factor(Smoking_status, levels = c("non", "former", "current"))
-  )  
-    
-
-# What you want as references
-refs <- list(
-  Gender = "male",
-  season_microbiome_sampling = "winter",
-  Smoking_status = "non",
-  RespDx = "no"
-)
-
-# Minimal helper: relevel selected columns if they exist
-relevel_tse <- function(tse, refs) {
-  cd <- as.data.frame(SummarizedExperiment::colData(tse), check.names = FALSE)
-  for (nm in names(refs)) {
-    if (nm %in% names(cd)) cd[[nm]] <- stats::relevel(factor(cd[[nm]]), ref = refs[[nm]])
-  }
-  SummarizedExperiment::colData(tse) <- S4Vectors::DataFrame(cd, row.names = rownames(cd))
-  tse
-}
-
-# Apply to each object
-np_asv_tse <- relevel_tse(np_asv_tse, refs)
-op_asv_tse <- relevel_tse(op_asv_tse, refs)
-np_genus_tse <- relevel_tse(np_genus_tse, refs)
-op_genus_tse <- relevel_tse(op_genus_tse, refs)
-
-
-# Run ANCOM-BC2 analyses for all models
-ancom_np_asv <- map(models, ~ ANCOMBC::ancombc2(
-  data = np_asv_tse,
-  fix_formula = .x,
-  rand_formula = NULL,
-  p_adj_method = "BH",
-  prv_cut = 0,
-  lib_cut = 0,
-  struc_zero = FALSE,
-  alpha = 0.05,
-  global = FALSE,
-  pairwise = FALSE
-))
-
-# Process and save results 
-ancom_np_asv <- map(ancom_np_asv, ~ mutate_if(.x$res, is.numeric, round, 2))
-
-# Define output paths
-output_dir <- "../Output/Cross_sectional/DA/ANCOMBC2/Non_stratified/NP/ASV"
-file_names <- c("FEV1", "FVC", "FEV1FVC", "MMEF")
-
-# Save results as CSV
-walk2(ancom_np_asv, file_names, ~ write_csv(.x, file.path(output_dir, paste0("ANCOMBC2_NP_ASV_", .y, ".csv"))))
-
-
-#### OP ASV level ####
-# Run ANCOM-BC2 analyses for all models
-ancom_op_asv <- map(models, ~ ANCOMBC::ancombc2(
-  data = op_asv_tse,
-  fix_formula = .x,
-  rand_formula = NULL,
-  p_adj_method = "BH",
-  prv_cut = 0,
-  lib_cut = 0,
-  struc_zero = FALSE,
-  alpha = 0.05,
-  global = FALSE,
-  pairwise = FALSE
-))
-
-# Process and save results 
-ancom_op_asv <- map(ancom_op_asv, ~ mutate_if(.x$res, is.numeric, round, 2))
-
-# Define output paths
-output_dir <- "../Output/Cross_sectional/DA/ANCOMBC2/OP/ASV"
-file_names <- c("FEV1", "FVC", "FEV1FVC", "MMEF")
-
-# Save results as CSV
-walk2(ancom_op_asv, file_names, ~ write_csv(.x, file.path(output_dir, paste0("ANCOMBC2_OP_ASV_", .y, ".csv"))))
-
-
-
-#### NP Genus level ####
-ancom_np_genus <- map(models, ~ ANCOMBC::ancombc2(
-  data = np_genus_tse,
-  fix_formula = .x,
-  rand_formula = NULL,
-  p_adj_method = "BH",
-  prv_cut = 0,
-  lib_cut = 0,
-  struc_zero = FALSE,
-  alpha = 0.05,
-  global = FALSE,
-  pairwise = FALSE
-))
-
-# Process and save results 
-ancom_np_genus <- map(ancom_np_genus, ~ mutate_if(.x$res, is.numeric, round, 2))
-
-# Define output paths
-output_dir <- "../Output/Cross_sectional/DA/ANCOMBC2/NP/Genus"
-file_names <- c("FEV1", "FVC", "FEV1FVC", "MMEF")
-
-# Save results as CSV
-walk2(ancom_np_genus, file_names, ~ write_csv(.x, file.path(output_dir, paste0("ANCOMBC2_NP_genus_", .y, ".csv"))))
-
-
-#### OP Genus level ####
-ancom_op_genus <- map(models, ~ ANCOMBC::ancombc2(
-  data = op_genus_tse,
-  fix_formula = .x,
-  rand_formula = NULL,
-  p_adj_method = "BH",
-  prv_cut = 0,
-  lib_cut = 0,
-  struc_zero = FALSE,
-  alpha = 0.05,
-  global = FALSE,
-  pairwise = FALSE
-))
-
-# Process and save results 
-ancom_op_genus <- map(ancom_op_genus, ~ mutate_if(.x$res, is.numeric, round, 2))
-
-# Define output paths
-output_dir <- "../Output/Cross_sectional/DA/ANCOMBC2/OP/Genus"
-file_names <- c("FEV1", "FVC", "FEV1FVC", "MMEF")
-
-# Save results as CSV
-walk2(ancom_op_genus, file_names, ~ write_csv(.x, file.path(output_dir, paste0("ANCOMBC2_OP_genus_", .y, ".csv"))))
-```
-
-### ANCOMBC2 (no RespDx covariate)
+### ANCOMBC2
 ```{r}
 # Make tree summarised experiment data
 np_asv_tse <- mia::convertFromPhyloseq(vgo3_np_ps_abs_filt)
@@ -5839,63 +5441,63 @@ np_genus_tse <- mia::convertFromPhyloseq(vgo3_np_ps_genus_abs_filt)
 op_genus_tse <- mia::convertFromPhyloseq(vgo3_op_ps_genus_abs_filt)
 
 custom_metadata_order <- c(
-  "FEV1_pred_decline","FVC_pred_decline","FEV1FVC_pred_decline","MMEF_pred_decline"
+  "FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred"
 )
 pretty_labels <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
 )
 
 models <- list(
-  FEV1 = "FEV1_pred_decline + Age + Gender + season_microbiome_sampling + Smoking_status",
-  FVC = "FVC_pred_decline + Age + Gender + season_microbiome_sampling + Smoking_status",
-  FEV1FVC = "FEV1FVC_pred_decline + Age + Gender + season_microbiome_sampling + Smoking_status",
-  staph = "MMEF_pred_decline + Age + Gender + season_microbiome_sampling + Smoking_status"
+  FEV1 = "FEV1_pred + Age + Gender + season_microbiome_sampling + Smoking_status",
+  FVC = "FVC_pred + Age + Gender + season_microbiome_sampling + Smoking_status",
+  FEV1FVC = "FEV1FVC_pred + Age + Gender + season_microbiome_sampling + Smoking_status",
+  staph = "MMEF_pred + Age + Gender + season_microbiome_sampling + Smoking_status"
 )
 
 
-# create *_decline variables in your metadata 
-# vars to convert
-decline_vars <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
-
-add_decline_vars <- function(obj, vars = decline_vars) {
-  if (inherits(obj, c("TreeSummarizedExperiment","SummarizedExperiment"))) {
-    cd <- SummarizedExperiment::colData(obj)
-    for (v in vars) {
-      if (v %in% colnames(cd)) {
-        cd[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(as.character(cd[[v]])))
-      } else {
-        warning("Column not found in colData: ", v)
-      }
-    }
-    SummarizedExperiment::colData(obj) <- cd
-    return(obj)
-  }
-
-  # phyloseq
-  if (inherits(obj, "phyloseq")) {
-    md <- data.frame(phyloseq::sample_data(obj), check.names = FALSE)
-    for (v in vars) {
-      if (v %in% names(md)) {
-        md[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(as.character(md[[v]])))
-      } else {
-        warning("Column not found in sample_data: ", v)
-      }
-    }
-    phyloseq::sample_data(obj) <- phyloseq::sample_data(md)
-    return(obj)
-  }
-
-  stop("Unsupported object class: ", class(obj)[1])
-}
-
-# Apply to the object(s) you are analyzing
-np_asv_tse <- add_decline_vars(np_asv_tse)
-op_asv_tse <- add_decline_vars(op_asv_tse)
-np_genus_tse <- add_decline_vars(np_genus_tse)
-op_genus_tse <- add_decline_vars(op_genus_tse)
+# # create *_decline variables in your metadata 
+# # vars to convert
+# decline_vars <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
+# 
+# add_decline_vars <- function(obj, vars = decline_vars) {
+#   if (inherits(obj, c("TreeSummarizedExperiment","SummarizedExperiment"))) {
+#     cd <- SummarizedExperiment::colData(obj)
+#     for (v in vars) {
+#       if (v %in% colnames(cd)) {
+#         cd[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(as.character(cd[[v]])))
+#       } else {
+#         warning("Column not found in colData: ", v)
+#       }
+#     }
+#     SummarizedExperiment::colData(obj) <- cd
+#     return(obj)
+#   }
+# 
+#   # phyloseq
+#   if (inherits(obj, "phyloseq")) {
+#     md <- data.frame(phyloseq::sample_data(obj), check.names = FALSE)
+#     for (v in vars) {
+#       if (v %in% names(md)) {
+#         md[[paste0(v, "_decline")]] <- -1 * suppressWarnings(as.numeric(as.character(md[[v]])))
+#       } else {
+#         warning("Column not found in sample_data: ", v)
+#       }
+#     }
+#     phyloseq::sample_data(obj) <- phyloseq::sample_data(md)
+#     return(obj)
+#   }
+# 
+#   stop("Unsupported object class: ", class(obj)[1])
+# }
+# 
+# # Apply to the object(s) you are analyzing
+# np_asv_tse <- add_decline_vars(np_asv_tse)
+# op_asv_tse <- add_decline_vars(op_asv_tse)
+# np_genus_tse <- add_decline_vars(np_genus_tse)
+# op_genus_tse <- add_decline_vars(op_genus_tse)
 
 meta <- as.data.frame(colData(np_asv_tse))
 
@@ -6050,10 +5652,10 @@ paths <- list(
 # X-axis order & pretty labels (like your MaAsLin heatmaps)
 custom_metadata_order <- c("FEV1","FVC","FEV1FVC","MMEF")
 pretty_labels <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
 )
 names(pretty_labels) <- custom_metadata_order
 
@@ -6104,7 +5706,7 @@ read_ancom_folder <- function(folder) {
     tax_col <- nms[tax_idx[1]]
 
     # Find matching lfc/q/passed columns for this var
-    key <- paste0(tolower(var), "_pred_decline")
+    key <- paste0(tolower(var), "_pred")
     lfc_col <- nms[grepl(paste0("^lfc_.*",       key, "$"), nms_lower)]
     q_col   <- nms[grepl(paste0("^q_.*",         key, "$"), nms_lower)]
     ps_col  <- nms[grepl(paste0("^passed_ss_.*", key, "$"), nms_lower)]
@@ -6207,8 +5809,214 @@ p_gen_grid <- (p_np_gen | p_op_gen) +
 ggsave(file.path(root_ancom, "Heatmap_ANCOMBC2_Genus_combined.svg"),
        p_gen_grid, width = 11, height = 8)
 ```
+#### ANCOM-BC2 heatmaps (only q<0.25 results) 
+```{r}
+#### ANCOM-BC2 heatmaps — show only taxa with q <= 0.25 in ANY analysis ####
 
-## Stratified analysis (by RespDx)
+root_ancom <- "../Output/Cross_sectional/DA/ANCOMBC2/Non_stratified"
+paths <- list(
+  NP_ASV    = file.path(root_ancom, "NP", "ASV"),
+  OP_ASV    = file.path(root_ancom, "OP", "ASV"),
+  NP_Genus  = file.path(root_ancom, "NP", "Genus"),
+  OP_Genus  = file.path(root_ancom, "OP", "Genus")
+)
+
+custom_metadata_order <- c("FEV1","FVC","FEV1FVC","MMEF")
+pretty_labels <- c(
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
+)
+names(pretty_labels) <- custom_metadata_order
+
+# Y-axis formatters (as you had)
+format_asv_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    if (grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)
+      bquote(italic(.(trimws(text))) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+format_genus_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    bquote(italic(.(lab)))
+  })
+}
+
+suppressPackageStartupMessages(library(stringr))
+
+# ---------
+# Reader (folder -> tidy df), then filter taxa by q<=0.25 anywhere
+# ---------
+read_ancom_folder <- function(folder, q_show = 0.25) {
+  files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
+  if (!length(files)) return(NULL)
+
+  out <- lapply(files, function(f) {
+    df <- suppressMessages(readr::read_csv(f, show_col_types = FALSE))
+    if (!nrow(df)) return(NULL)
+
+    b <- basename(f)
+    var <- stringr::str_match(b, "_(FEV1FVC|FEV1|FVC|MMEF)\\.csv$")[, 2]
+    if (is.na(var)) return(NULL)
+
+    nms <- names(df); nms_lower <- tolower(nms)
+
+    tax_idx <- which(nms_lower == "taxon")
+    if (!length(tax_idx)) return(NULL)
+    tax_col <- nms[tax_idx[1]]
+
+    key <- paste0(tolower(var), "_pred")
+    lfc_col <- nms[grepl(paste0("^lfc_.*",       key, "$"), nms_lower)]
+    q_col   <- nms[grepl(paste0("^q_.*",         key, "$"), nms_lower)]
+    ps_col  <- nms[grepl(paste0("^passed_ss_.*", key, "$"), nms_lower)]
+    if (!length(lfc_col) || !length(q_col) || !length(ps_col)) return(NULL)
+
+    tibble::tibble(
+      feature   = as.character(df[[tax_col]]),
+      metadata  = var,
+      coef      = suppressWarnings(as.numeric(df[[lfc_col[1]]])),
+      q_value   = suppressWarnings(as.numeric(df[[q_col[1]]])),
+      passed_ss = as.logical(df[[ps_col[1]]])
+    )
+  })
+
+  d <- dplyr::bind_rows(out)
+  if (!nrow(d)) return(NULL)
+
+  # prevent NA x-axis column + enforce order
+  d <- d |>
+    dplyr::mutate(metadata = trimws(as.character(metadata))) |>
+    dplyr::filter(metadata %in% custom_metadata_order)
+
+  if (!nrow(d)) return(NULL)
+
+  # Keep only taxa significant anywhere
+  keep_features <- d |>
+    dplyr::filter(!is.na(q_value) & q_value <= q_show) |>
+    dplyr::distinct(feature) |>
+    dplyr::pull(feature)
+
+  d <- d |> dplyr::filter(feature %in% keep_features)
+  if (!nrow(d)) return(NULL)
+
+  # label stars (computed AFTER filtering, but still per-cell)
+  d <- d |>
+    dplyr::mutate(
+      label = dplyr::case_when(
+        is.na(q_value)  ~ "",
+        q_value <= 0.05 ~ "***",
+        q_value <= 0.10 ~ "**",
+        q_value <= 0.25 ~ "*",
+        TRUE            ~ ""
+      ),
+      metadata_raw  = factor(metadata, levels = custom_metadata_order),
+      metadata_plot = factor(pretty_labels[as.character(metadata_raw)],
+                             levels = pretty_labels)
+    )
+
+  # Optional: order y-axis by best q across outcomes
+  feat_order <- d |>
+    dplyr::group_by(feature) |>
+    dplyr::summarise(best_q = min(q_value, na.rm = TRUE), .groups = "drop") |>
+    dplyr::arrange(best_q) |>
+    dplyr::pull(feature)
+
+  d$feature <- factor(d$feature, levels = rev(feat_order))
+
+  d
+}
+
+# ---------
+# Plotter (same as yours, with a small legend fix)
+# ---------
+make_heatmap <- function(df, title, level = c("ASV","Genus")) {
+  level <- match.arg(level)
+
+  if (is.null(df) || !nrow(df)) {
+    return(ggplot2::ggplot() + ggplot2::theme_void() +
+             ggplot2::ggtitle(paste0(title, " (no data at q<=0.25)")))
+  }
+
+  pal <- rcartocolor::carto_pal(7, "Geyser")
+
+  p <- ggplot2::ggplot(df, ggplot2::aes(x = metadata_plot, y = feature, fill = coef)) +
+    ggplot2::geom_tile(color = "white") +
+    ggplot2::scale_x_discrete(na.translate = FALSE) +
+    ggplot2::scale_fill_gradient2(
+      low = pal[1], mid = pal[4], high = pal[7],
+      midpoint = 0, name = "Coefficient"
+    ) +
+    ggplot2::geom_text(
+      ggplot2::aes(label = label, color = ifelse(passed_ss, "black", "white")),
+      size = 5, na.rm = TRUE
+    ) +
+    ggplot2::scale_color_identity(
+      breaks = c("black","white"),
+      labels = c("Passed (black *)", "Not passed (white *)"),
+      guide  = ggplot2::guide_legend(
+        title = "Structural-zero screen",
+        override.aes = list(label = "*", size = 5)
+      )
+    ) +
+    ggplot2::theme_minimal(base_size = 11) +
+    ggplot2::theme(
+      axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1),
+      axis.title.x = ggplot2::element_blank(),
+      axis.title.y = ggplot2::element_blank(),
+      panel.grid   = ggplot2::element_blank(),
+      plot.title   = ggplot2::element_text(hjust = 0.5),
+      plot.margin  = grid::unit(c(6, 6, 6, 12), "pt")
+    ) +
+    ggplot2::ggtitle(title)
+
+  if (level == "ASV") {
+    p + ggplot2::scale_y_discrete(labels = format_asv_labels)
+  } else {
+    p + ggplot2::scale_y_discrete(labels = format_genus_labels)
+  }
+}
+
+# ---------
+# Build & save (NP vs OP)
+# ---------
+
+# ASV
+np_asv <- read_ancom_folder(paths$NP_ASV, q_show = 0.25)
+op_asv <- read_ancom_folder(paths$OP_ASV, q_show = 0.25)
+
+p_np_asv <- make_heatmap(np_asv, "VGO3 NP (ASV)", "ASV")
+p_op_asv <- make_heatmap(op_asv, "VGO3 OP (ASV)", "ASV")
+
+p_asv_grid <- (p_np_asv | p_op_asv) +
+  patchwork::plot_annotation(title = "ANCOM-BC2 Heatmaps — ASV level (q ≤ 0.25 anywhere)")
+
+ggplot2::ggsave(file.path(root_ancom, "Heatmap_ANCOMBC2_ASV_q025_anywhere.svg"),
+                p_asv_grid, width = 8, height = 4)
+
+# Genus
+np_gen <- read_ancom_folder(paths$NP_Genus, q_show = 0.25)
+op_gen <- read_ancom_folder(paths$OP_Genus, q_show = 0.25)
+
+p_np_gen <- make_heatmap(np_gen, "VGO3 NP (Genus)", "Genus")
+p_op_gen <- make_heatmap(op_gen, "VGO3 OP (Genus)", "Genus")
+
+p_gen_grid <- (p_np_gen | p_op_gen) +
+  patchwork::plot_annotation(title = "ANCOM-BC2 Heatmaps — Genus level (q ≤ 0.25 anywhere)")
+
+ggplot2::ggsave(file.path(root_ancom, "Heatmap_ANCOMBC2_Genus_q025_anywhere.svg"),
+                p_gen_grid, width = 8, height = 4)
+
+```
+
+## Stratified by Respiratory disease 
 ### MaAsLin2 
 ```{r}
 # Helper to prune phyloseq by a metadata level
@@ -6278,7 +6086,7 @@ for (tag in names(ps_list_DA_ASV_strat)) {
   dir.create(out_tag, recursive = TRUE, showWarnings = FALSE)
 
   # create needed subfolders
-  make_dirs_for_pslists(out_tag, list(ASV = ps_asv_tag, Genus = ps_genus_tag))
+  # make_dirs_for_pslists(out_tag, list(ASV = ps_asv_tag, Genus = ps_genus_tag))
   summ_tag <- run_maaslin_batch(
     ps_lists = list(ASV = ps_asv_tag, Genus = ps_genus_tag),
     vars     = vars_cont,
@@ -6319,18 +6127,18 @@ tax_levels  <- c("ASV","Genus")
 
 # Order on x-axis (raw metadata names in CSV)
 custom_metadata_order <- c(
-  "FEV1_pred_decline",
-  "FVC_pred_decline",
-  "FEV1FVC_pred_decline",
-  "MMEF_pred_decline"
+  "FEV1_pred",
+  "FVC_pred",
+  "FEV1FVC_pred",
+  "MMEF_pred"
 )
 
 # Pretty x-axis labels
 pretty_labels <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
 )
 names(pretty_labels) <- custom_metadata_order
 
@@ -6500,10 +6308,10 @@ subset_tse_by_level <- function(tse, var = "RespDx", level = "no") {
 
 # outcomes (RespDx removed because we stratify)
 outcomes <- c(
-  FEV1    = "FEV1_pred_decline",
-  FVC     = "FVC_pred_decline",
-  FEV1FVC = "FEV1FVC_pred_decline",
-  MMEF    = "MMEF_pred_decline"
+  FEV1    = "FEV1_pred",
+  FVC     = "FVC_pred",
+  FEV1FVC = "FEV1FVC_pred",
+  MMEF    = "MMEF_pred"
 )
 
 # covariates INSIDE strata
@@ -6614,10 +6422,10 @@ paths_strat <- list(
 # X-axis order & pretty labels (like your MaAsLin heatmaps)
 custom_metadata_order <- c("FEV1","FVC","FEV1FVC","MMEF")
 pretty_labels <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
 )
 names(pretty_labels) <- custom_metadata_order
 
@@ -6669,7 +6477,7 @@ read_ancom_folder <- function(folder) {
     tax_col <- nms[tax_idx[1]]
 
     # Find matching lfc/q/passed columns for this var
-    key <- paste0(tolower(var), "_pred_decline")
+    key <- paste0(tolower(var), "_pred")
     lfc_col <- nms[grepl(paste0("^lfc_.*",       key, "$"), nms_lower)]
     q_col   <- nms[grepl(paste0("^q_.*",         key, "$"), nms_lower)]
     ps_col  <- nms[grepl(paste0("^passed_ss_.*", key, "$"), nms_lower)]
@@ -6803,10 +6611,10 @@ tax_levels  <- c("ASV","Genus")
 # X-axis order & pretty labels
 custom_metadata_order <- c("FEV1","FVC","FEV1FVC","MMEF")
 pretty_labels <- c(
-  "FEV1 % predicted (decline)",
-  "FVC % predicted (decline)",
-  "FEV1/FVC % predicted (decline)",
-  "MMEF % predicted (decline)"
+  "FEV1 % predicted",
+  "FVC % predicted",
+  "FEV1/FVC % predicted",
+  "MMEF % predicted"
 )
 names(pretty_labels) <- custom_metadata_order
 
@@ -6857,8 +6665,7 @@ read_ancom_folder <- function(folder) {
     tax_idx <- which(nms_lower == "taxon")
     if (!length(tax_idx)) return(NULL)
     tax_col <- nms[tax_idx[1]]
-
-    key <- paste0(tolower(var), "_pred_decline")
+    key <- paste0(tolower(var), "_pred")
 
     lfc_col <- nms[grepl(paste0("^lfc_.*",       key, "$"), nms_lower)]
     q_col   <- nms[grepl(paste0("^q_.*",         key, "$"), nms_lower)]
@@ -7220,90 +7027,42 @@ ggsave(
 
 ```
 
-# Table 1 characteristics
-
+# Count numbers of participants and samples - pre vs post processing dataset
 ```{r}
-ps <- readRDS("../Input/Phyloseq/VGO3_NPOP/1_ps_raw.Rds")
-length(unique(ps@sam_data$VGO3_ID)) # 1299
+# This is the microbiome data, but we haven't yet aligned it with the spiro data (VGO3_metadata), so some individuals may have microbiome data but not spiro data, filter our these individuals first. 
+# IDs with cleaned spirometry (Table 1 / analysis population anchor)
+ids_spiro <- VGO3_metadata %>%
+  distinct(VGO3_ID)
 
+sd_pre <- data.frame(sample_data(ps)) %>%
+  filter(niche %in% c("NP","OP")) %>%
+  semi_join(ids_spiro, by = "VGO3_ID")  # keep only those with spirometry
 
-sum(VGO3_metadata$asthma_ever == "yes" & VGO3_metadata$copd_doc_diag == "yes") # 62 with asthma (ever)
+cat("Participants BEFORE:",
+    dplyr::n_distinct(sd_pre$VGO3_ID), "\n") # 858
 
-summarise_numeric <- function(x) {
-  x <- x[!is.na(x)]
-  if (!length(x)) return(NA_character_)
+cat("NP participants BEFORE:",
+    n_distinct(sd_pre$VGO3_ID[sd_pre$niche == "NP"]), "\n") # 848
 
-  m  <- mean(x)
-  s  <- sd(x)
-  q  <- quantile(x, probs = c(0.25, 0.5, 0.75))
+cat("OP participants BEFORE:",
+    n_distinct(sd_pre$VGO3_ID[sd_pre$niche == "OP"]), "\n") # 845
 
-  sprintf("mean %.2f (SD %.2f); median %.2f [IQR %.2f–%.2f]",
-          m, s, q[2], q[1], q[3])
-}
+# Post processing
+sd_post <- data.frame(sample_data(ps4_m)) %>%
+  dplyr::filter(niche %in% c("NP","OP"))
 
-summarise_categorical <- function(x) {
-  x <- droplevels(as.factor(x))
-  if (all(is.na(x))) return(NA_character_)
+cat("Participants AFTER (CP, with spirometry):",
+    n_distinct(sd_post$VGO3_ID), "\n") # 853
 
-  n_tot <- sum(!is.na(x))
-  lvl_stats <- levels(x) %>%
-    map_chr(function(lv) {
-      n <- sum(x == lv, na.rm = TRUE)
-      pct <- 100 * n / n_tot
-      sprintf("%s: %d (%.1f%%)", lv, n, pct)
-    })
+cat("NP participants AFTER:",
+    n_distinct(sd_post$VGO3_ID[sd_post$niche == "NP"]), "\n")# 648 
 
-  paste(lvl_stats, collapse = " | ")
-}
-
-# identify var types
-
-is_num <- sapply(VGO3_metadata, is.numeric)
-
-numeric_vars <- names(VGO3_metadata)[is_num]
-categorical_vars <- names(VGO3_metadata)[!is_num]
-
-# keep only the variables of interest
-vars_of_interest <- c(
-  "Age","Ethnicity","Gender","Height","Weight","BMI","Smoking_status",
-  "Pneumonia_lastyr","COPD_emphy_doc_diag","Asthma_ever","Covid_lastmonth",
-  "Asthma_attk_lastyr","Lung_med","Asthma_med_current","Cortinhal_lastyr",
-  "Antibiotics_lastmonth","Antibiotics_lastyr","Farm_visit_lastyr",
-  "FEV1","FVC","FEV1_FVC","FEF25_75",
-  "FEV1_pred","FVC_pred","FEV1FVC_pred","FEF25_75_pred"
-)
-
-numeric_vars <- intersect(numeric_vars, vars_of_interest)
-categorical_vars <- intersect(categorical_vars, vars_of_interest)
-
-# build summary rows
-num_df <- tibble::tibble(
-  Variable = numeric_vars,
-  Summary  = sapply(VGO3_metadata[numeric_vars], summarise_numeric)
-)
-
-cat_df <- tibble::tibble(
-  Variable = categorical_vars,
-  Summary  = sapply(VGO3_metadata[categorical_vars], summarise_categorical)
-)
-
-# bind them and put in a nice order
-simple_table <- bind_rows(num_df, cat_df) %>%
-  mutate(
-    Variable = factor(Variable, levels = vars_of_interest)
-  ) %>%
-  arrange(Variable) %>%
-  mutate(Variable = as.character(Variable))
-
-simple_table
-
-
-write.csv(simple_table,
-          "../Output/Participant_data/Table_VGO3_simple_summary.csv",
-          row.names = FALSE)
-
+cat("OP participants AFTER:",
+    n_distinct(sd_post$VGO3_ID[sd_post$niche == "OP"]), "\n") # 843
 
 ```
+
+
 
 
 
