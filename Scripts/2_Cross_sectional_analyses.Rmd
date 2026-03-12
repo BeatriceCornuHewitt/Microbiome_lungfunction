@@ -2,53 +2,30 @@
 title: "Cross-sectional analyses"
 author: "Beatrice Cornu Hewitt"
 date: "`r Sys.time()`"
-output: html_document
 ---
-
 # Load packages 
 ```{r}
 # Check R version 
 R.version.string # R version 4.4.2 (2024-10-31 ucrt)
 
-# Package installer/loader
-install_and_load_packages <- function() {
-  # Core CRAN packages
-  cran_pkgs <- c(
-    "phyloseq","vegan","tidyr","dplyr","ggplot2","tidyverse","microbiomer",
-    "paletteer","microbiome","devtools","forcats","haven","openxlsx","ggsignif",
-    "patchwork","decontam","RColorBrewer","lubridate","stringr","janitor",
-    "gtsummary","gt","cowplot","scales","car","lmtest","rcartocolor","broom",
-    "writexl","tibble","glue","corrplot","reshape2","Hmisc","fpc","dendextend",
-    "ggdendro","purrr","ggh4x","ggpubr","ape","microViz","ggside","Maaslin2"
-  )
-  # Bioconductor packages
-  bioc_pkgs <- c("ANCOMBC","mia")
-  # Ensure BiocManager is available
-  if (!requireNamespace("BiocManager", quietly = TRUE))
-    install.packages("BiocManager", dependencies = TRUE)
-  # Helper to install and load CRAN packages
-  for (pkg in cran_pkgs) {
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      message("Installing CRAN package: ", pkg)
-      install.packages(pkg, dependencies = TRUE)
-    }
-    suppressPackageStartupMessages(library(pkg, character.only = TRUE))
-  }
-  # Helper to install and load Bioconductor packages
-  for (pkg in bioc_pkgs) {
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      message("Installing Bioconductor package: ", pkg)
-      BiocManager::install(pkg, ask = FALSE, update = FALSE)
-    }
-    suppressPackageStartupMessages(library(pkg, character.only = TRUE))
-  }
-  message("All required packages successfully installed and loaded.")
-}
+# Install pacman package
+if (!require("pacman")) install.packages("pacman")
 
-# Run loader 
-install_and_load_packages()
+# Load all packages
+pacman::p_load(
+  tidyverse, microbiomer, paletteer, microbiome, devtools, 
+  haven, openxlsx, ggsignif, patchwork, decontam, RColorBrewer, 
+  janitor, gtsummary, gt, cowplot, scales, car, lmtest, 
+  rcartocolor, broom, writexl, glue, corrplot, reshape2, 
+  Hmisc, fpc, dendextend, ggdendro, ggh4x, ggpubr, 
+  ape, microViz, ggside, Maaslin2, vegan
+)
 
-# Load my custom functions from scripts folder
+# Bioconductor packages (pacman doesn't always handle these perfectly, so do them separately)
+if (!require("BiocManager")) install.packages("BiocManager")
+pacman::p_load(phyloseq, ANCOMBC, mia)
+
+# Load custom functions
 source("0_functions.R")
 ```
 # Load data - VGO3 OP and NP 
@@ -255,7 +232,7 @@ bacterial_density_NP_OP <- df %>%
                      breaks = scales::trans_breaks('log10', function(x) 10^x),
                      labels = scales::trans_format('log10', scales::math_format(10^.x)))
 
-ggsave("../Output/Preprocessing/bacterial_density_NPvsOP.svg", bacterial_density_NP_OP)
+ggsave("../Output/Cross_sectional/Preprocessing/bacterial_density_NPvsOP.svg", bacterial_density_NP_OP)
 
 ```
 # Decontaminating the microbiome data
@@ -448,7 +425,7 @@ KW_contams_VGO3OP <- ggplot(subset(df_VGO3_op_pivot, ASV %in% KW_contams_vgo3_op
   facet_wrap(~ASV, scales = "free_y") +
   theme_bw()
 
-ggsave("../Output/Decontamination/Kruskall_Wallis/KW_contams_VGO3OP.png", KW_contams_VGO3OP, width = 20, height = 20)
+ggsave("../Output/Cross_sectional/Decontamination/Kruskall_Wallis/KW_contams_VGO3OP.png", KW_contams_VGO3OP, width = 20, height = 20)
 ```
 ## Combine contaminants from both methods per dataset
 ```{r}
@@ -604,7 +581,7 @@ asv_run_presence_simple <- df_vgo3_op_contams_present %>%
 # View result
 print(asv_run_presence_simple)
 # Optionally write to file
-write.csv(asv_run_presence_simple, "../Output/Decontamination/VGO3_OP_suspect_ASV_run_presence.csv", row.names = FALSE) # The ASVs seem to be present across a selection of different DNA isolation runs - therefore not probably related to spill-over from NP niche
+write.csv(asv_run_presence_simple, "../Output/Cross_sectional/Decontamination/VGO3_OP_suspect_ASV_run_presence.csv", row.names = FALSE) # The ASVs seem to be present across a selection of different DNA isolation runs - therefore not probably related to spill-over from NP niche
 
 # Extra check: 
 # Check the relative abundance across DNA isolation runs for these suspicious contaminants identified. 
@@ -1450,7 +1427,7 @@ lung_func_corr <- ggplot(melted_cor, aes(x = Var1, y = Var2, fill = value)) +
     plot.title = element_text(hjust = 0.5, face = "bold")
   )
 
-ggsave("../Output/Variable_associations/Lung_function_correlations.svg", width = 5, height = 5)
+ggsave("../Output/Cross_sectional/Variable_associations/Lung_function_correlations.svg", width = 5, height = 5)
 
 
 # Test associations between variables to be included in multivariable models
@@ -1544,7 +1521,7 @@ results <- results %>% arrange(var1, var2)
 print(results)
 
 # Save the results table to Excel
-write_xlsx(results, "../Output/Variable_associations/Covariate_association_results.xlsx")
+write_xlsx(results, "../Output/Cross_sectional/Variable_associations/Covariate_association_results.xlsx")
 
 ```
 
@@ -1640,7 +1617,7 @@ p_violin <- ggplot(alpha_long, aes(x = niche, y = value, fill = niche)) +
 
 print(p_violin)
 
-# Optional save
+# save
 outdir <- "../Output/Cross_sectional/Alpha_diversity/Violinplots"
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
@@ -5715,8 +5692,8 @@ read_ancom_folder <- function(folder) {
     tibble::tibble(
       feature   = df[[tax_col]],
       metadata  = var,
-      coef      = suppressWarnings(as.numeric(df[[lfc_col[1]]])),   # <-- extra ']' added
-      q_value   = suppressWarnings(as.numeric(df[[q_col[1]]])),     # <-- extra ']' added
+      coef      = suppressWarnings(as.numeric(df[[lfc_col[1]]])),   
+      q_value   = suppressWarnings(as.numeric(df[[q_col[1]]])),     
       passed_ss = as.logical(df[[ps_col[1]]]),
       label = dplyr::case_when(
         is.na(q_value)        ~ "",
