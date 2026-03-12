@@ -1,15 +1,25 @@
 ---
-title: "Load data"
+title: "Cleaning Spirometry data from VGO2 and VGO3 studies"
 author: "Warner van Kersen (adapted by Beatrice Cornu Hewitt)"
 date: "`r Sys.time()`"
-output: html_document
 ---
 # Load packages
 ```{r}
-library(dplyr); library(labelled); library(gt); library(openxlsx); library(haven); library(lubridate); library(table1); library(rspiro); library(stringr); library(tidyr)
+# Check R version 
+R.version.string # R version 4.4.2 (2024-10-31 ucrt)
+
+# Install pacman package
+if (!require("pacman")) install.packages("pacman")
+
+# Load all packages
+pacman::p_load(
+  dplyr, labelled, gt, openxlsx, 
+  haven, lubridate, table1, rspiro, stringr, tidyr, readr, stringi
+)
 ```
 
 # Load datasets from VGO2 and VGO3
+All files refer to absolute file paths in the UU O-drive. All are also saved in "Input/" folder relative to this R notebook
 ```{r}
 #### VGO3 data ####
 # Merged spirometry
@@ -171,8 +181,6 @@ table(ds3$FEV1_quality,ds3$ntrial_acc,useNA = "ifany") # how each FEV1 quality g
 
 # Create a summary table showing the number of participants whose first spirometry trial (Trial_rank == 1) falls into each combination of:FEV1 grade, FVC grade, Number of acceptable trials (ntrial_acc)
 ds3$Trial_rank
-library(dplyr)
-library(gt)
 
 # Create summary table using gt
 ds3 %>%
@@ -345,8 +353,6 @@ ds_bevcheck %>%
   mutate(across(where(is.numeric), ~ round(.x, 3))) %>%
   gt() %>%
   tab_header(title = "Print BEV check (BEV - 0.150 or BEV - FVC5%) > 0")
-
-
 ```
 
 ## Spirometry - reproducibility
@@ -359,11 +365,9 @@ d_repro_t <- ds_minmax %>% filter(Trial_rank==1) %>%
            pef_d670=factor(pef_d670,c(0,1),c("<.67 L/sec)",">.67 L/sec"))
     )
 
-
 var_label(d_repro_t$Quality) <- "FEV<sub>1</sub> - FVC grade"
 
 table1(~Quality|lf_repr150,d_repro_t,caption = "Quality grades and FEV<sub>1</sub>&FVC reproducibility within 150ml")
-
 ```
 
 ## Spirometry - reproducibility continued with PEF
@@ -537,7 +541,6 @@ Processes questionnaire data:
 
 ds_prep <- left_join(ds_prep_forced, ds_prep_flow, by = "ID") %>%
   select(-any_of(c("Trial_rank", "Height", "Weight", "Gender")))
-
 
 ## Online questionnaire (OQ) - VGO3
 OQ_clean <- OQ %>%
@@ -848,10 +851,7 @@ remaining_mismatches <- gender_vgo2 %>%
 
 message("Remaining gender mismatches after correction: ", nrow(remaining_mismatches))
 
-## -----------------------------------------------------------
-## CREATE FINAL VGO3 DATASET
-## -----------------------------------------------------------
-
+#### CREATE FINAL VGO3 DATASET ####
 # Ensure ID is character
 ds_prep      <- ds_prep      %>% mutate(ID = as.character(ID))
 field_q_clean <- field_q_clean %>% mutate(ID = as.character(ID))
@@ -1059,10 +1059,7 @@ VGO3_metadata <- VGO3_metadata %>%
     else educationlevel
   )
 
-## -----------------------------------------------------------
-## Asthma composite variables (VGO3)
-## -----------------------------------------------------------
-
+#### Asthma composite variables (VGO3) ####
 VGO3_metadata <- VGO3_metadata %>%
   mutate(
     # Asthma_doc_diag -> normalise to 0/1 then factor
@@ -1242,9 +1239,8 @@ write.csv(
   row.names = FALSE
 )
 
-## -----------------------------------------------------------
-## VGO2: metadata and spirometry  (with Asthma_current)
-## -----------------------------------------------------------
+#### VGO2: metadata and spirometry  (with Asthma_current) #### 
+
 old_full_clean   <- old_full_clean   %>% mutate(ID = as.character(ID))
 old_intake_clean <- old_intake_clean %>% mutate(ID = as.character(ID))
 old_spiro_clean  <- old_spiro_clean  %>% mutate(ID = as.character(ID))
