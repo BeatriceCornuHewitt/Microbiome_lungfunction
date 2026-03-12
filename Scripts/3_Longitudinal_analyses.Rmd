@@ -1,19 +1,24 @@
 ---
-title: "Longitudinal analysis - T1 microbiome --> T1 lung function"
+title: "Longitudinal analyses"
 author: "Beatrice Cornu Hewitt"
 date: "`r Sys.time()`"
-output: html_document
 ---
 # Packages
 ```{r}
-library(phyloseq); library(vegan); library(tidyr); library(dplyr); library(ggplot2);library(tidyverse); library(microbiomer); library(paletteer);library(microbiome); library(devtools); library(forcats); library(haven); library(openxlsx); library(vegan); library(ggsignif); library(patchwork); library(decontam); library(RColorBrewer); library(forcats); library(lubridate); library(stringr); library(janitor); library(gtsummary); library(gt); library(broom);library(MASS);library(ggh4x); library(microbiomer); library(mikropml); library(furrr); library(glue); library(caret)
+# Load pacman package
+if (!require("pacman")) install.packages("pacman")
+
+# Load everything else
+pacman::p_load(
+  tidyverse, devtools, haven, openxlsx, janitor, glue, furrr, broom, vegan, microbiomer, mikropml, caret, MASS,  paletteer, ggsignif, patchwork, RColorBrewer, gtsummary, gt, ggh4x
+)
+
+# Bioconductor specific packages
+pacman::p_load(phyloseq, microbiome, decontam)
+
+# Load custom functions
 source("0_functions.R")
 
-# Theme for plots in script
-theme_set(theme_bw())
-theme_update(axis.text.x = element_text(angle = 45, hjust=1),
-             strip.text = element_text(colour = 'white'),
-             strip.background =element_rect(fill="#2F4858", color = "#2F4858"))
 ```
 # Load data
 ```{r}
@@ -1150,7 +1155,7 @@ asv_run_presence_simple <- df_both_op_contams_present %>%
 # View result
 print(asv_run_presence_simple)
 # Optionally write to file
-write.csv(asv_run_presence_simple, "../Output/Decontamination/VGO3_OP_suspect_ASV_run_presence.csv", row.names = FALSE) # The ASVs seem to be present across a selection of different DNA isolation runs - therefore not probably related to spill-over from NP niche
+write.csv(asv_run_presence_simple, "../Output/Longitudinal/Decontamination/VGO3_OP_suspect_ASV_run_presence.csv", row.names = FALSE) # The ASVs seem to be present across a selection of different DNA isolation runs - therefore not probably related to spill-over from NP niche
 
 # Extra check: 
 # Check the relative abundance across DNA isolation runs for these suspicious contaminants identified. 
@@ -2603,8 +2608,6 @@ ggsave(
   plot_delta, width = 7, height = 4
 )
 ```
-
-
 
 # ANALYSES
 ## Read in data
