@@ -3,7 +3,6 @@
 
 **Authors**: Beatrice Cornu Hewitt <a href="https://orcid.org/0000-0002-4594-4393" target="orcid.widget" rel="noopener noreferrer" style="vertical-align:top;"><img src="https://orcid.org/sites/default/files/images/orcid_16x16.png" style="width:1em;margin-right:.5em;" alt="ORCID iD icon"></a><br>
 **Contact**: b.cornuhewitt@uu.nl<br>
-**Date**: "`r Sys.time()`"<br>
 
 ## Study Overview
 This repository contains the complete analytical pipeline for our study investigating the relationship between the upper respiratory tract (URT) microbiome and respiratory health. We utilize data from the Dutch VGO cohort (Veehouderij en Gezondheid Omwonenden), a large population-based study designed to assess the health effects of living near livestock farms.
