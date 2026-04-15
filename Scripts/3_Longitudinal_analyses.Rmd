@@ -66,6 +66,7 @@ cat("After deduplication of NP samples:", nsamples(VGO2_NP_dedup), "\n") # 288
 #### VGO2 OP #### 
 # These samples were sequenced at the UMCU. Subsequently the V3 region was trimmed by AB, and run through the RIVM DADA2 pipeline by MLO
 VGO2_OP_all <- readRDS("../Input/Phyloseq/VGO2_OP/V4/VGO_OP_v4_50_220_3.rds") 
+
 # Extract and modify sample_data
 sample_data(VGO2_OP_all) <- sample_data(VGO2_OP_all) %>%
   data.frame() %>%
@@ -1665,7 +1666,7 @@ adiv <- data.frame(
 
 # sample id have been changed to "." instead of "_"
 adiv$sample_id <- gsub("\\.", "-", rownames(adiv))
-m <- left_join(m, adiv)
+m <- dplyr::left_join(m, adiv)
 m$qPCR_log <- log2(m$qPCR)
 
 # Add alpha diversity values to phyloseq object
@@ -1697,23 +1698,321 @@ write.csv(stats, "../Output/Longitudinal/Preprocessing/Processing_steps.csv")
 
 ```
 # Metadata additions and fixes 
-## Add participant metadata from VGO2 and VGO3 
+<!-- ## Add participant metadata from VGO2 and VGO3  -->
+<!-- ```{r} -->
+<!-- # Make 2 phyloseq objects - for our 2 longitudinal research questions: -->
+<!-- # 1. how is microbiome at T0 associated with lung function at T1 (and the change in lung function from T0 to T1) -->
+<!-- # 2. how does the microbiome change over time (from T0 to T1) and how is this associated with changes in lung function?  -->
+
+
+<!-- # For RQ1 we only need microbiome at T0 (NP and/or OP), AND lung function at both timepoints (T0 and T1) -->
+<!-- # For RQ2 we need lung function at both T0 and T1 and at least one niche (NP or OP) sampled at both T0 and T1 -->
+
+<!-- # Inputs (don't modify ps4_longitudinal) -->
+<!-- ps4_longitudinal_orig <- ps4_longitudinal -->
+
+<!-- # Load and prepare metadata -->
+<!-- metadata_all <- read.csv("../Output/Longitudinal/Participant_data/VGO_combined_longitudinal.csv") %>% -->
+<!--   mutate( -->
+<!--     ID             = as.character(ID), -->
+<!--     study          = factor(study), -->
+<!--     timepoint      = factor(timepoint, levels = c("T0", "T1")), -->
+<!--     date_spiro     = ymd(date_spiro), -->
+<!--     age            = as.numeric(age), -->
+<!--     ethnicity      = factor(ethnicity), -->
+<!--     spirometrist   = as.character(spirometrist), -->
+<!--     gender         = factor(gender), -->
+<!--     height         = as.numeric(height), -->
+<!--     weight         = as.numeric(weight), -->
+<!--     bmi            = as.numeric(bmi), -->
+<!--     educationlevel = factor(educationlevel, levels = c("low", "medium", "high"), ordered = TRUE), -->
+<!--     smoke_status   = factor(smoke_status, levels = c("non", "former", "current"), ordered = TRUE), -->
+<!--     pneumo_lastyr  = factor(pneumo_lastyr), -->
+<!--     copd_doc_diag  = factor(copd_doc_diag), -->
+<!--     copd_gold      = factor(copd_gold), -->
+<!--     copd_lln       = factor(copd_lln), -->
+<!--     asthma_current = factor(asthma_current), -->
+<!--     asthma_ever    = factor(asthma_ever), -->
+<!--     asthma_doc_diag= factor(asthma_doc_diag), -->
+<!--     asthma_attk_lastyr = factor(asthma_attk_lastyr), -->
+<!--     asthma_med_current = factor(asthma_med_current), -->
+<!--     atopic         = factor(atopic), -->
+<!--     farmchild      = factor(farmchild), -->
+<!--     FEV1_pred      = as.numeric(FEV1_pred), -->
+<!--     FVC_pred       = as.numeric(FVC_pred), -->
+<!--     FEV1FVC_pred   = as.numeric(FEV1FVC_pred), -->
+<!--     MMEF_pred      = as.numeric(MMEF_pred), -->
+<!--     delta_FEV1_pred     = as.numeric(delta_FEV1_pred), -->
+<!--     delta_FVC_pred      = as.numeric(delta_FVC_pred), -->
+<!--     delta_FEV1FVC_pred = as.numeric(delta_FEV1FVC_pred), -->
+<!--     delta_MMEF_pred     = as.numeric(delta_MMEF_pred), -->
+<!--     fuperiod       = as.numeric(fuperiod), -->
+<!--     obstr_VGO2     = factor(obstr_VGO2), -->
+<!--     obstr_VGO3     = factor(obstr_VGO3), -->
+<!--     new_obstr      = factor(new_obstr) -->
+<!--   ) -->
+
+<!-- # ------------------------------------------------------------------------- -->
+<!-- # 2. Prepare phyloseq object: fix ID and drop zero-count samples -->
+<!-- # ------------------------------------------------------------------------- -->
+
+<!-- ps4_work <- ps4_longitudinal  # or ps4_longitudinal_orig if using backup -->
+
+<!-- sd <- as(sample_data(ps4_work), "data.frame") -->
+<!-- colnames(sd)[colnames(sd) == "VGO3_ID"] <- "ID" -->
+<!-- sample_data(ps4_work) <- sample_data(sd) -->
+
+<!-- ps4_work <- prune_samples(sample_sums(ps4_work) > 0, ps4_work) -->
+<!-- ps4_work <- prune_taxa(taxa_sums(ps4_work) > 0, ps4_work) -->
+
+<!-- ps_meta <- as(sample_data(ps4_work), "data.frame") %>% -->
+<!--   rownames_to_column("SampleID") %>% -->
+<!--   mutate( -->
+<!--     ID        = as.character(ID), -->
+<!--     timepoint = as.character(timepoint), -->
+<!--     niche     = as.character(niche) -->
+<!--   ) -->
+
+<!-- # ------------------------------------------------------------------------- -->
+<!-- # Deduplication helper function -->
+<!-- # ------------------------------------------------------------------------- -->
+
+<!-- dedup_by_depth <- function(ps, group_cols = c("ID", "timepoint", "niche")) { -->
+<!--   sd <- as(sample_data(ps), "data.frame") %>% rownames_to_column("SampleID") -->
+<!--   sd$LibrarySize <- sample_sums(ps)[sd$SampleID] -->
+
+<!--   keep <- sd %>% -->
+<!--     group_by(across(all_of(group_cols))) %>% -->
+<!--     slice_max(order_by = LibrarySize, n = 1, with_ties = FALSE) %>% -->
+<!--     pull(SampleID) -->
+
+<!--   ps2 <- prune_samples(keep, ps) -->
+<!--   prune_taxa(taxa_sums(ps2) > 0, ps2) -->
+<!-- } -->
+
+<!-- # ------------------------------------------------------------------------- -->
+<!-- # RQ1: Microbiome at T0 (NP/OP) + Lung Function at both timepoints -->
+<!-- # ------------------------------------------------------------------------- -->
+
+<!-- ids_LF_both <- metadata_all %>% -->
+<!--   group_by(ID) %>% -->
+<!--   filter(n_distinct(timepoint) == 2) %>% -->
+<!--   pull(ID) %>% -->
+<!--   unique() -->
+
+<!-- ids_micro_T0 <- ps_meta %>% -->
+<!--   filter(timepoint == "T0", niche %in% c("NP", "OP")) %>% -->
+<!--   pull(ID) %>% -->
+<!--   unique() -->
+
+<!-- ids_RQ1 <- intersect(ids_LF_both, ids_micro_T0) -->
+
+<!-- samples_RQ1 <- ps_meta %>% -->
+<!--   filter(ID %in% ids_RQ1, timepoint == "T0", niche %in% c("NP", "OP")) %>% -->
+<!--   pull(SampleID) -->
+
+<!-- ps_RQ1 <- ps4_work %>% -->
+<!--   prune_samples(samples_RQ1, .) %>% -->
+<!--   prune_taxa(taxa_sums(.) > 0, .) %>% -->
+<!--   dedup_by_depth() -->
+
+<!-- # ------------------------------------------------------------------------- -->
+<!-- # Add metadata to phyloseq object (including delta_* variables) -->
+<!-- # ------------------------------------------------------------------------- -->
+
+<!-- sd_RQ1 <- as(sample_data(ps_RQ1), "data.frame") %>% -->
+<!--   rownames_to_column("SampleID") %>% -->
+<!--   mutate(ID = as.character(ID), timepoint = as.character(timepoint)) -->
+
+<!-- merged_RQ1 <- sd_RQ1 %>% -->
+<!--   dplyr::left_join(metadata_all, by = c("ID", "timepoint")) -->
+
+<!-- rownames(merged_RQ1) <- merged_RQ1$SampleID -->
+<!-- merged_RQ1$SampleID <- NULL -->
+<!-- sample_data(ps_RQ1) <- sample_data(merged_RQ1) -->
+
+<!-- ps_RQ1@sam_data$obstr_VGO2 -->
+
+<!-- # Save ps -->
+<!-- saveRDS(ps_RQ1, "../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds") -->
+
+
+<!-- # RQ2 phyloseq: -->
+<!-- #    LF both + at least ONE niche (NP or OP) paired across T0/T1 -->
+<!-- ids_micro_paired_niche <- ps_meta %>% -->
+<!--   filter(timepoint %in% c("T0","T1"), niche %in% c("NP","OP")) %>% -->
+<!--   group_by(ID, niche) %>% -->
+<!--   summarise(n_tp = n_distinct(timepoint), .groups = "drop") %>% -->
+<!--   filter(n_tp == 2) %>% -->
+<!--   pull(ID) %>% unique() -->
+
+<!-- ids_RQ2 <- intersect(ids_LF_both, ids_micro_paired_niche) -->
+<!-- length(ids_RQ2) -->
+
+<!-- samples_RQ2 <- ps_meta %>% -->
+<!--   filter(ID %in% ids_RQ2, timepoint %in% c("T0","T1"), niche %in% c("NP","OP")) %>% -->
+<!--   pull(SampleID) -->
+
+<!-- ps_RQ2 <- prune_samples(samples_RQ2, ps4_work) -->
+<!-- ps_RQ2 <- prune_taxa(taxa_sums(ps_RQ2) > 0, ps_RQ2) -->
+
+<!-- ps_RQ2 <- dedup_by_depth(ps_RQ2, c("ID","timepoint","niche")) -->
+
+<!-- # Join timepoint-specific LF metadata by ID+timepoint (so T0 sample gets T0 covars etc.) -->
+<!-- sd_RQ2 <- as(sample_data(ps_RQ2), "data.frame") %>% -->
+<!--   rownames_to_column("SampleID") %>% -->
+<!--   mutate(ID = as.character(ID), timepoint = as.character(timepoint)) -->
+
+<!-- meta_for_join <- metadata_all %>% -->
+<!--   mutate(ID = as.character(ID), timepoint = as.character(timepoint)) -->
+
+
+<!-- make_lf_wide <- function(ids, metadata = metadata_all) { -->
+<!--   metadata %>% -->
+<!--     filter(ID %in% ids, timepoint %in% c("T0", "T1")) %>% -->
+<!--     select( -->
+<!--       ID, timepoint, -->
+<!--       FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred, -->
+<!--       delta_FEV1_pred, delta_FVC_pred, delta_FEV1FVC_pred, delta_MMEF_pred, -->
+<!--       fuperiod, obstr_VGO2, obstr_VGO3, new_obstr -->
+<!--     ) %>% -->
+<!--     tidyr::pivot_wider( -->
+<!--       names_from = timepoint, -->
+<!--       values_from = c( -->
+<!--         FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred, -->
+<!--         delta_FEV1_pred, delta_FVC_pred, delta_FEV1FVC_pred, delta_MMEF_pred, -->
+<!--         fuperiod, obstr_VGO2, obstr_VGO3, new_obstr -->
+<!--       ), -->
+<!--       names_sep = "_" -->
+<!--     ) -->
+<!-- } -->
+
+
+<!-- lf_wide_RQ2 <- make_lf_wide(ids_RQ2) -->
+
+<!-- merged_RQ2 <- sd_RQ2 %>% -->
+<!--   dplyr::left_join(meta_for_join, by = c("ID","timepoint")) %>% -->
+<!--   dplyr::left_join(lf_wide_RQ2, by = "ID") -->
+
+<!-- rownames(merged_RQ2) <- merged_RQ2$SampleID -->
+<!-- merged_RQ2$SampleID <- NULL -->
+<!-- sample_data(ps_RQ2) <- sample_data(merged_RQ2) -->
+
+<!-- saveRDS(ps_RQ2, "../Output/Longitudinal/Phyloseq/ps_RQ2_LFboth_micro_pairedNiche.rds") -->
+
+
+<!-- # ============================================================ -->
+<!-- # “paired-only within niche” version of RQ2 (cleanest for change models) -->
+<!-- #     Keeps only ID+niche combos that truly have BOTH T0 and T1. -->
+<!-- # ============================================================ -->
+
+<!-- sd2 <- as(sample_data(ps_RQ2), "data.frame") %>% -->
+<!--   rownames_to_column("SampleID") %>% -->
+<!--   mutate(ID = as.character(ID), timepoint = as.character(timepoint), niche = as.character(niche)) -->
+
+<!-- paired_id_niche <- sd2 %>% -->
+<!--   distinct(ID, timepoint, niche) %>% -->
+<!--   count(ID, niche, name = "n_tp") %>% -->
+<!--   filter(n_tp == 2) %>% -->
+<!--   select(ID, niche) -->
+
+<!-- keep_samples <- sd2 %>% -->
+<!--   semi_join(paired_id_niche, by = c("ID","niche")) %>% -->
+<!--   pull(SampleID) -->
+
+<!-- ps_RQ2_pairedOnly <- prune_samples(keep_samples, ps_RQ2) -->
+<!-- ps_RQ2_pairedOnly <- prune_taxa(taxa_sums(ps_RQ2_pairedOnly) > 0, ps_RQ2_pairedOnly) -->
+
+<!-- saveRDS(ps_RQ2_pairedOnly, "../Output/Longitudinal/Phyloseq/ps_RQ2_pairedNiche_only.rds") -->
+
+<!-- # ============================================================ -->
+<!-- # Quick checks -->
+<!-- # ============================================================ -->
+
+<!-- cat("\n=== ORIGINAL ps4_longitudinal stays intact ===\n") -->
+<!-- cat("Samples original:", nsamples(ps4_longitudinal_orig), "\n") # 2137 -->
+
+<!-- cat("\n=== RQ1 ===\n") -->
+<!-- sd1 <- as(sample_data(ps_RQ1), "data.frame") -->
+<!-- cat("Samples:", nsamples(ps_RQ1), "\n") # 168 -->
+<!-- cat("Unique IDs:", length(unique(sd1$ID)), "\n") # 110 -->
+<!-- print(table(sd1$timepoint)) -->
+<!-- print(table(sd1$niche)) # 95 NP, 73 OP -->
+
+<!-- cat("\n=== RQ2 ===\n") -->
+<!-- sd2b <- as(sample_data(ps_RQ2), "data.frame") -->
+<!-- cat("Samples:", nsamples(ps_RQ2), "\n") # 370 -->
+<!-- cat("Unique IDs:", length(unique(sd2b$ID)), "\n") # 108  -->
+<!-- print(table(sd2b$timepoint)) -->
+<!-- print(table(sd2b$niche))# 190 NP and 180 OP -->
+
+<!-- cat("\n=== RQ2 paired-only (optional) ===\n") -->
+<!-- sd2p <- as(sample_data(ps_RQ2_pairedOnly), "data.frame") -->
+<!-- cat("Samples:", nsamples(ps_RQ2_pairedOnly), "\n") # 312 -->
+<!-- cat("Unique IDs:", length(unique(sd2p$ID)), "\n") # 108 -->
+<!-- print(table(sd2p$timepoint)) -->
+<!-- print(table(sd2p$niche)) # 168 NP and 144 OP -->
+
+
+
+<!-- # Add the variable RespDx to the sam_data  -->
+<!-- make_respdx <- function(meta) { -->
+<!--   to_yesno <- function(x) dplyr::case_when( -->
+<!--     x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes", -->
+<!--     x %in% c(0,"0","no","No","NO",FALSE)   ~ "no", -->
+<!--     TRUE ~ NA_character_ -->
+<!--   ) -->
+<!--   a <- to_yesno(meta$asthma_current) -->
+<!--   c <- to_yesno(meta$copd_doc_diag) -->
+<!--   y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no") -->
+<!--   factor(y, levels = c("no","yes")) -->
+<!-- } -->
+
+<!-- # Apply to ps_RQ1 -->
+<!-- sd <- as(phyloseq::sample_data(ps_RQ1), "data.frame") -->
+<!-- phyloseq::sample_data(ps_RQ1)$RespDx <- make_respdx(sd) -->
+
+<!-- # Apply to ps_RQ2  -->
+<!-- sd <- as(phyloseq::sample_data(ps_RQ2), "data.frame") -->
+<!-- phyloseq::sample_data(ps_RQ2)$RespDx <- make_respdx(sd) -->
+
+<!-- # Apply to ps_RQ2_pairedOnly  -->
+<!-- sd <- as(phyloseq::sample_data(ps_RQ2_pairedOnly), "data.frame") -->
+<!-- phyloseq::sample_data(ps_RQ2_pairedOnly)$RespDx <- make_respdx(sd) -->
+
+
+<!-- # Check the difference between the ps_RQ2_pairedOnly and RQ1 participants i.e. how many are the same?  -->
+<!-- ids_RQ2 <- ps_RQ2_pairedOnly@sam_data$ID -->
+<!-- ids_RQ1 <- ps_RQ1@sam_data$ID -->
+
+<!-- length(intersect(ids_RQ2, ids_RQ1)) # 108 intersect -->
+<!-- setdiff(ids_RQ2, ids_RQ1) # 0 in RQ2 but not in RQ1  -->
+<!-- setdiff(ids_RQ1, ids_RQ2) # 2 in RQ1 but not in RQ2: "21255" "30381" -->
+
+<!-- ``` -->
+
+## Add participant metadata from VGO2 and VGO3 (fixed)
 ```{r}
+# Metadata additions and fixes
+# Add participant metadata from VGO2 and VGO3
+
 # Make 2 phyloseq objects - for our 2 longitudinal research questions:
-# 1. how is microbiome at T0 associated with lung function at T1 (and the change in lung function from T0 to T1)
-# 2. how does the microbiome change over time (from T0 to T1) and how is this associated with changes in lung function? 
+# 1. how is microbiome at T0 associated with lung function at T1
+#    (and the change in lung function from T0 to T1)
+# 2. how does the microbiome change over time (from T0 to T1)
+#    and how is this associated with changes in lung function?
 
-
-# For RQ1 we only need microbiome at T0 (NP and/or OP), AND lung function at both timepoints (T0 and T1)
-# For RQ2 we need lung function at both T0 and T1 and at least one niche (NP or OP) sampled at both T0 and T1
-
+# For RQ1 we only need microbiome at T0 (NP and/or OP), AND lung function at both timepoints
+# For RQ2 we need lung function at both T0 and T1 and at least one niche (NP or OP)
+# sampled at both T0 and T1
 # Inputs (don't modify ps4_longitudinal)
 ps4_longitudinal_orig <- ps4_longitudinal
 
-# Load and prepare metadata
-
+# ------------------------------------------------------------
+# 1. Load and prepare metadata
+# ------------------------------------------------------------
 metadata_all <- read.csv("../Output/Longitudinal/Participant_data/VGO_combined_longitudinal.csv") %>%
-  mutate(
+  dplyr::mutate(
     ID             = as.character(ID),
     study          = factor(study),
     timepoint      = factor(timepoint, levels = c("T0", "T1")),
@@ -1733,7 +2032,7 @@ metadata_all <- read.csv("../Output/Longitudinal/Participant_data/VGO_combined_l
     copd_lln       = factor(copd_lln),
     asthma_current = factor(asthma_current),
     asthma_ever    = factor(asthma_ever),
-    asthma_doc_diag= factor(asthma_doc_diag),
+    asthma_doc_diag = factor(asthma_doc_diag),
     asthma_attk_lastyr = factor(asthma_attk_lastyr),
     asthma_med_current = factor(asthma_med_current),
     atopic         = factor(atopic),
@@ -1742,21 +2041,20 @@ metadata_all <- read.csv("../Output/Longitudinal/Participant_data/VGO_combined_l
     FVC_pred       = as.numeric(FVC_pred),
     FEV1FVC_pred   = as.numeric(FEV1FVC_pred),
     MMEF_pred      = as.numeric(MMEF_pred),
-    delta_FEV1_pred     = as.numeric(delta_FEV1_pred),
-    delta_FVC_pred      = as.numeric(delta_FVC_pred),
+    delta_FEV1_pred = as.numeric(delta_FEV1_pred),
+    delta_FVC_pred = as.numeric(delta_FVC_pred),
     delta_FEV1FVC_pred = as.numeric(delta_FEV1FVC_pred),
-    delta_MMEF_pred     = as.numeric(delta_MMEF_pred),
+    delta_MMEF_pred = as.numeric(delta_MMEF_pred),
     fuperiod       = as.numeric(fuperiod),
     obstr_VGO2     = factor(obstr_VGO2),
     obstr_VGO3     = factor(obstr_VGO3),
     new_obstr      = factor(new_obstr)
   )
 
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------
 # 2. Prepare phyloseq object: fix ID and drop zero-count samples
-# -------------------------------------------------------------------------
-
-ps4_work <- ps4_longitudinal  # or ps4_longitudinal_orig if using backup
+# ------------------------------------------------------------
+ps4_work <- ps4_longitudinal
 
 sd <- as(sample_data(ps4_work), "data.frame")
 colnames(sd)[colnames(sd) == "VGO3_ID"] <- "ID"
@@ -1766,111 +2064,194 @@ ps4_work <- prune_samples(sample_sums(ps4_work) > 0, ps4_work)
 ps4_work <- prune_taxa(taxa_sums(ps4_work) > 0, ps4_work)
 
 ps_meta <- as(sample_data(ps4_work), "data.frame") %>%
-  rownames_to_column("SampleID") %>%
-  mutate(
+  tibble::rownames_to_column("SampleID") %>%
+  dplyr::mutate(
     ID        = as.character(ID),
     timepoint = as.character(timepoint),
     niche     = as.character(niche)
   )
 
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------
 # 3. Deduplication helper function
-# -------------------------------------------------------------------------
-
+# ------------------------------------------------------------
 dedup_by_depth <- function(ps, group_cols = c("ID", "timepoint", "niche")) {
-  sd <- as(sample_data(ps), "data.frame") %>% rownames_to_column("SampleID")
+  sd <- as(sample_data(ps), "data.frame") %>%
+    tibble::rownames_to_column("SampleID")
+
   sd$LibrarySize <- sample_sums(ps)[sd$SampleID]
-  
+
   keep <- sd %>%
-    group_by(across(all_of(group_cols))) %>%
-    slice_max(order_by = LibrarySize, n = 1, with_ties = FALSE) %>%
-    pull(SampleID)
-  
+    dplyr::group_by(dplyr::across(dplyr::all_of(group_cols))) %>%
+    dplyr::slice_max(order_by = LibrarySize, n = 1, with_ties = FALSE) %>%
+    dplyr::pull(SampleID)
+
   ps2 <- prune_samples(keep, ps)
   prune_taxa(taxa_sums(ps2) > 0, ps2)
 }
 
-# -------------------------------------------------------------------------
-# RQ1: Microbiome at T0 (NP/OP) + Lung Function at both timepoints
-# -------------------------------------------------------------------------
-
+# ------------------------------------------------------------
+# 4. IDs for RQ1 and RQ2
+# ------------------------------------------------------------
 ids_LF_both <- metadata_all %>%
-  group_by(ID) %>%
-  filter(n_distinct(timepoint) == 2) %>%
-  pull(ID) %>%
+  dplyr::group_by(ID) %>%
+  dplyr::filter(dplyr::n_distinct(timepoint) == 2) %>%
+  dplyr::pull(ID) %>%
   unique()
 
 ids_micro_T0 <- ps_meta %>%
-  filter(timepoint == "T0", niche %in% c("NP", "OP")) %>%
-  pull(ID) %>%
+  dplyr::filter(timepoint == "T0", niche %in% c("NP", "OP")) %>%
+  dplyr::pull(ID) %>%
   unique()
 
 ids_RQ1 <- intersect(ids_LF_both, ids_micro_T0)
 
+ids_micro_paired_niche <- ps_meta %>%
+  dplyr::filter(timepoint %in% c("T0", "T1"), niche %in% c("NP", "OP")) %>%
+  dplyr::group_by(ID, niche) %>%
+  dplyr::summarise(n_tp = dplyr::n_distinct(timepoint), .groups = "drop") %>%
+  dplyr::filter(n_tp == 2) %>%
+  dplyr::pull(ID) %>%
+  unique()
+
+ids_RQ2 <- intersect(ids_LF_both, ids_micro_paired_niche)
+
+# ------------------------------------------------------------
+# 5. Build explicit participant-level metadata tables
+# ------------------------------------------------------------
+
+# RQ1:
+# one row per participant
+# contains T0 covariates, T1 LF outcomes, delta/follow-up outcomes
+meta_RQ1_T0 <- metadata_all %>%
+  dplyr::filter(ID %in% ids_RQ1, timepoint == "T0") %>%
+  dplyr::transmute(
+    ID,
+    study_T0 = study,
+    date_spiro_T0 = date_spiro,
+    age_T0 = age,
+    ethnicity_T0 = ethnicity,
+    gender_T0 = gender,
+    height_T0 = height,
+    weight_T0 = weight,
+    bmi_T0 = bmi,
+    educationlevel_T0 = educationlevel,
+    smoke_status_T0 = smoke_status,
+    pneumo_lastyr_T0 = pneumo_lastyr,
+    copd_doc_diag_T0 = copd_doc_diag,
+    copd_gold_T0 = copd_gold,
+    copd_lln_T0 = copd_lln,
+    asthma_current_T0 = asthma_current,
+    asthma_ever_T0 = asthma_ever,
+    asthma_doc_diag_T0 = asthma_doc_diag,
+    asthma_attk_lastyr_T0 = asthma_attk_lastyr,
+    asthma_med_current_T0 = asthma_med_current,
+    atopic_T0 = atopic,
+    farmchild_T0 = farmchild,
+    delta_FEV1_pred = delta_FEV1_pred,
+    delta_FVC_pred = delta_FVC_pred,
+    delta_FEV1FVC_pred = delta_FEV1FVC_pred,
+    delta_MMEF_pred = delta_MMEF_pred,
+    fuperiod = fuperiod,
+    obstr_VGO2 = obstr_VGO2,
+    obstr_VGO3 = obstr_VGO3,
+    new_obstr = new_obstr
+  )
+
+meta_RQ1_T1 <- metadata_all %>%
+  dplyr::filter(ID %in% ids_RQ1, timepoint == "T1") %>%
+  dplyr::transmute(
+    ID,
+    date_spiro_T1 = date_spiro,
+    FEV1_pred_T1 = FEV1_pred,
+    FVC_pred_T1 = FVC_pred,
+    FEV1FVC_pred_T1 = FEV1FVC_pred,
+    MMEF_pred_T1 = MMEF_pred
+  )
+
+meta_RQ1 <- meta_RQ1_T0 %>%
+  dplyr::inner_join(meta_RQ1_T1, by = "ID")
+
+# RQ2:
+# keep timepoint-specific metadata plus wide LF variables
+make_lf_wide <- function(ids, metadata = metadata_all) {
+  metadata %>%
+    dplyr::filter(ID %in% ids, timepoint %in% c("T0", "T1")) %>%
+    dplyr::select(
+      ID, timepoint,
+      age, gender, smoke_status,
+      FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred,
+      delta_FEV1_pred, delta_FVC_pred, delta_FEV1FVC_pred, delta_MMEF_pred,
+      fuperiod, obstr_VGO2, obstr_VGO3, new_obstr
+    ) %>%
+    tidyr::pivot_wider(
+      names_from = timepoint,
+      values_from = c(
+        age, gender, smoke_status,
+        FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred,
+        delta_FEV1_pred, delta_FVC_pred, delta_FEV1FVC_pred, delta_MMEF_pred,
+        fuperiod, obstr_VGO2, obstr_VGO3, new_obstr
+      ),
+      names_sep = "_"
+    )
+}
+
+lf_wide_RQ2 <- make_lf_wide(ids_RQ2)
+
+# ------------------------------------------------------------
+# 6. Build RQ1 phyloseq
+# ------------------------------------------------------------
 samples_RQ1 <- ps_meta %>%
-  filter(ID %in% ids_RQ1, timepoint == "T0", niche %in% c("NP", "OP")) %>%
-  pull(SampleID)
+  dplyr::filter(ID %in% ids_RQ1, timepoint == "T0", niche %in% c("NP", "OP")) %>%
+  dplyr::pull(SampleID)
 
 ps_RQ1 <- ps4_work %>%
   prune_samples(samples_RQ1, .) %>%
   prune_taxa(taxa_sums(.) > 0, .) %>%
   dedup_by_depth()
 
-# -------------------------------------------------------------------------
-# Add metadata to phyloseq object (including delta_* variables)
-# -------------------------------------------------------------------------
-
 sd_RQ1 <- as(sample_data(ps_RQ1), "data.frame") %>%
-  rownames_to_column("SampleID") %>%
-  mutate(ID = as.character(ID), timepoint = as.character(timepoint))
+  tibble::rownames_to_column("SampleID") %>%
+  dplyr::mutate(
+    ID = as.character(ID),
+    timepoint = as.character(timepoint)
+  )
 
 merged_RQ1 <- sd_RQ1 %>%
-  left_join(metadata_all, by = c("ID", "timepoint"))
+  dplyr::left_join(meta_RQ1, by = "ID")
 
 rownames(merged_RQ1) <- merged_RQ1$SampleID
 merged_RQ1$SampleID <- NULL
 sample_data(ps_RQ1) <- sample_data(merged_RQ1)
 
-ps_RQ1@sam_data$obstr_VGO2
-
-# Save ps
 saveRDS(ps_RQ1, "../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
 
-
-# RQ2 phyloseq:
-#    LF both + at least ONE niche (NP or OP) paired across T0/T1
-ids_micro_paired_niche <- ps_meta %>%
-  filter(timepoint %in% c("T0","T1"), niche %in% c("NP","OP")) %>%
-  group_by(ID, niche) %>%
-  summarise(n_tp = n_distinct(timepoint), .groups = "drop") %>%
-  filter(n_tp == 2) %>%
-  pull(ID) %>% unique()
-
-ids_RQ2 <- intersect(ids_LF_both, ids_micro_paired_niche)
-length(ids_RQ2)
-
+# ------------------------------------------------------------
+# 7. Build RQ2 phyloseq
+# ------------------------------------------------------------
 samples_RQ2 <- ps_meta %>%
-  filter(ID %in% ids_RQ2, timepoint %in% c("T0","T1"), niche %in% c("NP","OP")) %>%
-  pull(SampleID)
+  dplyr::filter(ID %in% ids_RQ2, timepoint %in% c("T0", "T1"), niche %in% c("NP", "OP")) %>%
+  dplyr::pull(SampleID)
 
 ps_RQ2 <- prune_samples(samples_RQ2, ps4_work)
 ps_RQ2 <- prune_taxa(taxa_sums(ps_RQ2) > 0, ps_RQ2)
+ps_RQ2 <- dedup_by_depth(ps_RQ2, c("ID", "timepoint", "niche"))
 
-ps_RQ2 <- dedup_by_depth(ps_RQ2, c("ID","timepoint","niche"))
-
-# Join timepoint-specific LF metadata by ID+timepoint (so T0 sample gets T0 covars etc.)
 sd_RQ2 <- as(sample_data(ps_RQ2), "data.frame") %>%
-  rownames_to_column("SampleID") %>%
-  mutate(ID = as.character(ID), timepoint = as.character(timepoint))
+  tibble::rownames_to_column("SampleID") %>%
+  dplyr::mutate(
+    ID = as.character(ID),
+    timepoint = as.character(timepoint)
+  )
 
 meta_for_join <- metadata_all %>%
-  mutate(ID = as.character(ID), timepoint = as.character(timepoint))
-
-lf_wide_RQ2 <- make_lf_wide(ids_RQ2)
+  dplyr::mutate(
+    ID = as.character(ID),
+    timepoint = as.character(timepoint)
+  )
 
 merged_RQ2 <- sd_RQ2 %>%
-  left_join(meta_for_join, by = c("ID","timepoint")) %>%
-  left_join(lf_wide_RQ2, by = "ID")
+  dplyr::left_join(meta_for_join, by = c("ID", "timepoint")) %>%
+  dplyr::left_join(lf_wide_RQ2, by = "ID")
 
 rownames(merged_RQ2) <- merged_RQ2$SampleID
 merged_RQ2$SampleID <- NULL
@@ -1878,85 +2259,102 @@ sample_data(ps_RQ2) <- sample_data(merged_RQ2)
 
 saveRDS(ps_RQ2, "../Output/Longitudinal/Phyloseq/ps_RQ2_LFboth_micro_pairedNiche.rds")
 
-# ============================================================
-# 7) OPTIONAL: “paired-only within niche” version of RQ2 (cleanest for change models)
-#     Keeps only ID+niche combos that truly have BOTH T0 and T1.
-# ============================================================
-
+# ------------------------------------------------------------
+# 8. Paired-only within-niche version of RQ2
+# ------------------------------------------------------------
 sd2 <- as(sample_data(ps_RQ2), "data.frame") %>%
-  rownames_to_column("SampleID") %>%
-  mutate(ID = as.character(ID), timepoint = as.character(timepoint), niche = as.character(niche))
+  tibble::rownames_to_column("SampleID") %>%
+  dplyr::mutate(
+    ID = as.character(ID),
+    timepoint = as.character(timepoint),
+    niche = as.character(niche)
+  )
 
 paired_id_niche <- sd2 %>%
-  distinct(ID, timepoint, niche) %>%
-  count(ID, niche, name = "n_tp") %>%
-  filter(n_tp == 2) %>%
-  select(ID, niche)
+  dplyr::distinct(ID, timepoint, niche) %>%
+  dplyr::count(ID, niche, name = "n_tp") %>%
+  dplyr::filter(n_tp == 2) %>%
+  dplyr::select(ID, niche)
 
 keep_samples <- sd2 %>%
-  semi_join(paired_id_niche, by = c("ID","niche")) %>%
-  pull(SampleID)
+  dplyr::semi_join(paired_id_niche, by = c("ID", "niche")) %>%
+  dplyr::pull(SampleID)
 
 ps_RQ2_pairedOnly <- prune_samples(keep_samples, ps_RQ2)
 ps_RQ2_pairedOnly <- prune_taxa(taxa_sums(ps_RQ2_pairedOnly) > 0, ps_RQ2_pairedOnly)
 
 saveRDS(ps_RQ2_pairedOnly, "../Output/Longitudinal/Phyloseq/ps_RQ2_pairedNiche_only.rds")
 
-# ============================================================
-# 8) Quick checks
-# ============================================================
-
-cat("\n=== ORIGINAL ps4_longitudinal stays intact ===\n")
-cat("Samples original:", nsamples(ps4_longitudinal_orig), "\n")
-
-cat("\n=== RQ1 ===\n")
-sd1 <- as(sample_data(ps_RQ1), "data.frame")
-cat("Samples:", nsamples(ps_RQ1), "\n")
-cat("Unique IDs:", length(unique(sd1$ID)), "\n")
-print(table(sd1$timepoint))
-print(table(sd1$niche))
-
-cat("\n=== RQ2 ===\n")
-sd2b <- as(sample_data(ps_RQ2), "data.frame")
-cat("Samples:", nsamples(ps_RQ2), "\n")
-cat("Unique IDs:", length(unique(sd2b$ID)), "\n")
-print(table(sd2b$timepoint))
-print(table(sd2b$niche))
-
-cat("\n=== RQ2 paired-only (optional) ===\n")
-sd2p <- as(sample_data(ps_RQ2_pairedOnly), "data.frame")
-cat("Samples:", nsamples(ps_RQ2_pairedOnly), "\n")
-cat("Unique IDs:", length(unique(sd2p$ID)), "\n")
-print(table(sd2p$timepoint))
-print(table(sd2p$niche))
-
-
-
-
-# Add the variable RespDx to the sam_data 
+# ------------------------------------------------------------
+# 9. Add RespDx
+# ------------------------------------------------------------
 make_respdx <- function(meta) {
   to_yesno <- function(x) dplyr::case_when(
-    x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes",
-    x %in% c(0,"0","no","No","NO",FALSE)   ~ "no",
+    x %in% c(1, "1", "yes", "Yes", "YES", TRUE) ~ "yes",
+    x %in% c(0, "0", "no", "No", "NO", FALSE) ~ "no",
     TRUE ~ NA_character_
   )
   a <- to_yesno(meta$asthma_current)
   c <- to_yesno(meta$copd_doc_diag)
-  y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no")
-  factor(y, levels = c("no","yes"))
+  y <- ifelse((!is.na(a) & a == "yes") | (!is.na(c) & c == "yes"), "yes", "no")
+  factor(y, levels = c("no", "yes"))
 }
 
-# Apply to ps_RQ1
 sd <- as(phyloseq::sample_data(ps_RQ1), "data.frame")
 phyloseq::sample_data(ps_RQ1)$RespDx <- make_respdx(sd)
 
-# Apply to ps_RQ2 
 sd <- as(phyloseq::sample_data(ps_RQ2), "data.frame")
 phyloseq::sample_data(ps_RQ2)$RespDx <- make_respdx(sd)
 
-# Apply to ps_RQ2_pairedOnly 
 sd <- as(phyloseq::sample_data(ps_RQ2_pairedOnly), "data.frame")
 phyloseq::sample_data(ps_RQ2_pairedOnly)$RespDx <- make_respdx(sd)
+
+# Save again after RespDx added
+saveRDS(ps_RQ1, "../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
+saveRDS(ps_RQ2, "../Output/Longitudinal/Phyloseq/ps_RQ2_LFboth_micro_pairedNiche.rds")
+saveRDS(ps_RQ2_pairedOnly, "../Output/Longitudinal/Phyloseq/ps_RQ2_pairedNiche_only.rds")
+
+# ------------------------------------------------------------
+# 10. Quick checks
+# ------------------------------------------------------------
+cat("\n=== ORIGINAL ps4_longitudinal stays intact ===\n")
+cat("Samples original:", nsamples(ps4_longitudinal_orig), "\n")
+
+cat("\n=== RQ1 ===\n") 
+sd1 <- as(sample_data(ps_RQ1), "data.frame")
+cat("Samples:", nsamples(ps_RQ1), "\n") # 2137
+cat("Unique IDs:", length(unique(sd1$ID)), "\n") # 110
+print(table(sd1$timepoint)) # 168
+print(table(sd1$niche)) # NP 95 OP 73 
+
+cat("\n=== RQ2 ===\n")
+sd2b <- as(sample_data(ps_RQ2), "data.frame")
+cat("Samples:", nsamples(ps_RQ2), "\n") # 370
+cat("Unique IDs:", length(unique(sd2b$ID)), "\n") # 108
+print(table(sd2b$timepoint)) # T0 166, T1 204
+print(table(sd2b$niche))# NP 190, OP 180
+
+cat("\n=== RQ2 paired-only (optional) ===\n")
+sd2p <- as(sample_data(ps_RQ2_pairedOnly), "data.frame")
+cat("Samples:", nsamples(ps_RQ2_pairedOnly), "\n") # 312
+cat("Unique IDs:", length(unique(sd2p$ID)), "\n") # 108
+print(table(sd2p$timepoint)) # T0 156, T1 156
+print(table(sd2p$niche)) # NP 168, OP 144
+
+cat("\n=== RQ1 key variables present ===\n")
+print(c(
+  "age_T0",
+  "gender_T0",
+  "smoke_status_T0",
+  "FEV1_pred_T1",
+  "FVC_pred_T1",
+  "FEV1FVC_pred_T1",
+  "MMEF_pred_T1",
+  "delta_FEV1_pred",
+  "delta_FVC_pred",
+  "delta_FEV1FVC_pred",
+  "delta_MMEF_pred"
+) %in% colnames(as(sample_data(ps_RQ1), "data.frame")))
 
 
 # Check the difference between the ps_RQ2_pairedOnly and RQ1 participants i.e. how many are the same? 
@@ -1966,72 +2364,106 @@ ids_RQ1 <- ps_RQ1@sam_data$ID
 length(intersect(ids_RQ2, ids_RQ1)) # 108 intersect
 setdiff(ids_RQ2, ids_RQ1) # 0 in RQ2 but not in RQ1 
 setdiff(ids_RQ1, ids_RQ2) # 2 in RQ1 but not in RQ2: "21255" "30381"
-
 ```
-# Population summary tables
-## Summary of health data at T0 and T1 for longitudinal participants
+# Add season 
 ```{r}
+get_season <- function(date_vec) {
+  mo <- month(date_vec)
+  out <- ifelse(mo %in% 3:5,  "Spring",
+         ifelse(mo %in% 6:8,  "Summer",
+         ifelse(mo %in% 9:11, "Autumn", "Winter")))
+  factor(out, levels = c("Winter","Spring","Summer","Autumn"))
+}
+
+sd_l <- as(sample_data(ps_RQ1), "data.frame") %>%
+  rownames_to_column("SampleID") %>%
+  mutate(
+    date_spiro_T0 = ymd(date_spiro_T0),
+    # pick the spirometry date corresponding to the sample timepoint
+    date_spiro_this_tp = case_when(
+      timepoint == "T0" ~ date_spiro_T0,
+      TRUE ~ as.Date(NA)
+    ),
+    season_microbiome_sampling_T0 = get_season(date_spiro_this_tp)
+  )
+
+
+# Put back into phyloseq
+rownames(sd_l) <- sd_l$SampleID
+sd_l$SampleID <- NULL
+sample_data(ps_RQ1) <- sample_data(sd_l)
+
+# checks
+table(sample_data(ps_RQ1)$timepoint, useNA = "ifany") # 168
+table(sample_data(ps_RQ1)$season_microbiome_sampling_T0, useNA = "ifany")
+# Winter Spring Summer Autumn 
+#     39     42     22     65 
+
+saveRDS(ps_RQ1, "../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
+```
+
+# Population summary tables
+## Summary of health data at T0 and T1 for longitudinal participants (fixed)
+```{r}
+# ------------------------------------------------------------
+# Summary of health data at T0 and T1 for longitudinal participants
+# ------------------------------------------------------------
+
 ps_VGO3 <- readRDS("../Output/Cross_sectional/Phyloseq/ps_final_VGO3.rds")
 ps_meta_VGO3 <- sample_data(ps_VGO3)
 ps_meta_VGO3$Sam_ID <- rownames(ps_VGO3@sam_data)
 
-length(unique(ps_RQ1@sam_data$ID))# 110
-IDs_long <- unique(ps_RQ1@sam_data$ID)
+IDs_long <- unique(as(sample_data(ps_RQ1), "data.frame")$ID)
 
-## Subset phyloseq to those IDs of participants with longitudinal LF and microbiome data
+# Subset phyloseq to those IDs of participants with longitudinal LF and microbiome data
 samples_keep_VGO3 <- ps_meta_VGO3$Sam_ID[ps_meta_VGO3$VGO3_ID %in% IDs_long]
 
-length(samples_keep_VGO3) # 197 microbiome samples kept
-
 ps_VGO3_longitudinal <- prune_samples(samples_keep_VGO3, ps_VGO3)
-ps_VGO3_longitudinal # 197 samples
 
-# Add the variable RespDx to the sam_data 
-make_respdx <- function(meta) {
+# Add RespDx to VGO3 metadata
+make_respdx_vgo3 <- function(meta) {
   to_yesno <- function(x) dplyr::case_when(
-    x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes",
-    x %in% c(0,"0","no","No","NO",FALSE)   ~ "no",
+    x %in% c(1, "1", "yes", "Yes", "YES", TRUE) ~ "yes",
+    x %in% c(0, "0", "no", "No", "NO", FALSE) ~ "no",
     TRUE ~ NA_character_
   )
   a <- to_yesno(meta$Asthma_current)
   c <- to_yesno(meta$COPD_emphy_doc_diag)
-  y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no")
-  factor(y, levels = c("no","yes"))
+  y <- ifelse((!is.na(a) & a == "yes") | (!is.na(c) & c == "yes"), "yes", "no")
+  factor(y, levels = c("no", "yes"))
 }
 
-# - Apply to ps_final_VGO3 and save
 sd_long <- as(phyloseq::sample_data(ps_VGO3_longitudinal), "data.frame")
-phyloseq::sample_data(ps_VGO3_longitudinal)$RespDx <- make_respdx(sd_long)
+phyloseq::sample_data(ps_VGO3_longitudinal)$RespDx <- make_respdx_vgo3(sd_long)
 
-# Pull sample_data and keep only NP/OP samples
+# Keep only NP/OP and one row per participant, preferring NP over OP
 sd_long <- sample_data(ps_VGO3_longitudinal) %>%
   data.frame(check.names = FALSE, stringsAsFactors = FALSE) %>%
-  filter(niche %in% c("NP","OP"))
+  dplyr::filter(niche %in% c("NP", "OP"))
 
 sd_vgo3_long <- sd_long %>%
-  mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%   # prefer NP (1) over OP (2)
-  arrange(VGO3_ID, niche_rank) %>%                         # put NP first within each ID
-  filter(!duplicated(VGO3_ID)) %>%                         # keep first row per VGO3_ID
-  select(-niche_rank)
+  dplyr::mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%
+  dplyr::arrange(VGO3_ID, niche_rank) %>%
+  dplyr::filter(!duplicated(VGO3_ID)) %>%
+  dplyr::select(-niche_rank)
 
-
-## Just select the variables for Table 1
 df_vgo3_longitudinal <- sd_vgo3_long %>%
-  select(
+  dplyr::select(
     Age, Gender, Height, Weight, BMI, Ethnicity, Education_level, RespDx,
-    Lung_med, Asthma_med_current, Antibiotics_lastmonth, Antibiotics_lastyr, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr, COPD_emphy_doc_diag,
-    Smoking_status, Farm_childhood, Farm_visit_lastyr, T0_wkprior_NH3, T1_wkprior_NH3, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+    Lung_med, Asthma_med_current, Antibiotics_lastmonth, Antibiotics_lastyr,
+    Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr,
+    COPD_emphy_doc_diag, Smoking_status, Farm_childhood, Farm_visit_lastyr,
+    T0_wkprior_NH3, T1_wkprior_NH3, FEV1, FVC, FEV1_FVC, MMEF,
+    FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
 
-# Helper functions for summary
 cont_summary <- function(x) {
   x <- x[!is.na(x)]
   if (!length(x)) return(NA_character_)
-  m  <- mean(x)
-  s  <- sd(x)
-  q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
-  sprintf("%.3f (%.3f)\n%.3f [%.3f, %.3f]",
-        m, s, q[2], q[1], q[3])
+  m <- mean(x)
+  s <- sd(x)
+  q <- stats::quantile(x, probs = c(.25, .5, .75), na.rm = TRUE)
+  sprintf("%.3f (%.3f)\n%.3f [%.3f, %.3f]", m, s, q[2], q[1], q[3])
 }
 
 cat_summary <- function(x) {
@@ -2042,19 +2474,19 @@ cat_summary <- function(x) {
   out <- sapply(levs, function(lv) {
     n <- sum(x == lv, na.rm = TRUE)
     pct <- if (n_tot > 0) 100 * n / n_tot else NA_real_
-    sprintf("%s: %d (%.3f%%)", lv, n, pct)  
-    }, USE.NAMES = FALSE)
+    sprintf("%s: %d (%.3f%%)", lv, n, pct)
+  }, USE.NAMES = FALSE)
   paste(out, collapse = "\n")
 }
 
-
-## Build the Table 1 rows in the order you want them to appear
 rows_vgo3_longitudinal <- tibble::tibble(
   Variable = c(
     "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education_level", "RespDx",
-    "Lung_med", "Asthma_med_current", "Antibiotics_lastmonth", "Antibiotics_lastyr","Pneumonia_lastyr", "Asthma_ever", "Asthma_doc_diag", "Asthma_attk_lastyr", "COPD_emphy_doc_diag",
-    "Smoking_status", "Farm_childhood", "Farm_visit_lastyr","T0_wkprior_NH3", "T1_wkprior_NH3","FEV1", "FVC", "FEV1_FVC", "FEF25_75", 
-    "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "FEF25_75_pred"
+    "Lung_med", "Asthma_med_current", "Antibiotics_lastmonth", "Antibiotics_lastyr",
+    "Pneumonia_lastyr", "Asthma_ever", "Asthma_doc_diag", "Asthma_attk_lastyr",
+    "COPD_emphy_doc_diag", "Smoking_status", "Farm_childhood", "Farm_visit_lastyr",
+    "T0_wkprior_NH3", "T1_wkprior_NH3", "FEV1", "FVC", "FEV1_FVC", "MMEF",
+    "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"
   ),
   `VGO3` = c(
     cont_summary(df_vgo3_longitudinal$Age),
@@ -2090,92 +2522,53 @@ rows_vgo3_longitudinal <- tibble::tibble(
   )
 )
 
-# Write to Excel
 writexl::write_xlsx(
   list("Table 1 - VGO3" = rows_vgo3_longitudinal),
   path = "../Output/Longitudinal/Participant_data/Table1_longitudinal_T1.xlsx"
 )
 
-
-
-#### VGO2 longitudinal data ####
+# ------------------------------------------------------------
+# VGO2 longitudinal data
+# ------------------------------------------------------------
 ps_meta_VGO2 <- read.csv("../Output/Cross_sectional/Participant_data/VGO2_data.csv")
-
-# Ensure same structure
-str(ps_meta_VGO2$ID)
-str(IDs_long)
 ps_meta_VGO2$ID <- as.character(ps_meta_VGO2$ID)
 
-## Subset metadata to those IDs of participants with longitudinal LF and microbiome data
-samples_keep_VGO2 <- ps_meta_VGO2[ps_meta_VGO2$ID %in% IDs_long,]
+samples_keep_VGO2 <- ps_meta_VGO2[ps_meta_VGO2$ID %in% IDs_long, ]
 
-# Convert height from meters to cm (VGO2 stored in meters)
+# Convert height from meters to cm
 samples_keep_VGO2 <- samples_keep_VGO2 %>%
   dplyr::mutate(height = height * 100)
 
-
-nrow(samples_keep_VGO2) # 110 participants kept - correct
-
-## Just select the variables needed for Table 1
-samples_keep_VGO2
-
-# Add RespDx category
-make_respdx <- function(meta,
-                        asthma_col = "asthma_current",
-                        copd_col   = "copd_doc_diag") {
+make_respdx_vgo2 <- function(meta,
+                             asthma_col = "asthma_current",
+                             copd_col = "copd_doc_diag") {
   to_yesno <- function(x) dplyr::case_when(
     x %in% c(1, "1", "yes", "Yes", "YES", TRUE) ~ "yes",
-    x %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ "no",
+    x %in% c(0, "0", "no", "No", "NO", FALSE) ~ "no",
     TRUE ~ NA_character_
   )
   a <- to_yesno(meta[[asthma_col]])
   c <- to_yesno(meta[[copd_col]])
-  y <- dplyr::if_else(
-    (!is.na(a) & a == "yes") | (!is.na(c) & c == "yes"),
-    "yes",
-    "no"
-  )
+  y <- dplyr::if_else((!is.na(a) & a == "yes") | (!is.na(c) & c == "yes"), "yes", "no")
   factor(y, levels = c("no", "yes"))
 }
 
-samples_keep_VGO2$RespDx <- make_respdx(samples_keep_VGO2)
+samples_keep_VGO2$RespDx <- make_respdx_vgo2(samples_keep_VGO2)
 
-##
 df_vgo2_longitudinal <- samples_keep_VGO2 %>%
-  select(
-    age, gender, height, weight, bmi, ethnicity, educationlevel, RespDx, asthma_med_current, pneumo_lastyr, asthma_ever, asthma_doc_diag, asthma_attk_lastyr, copd_doc_diag,
-    smoke_status, farmchild, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  dplyr::select(
+    age, gender, height, weight, bmi, ethnicity, educationlevel, RespDx,
+    asthma_med_current, pneumo_lastyr, asthma_ever, asthma_doc_diag,
+    asthma_attk_lastyr, copd_doc_diag, smoke_status, farmchild,
+    FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
 
-# Helper functions for summary
-cont_summary <- function(x) {
-  x <- x[!is.na(x)]
-  if (!length(x)) return(NA_character_)
-  m  <- mean(x)
-  s  <- sd(x)
-  q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
-  sprintf("%.3f (%.3f)\n%.3f [%.3f, %.3f]",
-        m, s, q[2], q[1], q[3])
-}
-
-cat_summary <- function(x) {
-  x <- factor(x)
-  if (all(is.na(x))) return(NA_character_)
-  n_tot <- sum(!is.na(x))
-  levs <- levels(x)
-  out <- sapply(levs, function(lv) {
-    n <- sum(x == lv, na.rm = TRUE)
-    pct <- if (n_tot > 0) 100 * n / n_tot else NA_real_
-    sprintf("%s: %d (%.3f%%)", lv, n, pct)
-    }, USE.NAMES = FALSE)
-  paste(out, collapse = "\n")
-}
-
-
-## Build the Table 1 rows in the order you want them to appear
 rows_vgo2_longitudinal <- tibble::tibble(
-  Variable = c("age", "gender", "height", "weight", "bmi", "ethnicity", "RespDx","educationlevel", "asthma_med_current", "pneumo_lastyr", "asthma_ever", "asthma_doc_diag", "asthma_attk_lastyr", "copd_doc_diag",
-    "smoke_status", "farmchild", "FEV1", "FVC", "FEV1_FVC", "MMEF", "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"
+  Variable = c(
+    "age", "gender", "height", "weight", "bmi", "ethnicity", "RespDx", "educationlevel",
+    "asthma_med_current", "pneumo_lastyr", "asthma_ever", "asthma_doc_diag",
+    "asthma_attk_lastyr", "copd_doc_diag", "smoke_status", "farmchild",
+    "FEV1", "FVC", "FEV1_FVC", "MMEF", "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"
   ),
   `VGO2` = c(
     cont_summary(df_vgo2_longitudinal$age),
@@ -2205,123 +2598,76 @@ rows_vgo2_longitudinal <- tibble::tibble(
   )
 )
 
-# Write to Excel
 writexl::write_xlsx(
   list("Table 1 - VGO2" = rows_vgo2_longitudinal),
   path = "../Output/Longitudinal/Participant_data/Table1_longitudinal_T0.xlsx"
 )
 ```
 
+
 ## Summary of health data at T0 and T1 for longitudinal participants (with p values)
 ```{r}
+# ------------------------------------------------------------
+# Paired T0 vs T1 summary table with p values
+# ------------------------------------------------------------
+
 ps_VGO3 <- readRDS("../Output/Cross_sectional/Phyloseq/ps_final_VGO3.rds")
 ps_meta_VGO3 <- sample_data(ps_VGO3)
 ps_meta_VGO3$Sam_ID <- rownames(ps_VGO3@sam_data)
 
-length(unique(ps_RQ1@sam_data$ID))# 110
-IDs_long <- unique(ps_RQ1@sam_data$ID)
+IDs_long <- unique(as(sample_data(ps_RQ1), "data.frame")$ID)
 
-## Subset phyloseq to those IDs of participants with longitudinal LF and microbiome data
 samples_keep_VGO3 <- ps_meta_VGO3$Sam_ID[ps_meta_VGO3$VGO3_ID %in% IDs_long]
-
-length(samples_keep_VGO3) # 197 microbiome samples kept
-
 ps_VGO3_longitudinal <- prune_samples(samples_keep_VGO3, ps_VGO3)
-ps_VGO3_longitudinal # 197 samples
 
-# Add the variable RespDx to the sam_data 
-make_respdx <- function(meta) {
-  to_yesno <- function(x) dplyr::case_when(
-    x %in% c(1,"1","yes","Yes","YES",TRUE) ~ "yes",
-    x %in% c(0,"0","no","No","NO",FALSE)   ~ "no",
-    TRUE ~ NA_character_
-  )
-  a <- to_yesno(meta$Asthma_current)
-  c <- to_yesno(meta$COPD_emphy_doc_diag)
-  y <- ifelse(!is.na(a) & a=="yes" | !is.na(c) & c=="yes", "yes", "no")
-  factor(y, levels = c("no","yes"))
-}
-
-# Apply to ps_final_VGO3 and save
 sd_long <- as(phyloseq::sample_data(ps_VGO3_longitudinal), "data.frame")
-phyloseq::sample_data(ps_VGO3_longitudinal)$RespDx <- make_respdx(sd_long)
+phyloseq::sample_data(ps_VGO3_longitudinal)$RespDx <- make_respdx_vgo3(sd_long)
 
-# Pull sample_data and keep only NP/OP samples
 sd_long <- sample_data(ps_VGO3_longitudinal) %>%
   data.frame(check.names = FALSE, stringsAsFactors = FALSE) %>%
-  filter(niche %in% c("NP","OP"))
+  dplyr::filter(niche %in% c("NP", "OP"))
 
 sd_vgo3_long <- sd_long %>%
-  mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%   # prefer NP (1) over OP (2)
-  arrange(VGO3_ID, niche_rank) %>%                         # put NP first within each ID
-  filter(!duplicated(VGO3_ID)) %>%                         # keep first row per VGO3_ID
-  select(-niche_rank)
+  dplyr::mutate(niche_rank = ifelse(niche == "NP", 1L, 2L)) %>%
+  dplyr::arrange(VGO3_ID, niche_rank) %>%
+  dplyr::filter(!duplicated(VGO3_ID)) %>%
+  dplyr::select(-niche_rank)
 
-## Just select the variables for Table 1
-sd_vgo3_long$VGO3_ID
 df_vgo3_longitudinal <- sd_vgo3_long %>%
-  select(
+  dplyr::select(
     VGO3_ID, Age, Gender, Height, Weight, BMI, Ethnicity, Education_level, RespDx,
-    Lung_med, Asthma_med_current, Antibiotics_lastmonth, Antibiotics_lastyr, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr, COPD_emphy_doc_diag,
-    Smoking_status, Farm_childhood, Farm_visit_lastyr, T0_wkprior_NH3, T1_wkprior_NH3, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+    Asthma_med_current, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag,
+    Asthma_attk_lastyr, COPD_emphy_doc_diag, Smoking_status, Farm_childhood,
+    FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
 
-
-# Create comparable T0 and T1 participant-level data frames with harmonised names
 df_T1 <- df_vgo3_longitudinal %>%
-  transmute(
-    ID = VGO3_ID,
+  dplyr::transmute(
+    ID = as.character(VGO3_ID),
     Age, Gender, Height, Weight, BMI, Ethnicity, Education_level, RespDx,
-    Asthma_med_current, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag, Asthma_attk_lastyr, COPD_emphy_doc_diag,
-    Smoking_status, Farm_childhood,
-    FEV1, FVC, FEV1_FVC, MMEF,
-    FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+    Asthma_med_current, Pneumonia_lastyr, Asthma_ever, Asthma_doc_diag,
+    Asthma_attk_lastyr, COPD_emphy_doc_diag, Smoking_status, Farm_childhood,
+    FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
 
-
-#### VGO2 longitudinal data ####
 ps_meta_VGO2 <- read.csv("../Output/Cross_sectional/Participant_data/VGO2_data.csv")
-
-# Ensure same structure
-str(ps_meta_VGO2$ID)
-str(IDs_long)
 ps_meta_VGO2$ID <- as.character(ps_meta_VGO2$ID)
 
-## Subset metadata to those IDs of participants with longitudinal LF and microbiome data
-samples_keep_VGO2 <- ps_meta_VGO2[ps_meta_VGO2$ID %in% IDs_long,]
+samples_keep_VGO2 <- ps_meta_VGO2[ps_meta_VGO2$ID %in% IDs_long, ]
+samples_keep_VGO2$RespDx <- make_respdx_vgo2(samples_keep_VGO2)
+samples_keep_VGO2 <- samples_keep_VGO2 %>%
+  dplyr::mutate(height = height * 100)
 
-nrow(samples_keep_VGO2) # 110 participants kept - correct
-
-# Add RespDx category
-make_respdx <- function(meta,
-                        asthma_col = "asthma_current",
-                        copd_col   = "copd_doc_diag") {
-  to_yesno <- function(x) dplyr::case_when(
-    x %in% c(1, "1", "yes", "Yes", "YES", TRUE) ~ "yes",
-    x %in% c(0, "0", "no",  "No",  "NO",  FALSE) ~ "no",
-    TRUE ~ NA_character_
-  )
-  a <- to_yesno(meta[[asthma_col]])
-  c <- to_yesno(meta[[copd_col]])
-  y <- dplyr::if_else(
-    (!is.na(a) & a == "yes") | (!is.na(c) & c == "yes"),
-    "yes",
-    "no"
-  )
-  factor(y, levels = c("no", "yes"))
-}
-
-samples_keep_VGO2$RespDx <- make_respdx(samples_keep_VGO2)
-samples_keep_VGO2$ID
 df_vgo2_longitudinal <- samples_keep_VGO2 %>%
-  select(
-    ID, age, gender, height, weight, bmi, ethnicity, educationlevel, RespDx, asthma_med_current, pneumo_lastyr, asthma_ever, asthma_doc_diag, asthma_attk_lastyr, copd_doc_diag,
-    smoke_status, farmchild, FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+  dplyr::select(
+    ID, age, gender, height, weight, bmi, ethnicity, educationlevel, RespDx,
+    asthma_med_current, pneumo_lastyr, asthma_ever, asthma_doc_diag,
+    asthma_attk_lastyr, copd_doc_diag, smoke_status, farmchild,
+    FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
-
 
 df_T0 <- df_vgo2_longitudinal %>%
-  transmute(
+  dplyr::transmute(
     ID,
     Age = age,
     Gender = gender,
@@ -2339,25 +2685,18 @@ df_T0 <- df_vgo2_longitudinal %>%
     COPD_emphy_doc_diag = copd_doc_diag,
     Smoking_status = smoke_status,
     Farm_childhood = farmchild,
-    FEV1, FVC, FEV1_FVC, MMEF,
-    FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
+    FEV1, FVC, FEV1_FVC, MMEF, FEV1_pred, FVC_pred, FEV1FVC_pred, MMEF_pred
   )
 
-df_T1$ID <- as.integer(df_T1$ID)
-df_T0$ID <- as.integer(df_T0$ID)
+paired_df <- dplyr::inner_join(df_T0, df_T1, by = "ID", suffix = c("_T0", "_T1"))
 
-
-paired_df <- inner_join(df_T0, df_T1, by = "ID", suffix = c("_T0", "_T1"))
-
-# 2) Your existing summary helpers
 cont_summary <- function(x) {
   x <- x[!is.na(x)]
   if (!length(x)) return(NA_character_)
-  m  <- mean(x)
-  s  <- sd(x)
-  q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
-  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]",
-          m, s, q[2], q[1], q[3])
+  m <- mean(x)
+  s <- sd(x)
+  q <- stats::quantile(x, probs = c(.25, .5, .75), na.rm = TRUE)
+  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]", m, s, q[2], q[1], q[3])
 }
 
 cat_summary <- function(x) {
@@ -2373,12 +2712,12 @@ cat_summary <- function(x) {
   paste(out, collapse = "\n")
 }
 
-# 3) Paired p-value helpers (continuous = paired t-test; categorical = McNemar (2 levels) / Bowker (>2))
 bowker_test <- function(tab) {
   k <- nrow(tab)
   stat <- 0
   for (i in 1:(k - 1)) for (j in (i + 1):k) {
-    nij <- tab[i, j]; nji <- tab[j, i]
+    nij <- tab[i, j]
+    nji <- tab[j, i]
     if ((nij + nji) > 0) stat <- stat + (nij - nji)^2 / (nij + nji)
   }
   df <- k * (k - 1) / 2
@@ -2389,18 +2728,17 @@ bowker_test <- function(tab) {
 paired_pval <- function(x0, x1, type = c("cont", "cat")) {
   type <- match.arg(type)
   keep <- stats::complete.cases(x0, x1)
-  x0 <- x0[keep]; x1 <- x1[keep]
+  x0 <- x0[keep]
+  x1 <- x1[keep]
   if (!length(x0)) return(NA_real_)
 
   if (type == "cont") {
-    # paired t-test; fall back to Wilcoxon if t-test fails
     out <- try(stats::t.test(x0, x1, paired = TRUE), silent = TRUE)
     if (inherits(out, "try-error")) {
       out <- stats::wilcox.test(x0, x1, paired = TRUE, exact = FALSE)
     }
     return(out$p.value)
   } else {
-    # categorical paired test
     lvls <- sort(unique(c(as.character(x0), as.character(x1))))
     f0 <- factor(x0, levels = lvls)
     f1 <- factor(x1, levels = lvls)
@@ -2419,69 +2757,59 @@ fmt_p <- function(p) {
   format.pval(p, digits = 3, eps = 0.001)
 }
 
-# 4) Specify variables (common across T0/T1) and types
 spec <- tibble::tibble(
   Variable = c(
     "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education level", "RespDx",
     "Asthma medication (current)", "Pneumonia (last year)", "Asthma ever", "Asthma diagnosis (doctor)",
-    "Asthma attack (last year)", "COPD/emphysema diagnosis (doctor)",
-    "Smoking status", "Farm childhood",
+    "Asthma attack (last year)", "COPD/emphysema diagnosis (doctor)", "Smoking status", "Farm childhood",
     "FEV1", "FVC", "FEV1/FVC", "MMEF (FEF25-75)",
     "FEV1 %pred", "FVC %pred", "FEV1/FVC %pred", "MMEF %pred"
   ),
   var = c(
     "Age", "Gender", "Height", "Weight", "BMI", "Ethnicity", "Education_level", "RespDx",
     "Asthma_med_current", "Pneumonia_lastyr", "Asthma_ever", "Asthma_doc_diag",
-    "Asthma_attk_lastyr", "COPD_emphy_doc_diag",
-    "Smoking_status", "Farm_childhood",
+    "Asthma_attk_lastyr", "COPD_emphy_doc_diag", "Smoking_status", "Farm_childhood",
     "FEV1", "FVC", "FEV1_FVC", "MMEF",
     "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"
   ),
   type = c(
-    "cont","cat","cont","cont","cont","cat","cat","cat",
-    "cat","cat","cat","cat","cat","cat",
-    "cat","cat",
-    "cont","cont","cont","cont",
-    "cont","cont","cont","cont"
+    "cont", "cat", "cont", "cont", "cont", "cat", "cat", "cat",
+    "cat", "cat", "cat", "cat", "cat", "cat", "cat", "cat",
+    "cont", "cont", "cont", "cont", "cont", "cont", "cont", "cont"
   )
 )
 
-# 5) Build Table 1 with T0, T1 and paired p-value
 rows_longitudinal_compare <- spec %>%
-  rowwise() %>%
-  mutate(
+  dplyr::rowwise() %>%
+  dplyr::mutate(
     `VGO2 (T0)` = if (type == "cont") cont_summary(paired_df[[paste0(var, "_T0")]]) else cat_summary(paired_df[[paste0(var, "_T0")]]),
     `VGO3 (T1)` = if (type == "cont") cont_summary(paired_df[[paste0(var, "_T1")]]) else cat_summary(paired_df[[paste0(var, "_T1")]]),
-    `p-value`   = fmt_p(paired_pval(
+    `p-value` = fmt_p(paired_pval(
       paired_df[[paste0(var, "_T0")]],
       paired_df[[paste0(var, "_T1")]],
       type = type
     ))
   ) %>%
-  ungroup() %>%
-  select(Variable, `VGO2 (T0)`, `VGO3 (T1)`, `p-value`)
+  dplyr::ungroup() %>%
+  dplyr::select(Variable, `VGO2 (T0)`, `VGO3 (T1)`, `p-value`)
 
-# 6) Write to Excel
 writexl::write_xlsx(
   list("Table 1 - T0 vs T1" = rows_longitudinal_compare),
   path = "../Output/Longitudinal/Participant_data/Table1_longitudinal_T0_vs_T1_with_p.xlsx"
 )
-
 ```
 
 ## Summary of lung function changes
 ```{r}
-RQ1_meta <- data.frame(ps_RQ1@sam_data)
+RQ1_meta <- as(sample_data(ps_RQ1), "data.frame")
 
-# Helper functions for summary
 cont_summary <- function(x) {
   x <- x[!is.na(x)]
   if (!length(x)) return(NA_character_)
-  m  <- mean(x)
-  s  <- sd(x)
-  q  <- stats::quantile(x, probs = c(.25,.5,.75), na.rm = TRUE)
-  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]",
-          m, s, q[2], q[1], q[3])
+  m <- mean(x)
+  s <- sd(x)
+  q <- stats::quantile(x, probs = c(.25, .5, .75), na.rm = TRUE)
+  sprintf("%.1f (%.1f)\n%.1f [%.1f, %.1f]", m, s, q[2], q[1], q[3])
 }
 
 cat_summary <- function(x) {
@@ -2497,12 +2825,18 @@ cat_summary <- function(x) {
   paste(out, collapse = "\n")
 }
 
-
-## Build the Table 1 rows in the order you want them to appear
 rows_both <- tibble::tibble(
-  Variable = c("fuperiod", "delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred", "obstr_VGO2", "obstr_VGO3", "new_obstr"
+  Variable = c(
+    "fuperiod",
+    "delta_FEV1_pred",
+    "delta_FVC_pred",
+    "delta_FEV1FVC_pred",
+    "delta_MMEF_pred",
+    "obstr_VGO2",
+    "obstr_VGO3",
+    "new_obstr"
   ),
-   c(
+  Summary = c(
     cont_summary(RQ1_meta$fuperiod),
     cont_summary(RQ1_meta$delta_FEV1_pred),
     cont_summary(RQ1_meta$delta_FVC_pred),
@@ -2511,63 +2845,70 @@ rows_both <- tibble::tibble(
     cat_summary(RQ1_meta$obstr_VGO2),
     cat_summary(RQ1_meta$obstr_VGO3),
     cat_summary(RQ1_meta$new_obstr)
-    
   )
 )
 
-# Write to Excel
 writexl::write_xlsx(
   list("Table 1 - change" = rows_both),
   path = "../Output/Longitudinal/Participant_data/Table1_VGO2toVGO3_change.xlsx"
 )
 
-
-## Plot change
-# Lung function change per person (unique row per VGO3_ID)
-# pick one row per person with the most non-missing change values
-RQ1_meta <- data.frame(sample_data(ps_RQ1))
-
-delta_vars  <- c("delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred")
-
+# ------------------------------------------------------------
+# Plot change
+# ------------------------------------------------------------
 RQ1_meta_unique <- RQ1_meta %>%
-  mutate(nonmiss_lf = rowSums(across(all_of(delta_vars), ~ !is.na(.x)))) %>%
-  arrange(ID, desc(nonmiss_lf)) %>%
-  group_by(ID) %>% slice_head(n = 1) %>% ungroup() %>%
-  select(ID, all_of(lung_change_cols))
-
-
-plot_df <- RQ1_meta_unique %>%
-  select(all_of(delta_vars)) %>%
-  pivot_longer(everything(), names_to = "Measure", values_to = "Delta") %>%
-  filter(!is.na(Delta)) %>%
-  mutate(
-    Measure = recode(
-      Measure,
-      delta_FEV1_pred    = "ΔFEV1",
-      delta_FVC_pred     = "ΔFVC",
-      delta_FEV1FVC_pred = "ΔFEV1/FVC",
-      delta_MMEF_pred    = "ΔFEF25–75"
-    ),
-    Measure = factor(Measure, levels = c("ΔFEF25–75","ΔFEV1/FVC","ΔFVC","ΔFEV1")),  # match your example order (top→bottom)
-    Direction = if_else(Delta >= 0,
-                        "Slower decline than GLI-expected",
-                        "Faster decline than GLI-expected")
+  dplyr::mutate(
+    nonmiss_lf = rowSums(dplyr::across(
+      dplyr::all_of(c("delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred")),
+      ~ !is.na(.x)
+    ))
+  ) %>%
+  dplyr::arrange(ID, dplyr::desc(nonmiss_lf)) %>%
+  dplyr::group_by(ID) %>%
+  dplyr::slice_head(n = 1) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(
+    ID,
+    delta_FEV1_pred,
+    delta_FVC_pred,
+    delta_FEV1FVC_pred,
+    delta_MMEF_pred
   )
 
+plot_df <- RQ1_meta_unique %>%
+  tidyr::pivot_longer(
+    cols = c(delta_FEV1_pred, delta_FVC_pred, delta_FEV1FVC_pred, delta_MMEF_pred),
+    names_to = "Measure",
+    values_to = "Delta"
+  ) %>%
+  dplyr::filter(!is.na(Delta)) %>%
+  dplyr::mutate(
+    Measure = dplyr::recode(
+      Measure,
+      delta_FEV1_pred = "ΔFEV1",
+      delta_FVC_pred = "ΔFVC",
+      delta_FEV1FVC_pred = "ΔFEV1/FVC",
+      delta_MMEF_pred = "ΔFEF25–75"
+    ),
+    Measure = factor(Measure, levels = c("ΔFEF25–75", "ΔFEV1/FVC", "ΔFVC", "ΔFEV1")),
+    Direction = dplyr::if_else(
+      Delta >= 0,
+      "Slower decline than GLI-expected",
+      "Faster decline than GLI-expected"
+    )
+  )
 
 summ_df <- plot_df %>%
   dplyr::group_by(Measure) %>%
   dplyr::summarise(
     n = dplyr::n(),
     med = median(Delta, na.rm = TRUE),
-    q1  = quantile(Delta, 0.25, na.rm = TRUE),
-    q3  = quantile(Delta, 0.75, na.rm = TRUE),
+    q1 = quantile(Delta, 0.25, na.rm = TRUE),
+    q3 = quantile(Delta, 0.75, na.rm = TRUE),
     p_slower = mean(Delta >= 0, na.rm = TRUE) * 100,
-    p_faster = mean(Delta <  0, na.rm = TRUE) * 100,
+    p_faster = mean(Delta < 0, na.rm = TRUE) * 100,
     .groups = "drop"
   )
-
-
 
 plot_delta <- ggplot(plot_df, aes(x = Delta, y = Measure)) +
   geom_vline(xintercept = 0, linetype = "dashed", linewidth = 0.8) +
@@ -2575,17 +2916,21 @@ plot_delta <- ggplot(plot_df, aes(x = Delta, y = Measure)) +
   geom_errorbarh(
     data = summ_df,
     aes(xmin = q1, xmax = q3, y = Measure),
-    inherit.aes = FALSE, height = 0, linewidth = 1.0
+    inherit.aes = FALSE,
+    height = 0,
+    linewidth = 1.0
   ) +
   geom_point(
     data = summ_df,
     aes(x = med, y = Measure),
-    inherit.aes = FALSE, size = 2.2
+    inherit.aes = FALSE,
+    size = 2.2
   ) +
   geom_point(
     aes(color = Direction),
     position = position_jitter(height = 0.12, width = 0),
-    size = 2, alpha = 0.3
+    size = 2,
+    alpha = 0.3
   ) +
   labs(
     x = "Annualised change in GLI-referenced lung function\n(% predicted per year: T1 − T0)",
@@ -2597,18 +2942,18 @@ plot_delta <- ggplot(plot_df, aes(x = Delta, y = Measure)) +
     legend.position = "right",
     panel.grid.minor = element_blank(),
     panel.grid.major.y = element_blank(),
-    axis.text.x  = element_text(size = 10),
-    axis.text.y  = element_text(size = 10),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
     axis.title.x = element_text(size = 12)
   )
 
-
 ggsave(
   "../Output/Longitudinal/Participant_data/Deltas_VGO2toVGO3.svg",
-  plot_delta, width = 7, height = 4
+  plot_delta,
+  width = 7,
+  height = 4
 )
 ```
-
 # ANALYSES
 ## Read in data
 ```{r}
@@ -2616,48 +2961,6 @@ ps_l <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
 ```
 
 # How is microbiome at T0 associated with lung function at T1?
-## Data 
-```{r}
-get_season <- function(date_vec) {
-  mo <- month(date_vec)
-  out <- ifelse(mo %in% 3:5,  "Spring",
-         ifelse(mo %in% 6:8,  "Summer",
-         ifelse(mo %in% 9:11, "Autumn", "Winter")))
-  factor(out, levels = c("Winter","Spring","Summer","Autumn"))
-}
-
-sd_l <- as(sample_data(ps_l), "data.frame") %>%
-  rownames_to_column("SampleID") %>%
-  mutate(
-    date_spiro_T0 = ymd(date_spiro_T0),
-    date_spiro_T1 = ymd(date_spiro_T1),
-
-    # pick the spirometry date corresponding to the sample timepoint
-    date_spiro_this_tp = case_when(
-      timepoint == "T0" ~ date_spiro_T0,
-      timepoint == "T1" ~ date_spiro_T1,
-      TRUE ~ as.Date(NA)
-    ),
-
-    season_spiro = get_season(date_spiro_this_tp)
-  )
-
-# If you want your analyses to use a generic "season_microbiome_sampling" covariate name:
-sd_l$season_microbiome_sampling <- sd_l$season_spiro
-
-# Put back into phyloseq
-rownames(sd_l) <- sd_l$SampleID
-sd_l$SampleID <- NULL
-sample_data(ps_l) <- sample_data(sd_l)
-
-# checks
-table(sample_data(ps_l)$timepoint, useNA = "ifany")
-table(sample_data(ps_l)$season_microbiome_sampling, useNA = "ifany")
-
-saveRDS(ps_l, "../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth_withSeason.rds")
-
-ps_l <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth_withSeason.rds")
-```
 # Separate microbiome data per dataset and niche
 ```{r}
 # Subset per niche
@@ -2668,14 +2971,15 @@ nsamples(T0_NP) # 95 NP samples
 # VGO3_NPOP dataset, OP niche
 T0_OP <- subset_samples(ps_l, niche == "OP")
 nsamples(T0_OP) # 73 OP samples
-
 ```
 # Count ASVs, phyla, class, order etc. in dataset
 ```{r}
-ps_l
-ntaxa(ps_l)
-nphyla(ps_l)
-
+nphyla <- function(ps) {
+  tax_df <- as.data.frame(tax_table(ps))
+  dplyr::n_distinct(na.omit(tax_df$phylum))
+}
+ntaxa(ps_l) # 6020
+nphyla(ps_l) # 35
 
 # Extract taxonomy table
 tax_df <- as.data.frame(tax_table(ps_l))
@@ -2737,10 +3041,9 @@ meta_t0_op <- meta_to_df(T0_OP_filtered, sample_name = ".row_id")
 ```
 # Alpha diversity violin plots
 ```{r}
-
 alpha_metrics <- c("Observed", "Shannon", "Simpson")
 
-# ---- Extract metadata + join alpha diversity ----
+#  Extract metadata + join alpha diversity
 meta <- data.frame(sample_data(ps_l)) %>%
   tibble::rownames_to_column("Iden")
 
@@ -2808,16 +3111,44 @@ ggsave(
   height = 3
 )
 ```
-
-# Alpha diversity and lung function at T1
+# Alpha diversity and lung function at T1 
 ```{r}
-### Multivariable
-dataset_list <- list(T0_NP = meta_t0_np, T0_OP = meta_t0_op)
-alpha_vars   <- c("Observed","Shannon","Simpson")
-lung_fun_cont <- c("FEV1_pred_T1","FVC_pred_T1","FEV1FVC_pred_T1","MMEF_pred_T1","delta_FEV1_pred","delta_FVC_pred" , "delta_FEV1FVC_pred", "delta_MMEF_pred")
-core_covariates <- c("age_T0","gender_T0","smoke_status_T0","season_microbiome_sampling")
-pretty_alpha <- c("Observed_z"="Observed richness","Shannon_z"="Shannon diversity","Simpson_z"="Simpson diversity")
-pretty_lung  <- c(
+# Alpha diversity and lung function at T1 
+# Multivariable models, pooled by niche (NP / OP)
+
+dataset_list <- list(
+  T0_NP = meta_t0_np,
+  T0_OP = meta_t0_op
+)
+
+alpha_vars <- c("Observed", "Shannon", "Simpson")
+
+lung_fun_cont <- c(
+  "FEV1_pred_T1",
+  "FVC_pred_T1",
+  "FEV1FVC_pred_T1",
+  "MMEF_pred_T1",
+  "delta_FEV1_pred",
+  "delta_FVC_pred",
+  "delta_FEV1FVC_pred",
+  "delta_MMEF_pred"
+)
+
+core_covariates <- c(
+  "age_T0",
+  "gender_T0",
+  "smoke_status_T0",
+  "season_microbiome_sampling_T0"
+)
+
+# Pretty labels (FIXED)
+pretty_alpha <- c(
+  "Observed_z" = "Observed richness",
+  "Shannon_z"  = "Shannon diversity",
+  "Simpson_z"  = "Simpson diversity"
+)
+
+pretty_lung <- c(
   "FEV1_pred_T1_z"       = "FEV1 % predicted (T1)",
   "FVC_pred_T1_z"        = "FVC % predicted (T1)",
   "FEV1FVC_pred_T1_z"    = "FEV1/FVC % predicted (T1)",
@@ -2828,150 +3159,328 @@ pretty_lung  <- c(
   "delta_MMEF_pred_z"    = "Delta MMEF % predicted (T1-T0)"
 )
 
-
-preprocess_dataset <- function(df){
+# ------------------------------------------------------------
+# Preprocessing (FIXED to use T0/T1 variables)
+# ------------------------------------------------------------
+preprocess_dataset <- function(df) {
   df <- df %>%
     dplyr::mutate(
-      Age = suppressWarnings(as.numeric(as.character(age_T0))),
-      FEV1_pred = suppressWarnings(as.numeric(as.character(FEV1_pred_T1))),
-      FVC_pred  = suppressWarnings(as.numeric(as.character(FVC_pred_T1))),
-      FEV1FVC_pred = suppressWarnings(as.numeric(as.character(FEV1FVC_pred_T1))),
-      MMEF_pred = suppressWarnings(as.numeric(as.character(MMEF_pred_T1))),
-      Observed  = suppressWarnings(as.numeric(as.character(Observed))),
-      Shannon   = suppressWarnings(as.numeric(as.character(Shannon))),
-      Simpson   = suppressWarnings(as.numeric(as.character(Simpson))),
-      Gender = factor(as.character(gender_T0), levels=c("Male","Female")),
-      Smoking_status = factor(tolower(as.character(smoke_status_T0)),
-                              levels=c("never","former","current"), ordered=TRUE),
-      season_microbiome_sampling = factor(as.character(season_microbiome_sampling),
-                              levels=c("Winter","Spring","Summer","Autumn"), ordered=TRUE)
-    )
-  
-  df <- df %>%
+      age_T0 = as.numeric(age_T0),
+
+      FEV1_pred_T1 = as.numeric(FEV1_pred_T1),
+      FVC_pred_T1 = as.numeric(FVC_pred_T1),
+      FEV1FVC_pred_T1 = as.numeric(FEV1FVC_pred_T1),
+      MMEF_pred_T1 = as.numeric(MMEF_pred_T1),
+
+      delta_FEV1_pred = as.numeric(delta_FEV1_pred),
+      delta_FVC_pred = as.numeric(delta_FVC_pred),
+      delta_FEV1FVC_pred = as.numeric(delta_FEV1FVC_pred),
+      delta_MMEF_pred = as.numeric(delta_MMEF_pred),
+
+      Observed = as.numeric(Observed),
+      Shannon = as.numeric(Shannon),
+      Simpson = as.numeric(Simpson),
+
+      gender_T0 = factor(stringr::str_to_title(as.character(gender_T0))),
+      smoke_status_T0 = factor(
+        tolower(as.character(smoke_status_T0)),
+        levels = c("non", "former", "current"),
+        ordered = TRUE
+      ),
+      season_microbiome_sampling_T0 = factor(
+        stringr::str_to_title(as.character(season_microbiome_sampling_T0)),
+        levels = c("Winter", "Spring", "Summer", "Autumn"),
+        ordered = TRUE
+      )
+    ) %>%
     dplyr::mutate(
       Observed_z = as.numeric(scale(Observed)),
       Shannon_z  = as.numeric(scale(Shannon)),
       Simpson_z  = as.numeric(scale(Simpson))
     )
-  # z-scored lung vars (higher = better, if deltas are T1 - T0)
-  for (lf in lung_fun_cont) if (lf %in% names(df))
-    df[[paste0(lf, "_z")]] <- as.numeric(scale(df[[lf]]))
 
+  for (lf in lung_fun_cont) {
+    if (lf %in% names(df)) {
+      df[[paste0(lf, "_z")]] <- as.numeric(scale(df[[lf]]))
+    }
+  }
 
   df
 }
 
-fit_pooled_mv <- function(df, dataset_name){
+# ------------------------------------------------------------
+# Model fitting
+# ------------------------------------------------------------
+fit_pooled_mv <- function(df, dataset_name) {
   df <- preprocess_dataset(df)
-  alpha_z <- c("Observed_z","Shannon_z","Simpson_z")
-  lung_z  <- paste0(lung_fun_cont, "_z")
+
+  alpha_z <- c("Observed_z", "Shannon_z", "Simpson_z")
+  lung_z <- paste0(lung_fun_cont, "_z")
+
   out <- list()
-  for (a in alpha_z){
-    for (lz in lung_z){
+
+  for (a in alpha_z) {
+    for (lz in lung_z) {
+
       need <- c(a, lz, core_covariates)
       if (!all(need %in% names(df))) next
-      dat <- df %>% dplyr::select(dplyr::all_of(need)) %>% tidyr::drop_na()
+
+      dat <- df %>%
+        dplyr::select(dplyr::all_of(need)) %>%
+        tidyr::drop_na()
+
       if (nrow(dat) < 20) next
 
-      fml <- as.formula(paste(a, "~", paste(c(lz, core_covariates), collapse = " + ")))
-      fit <- tryCatch(stats::lm(fml, data = dat), error=function(e) NULL)
-      if (is.null(fit)) next
-      row <- broom::tidy(fit) %>% dplyr::filter(term == lz)
-      if (!nrow(row)) next
+      fml <- stats::as.formula(
+        paste(a, "~", paste(c(lz, core_covariates), collapse = " + "))
+      )
 
-      out[[length(out)+1]] <- tibble::tibble(
+      fit <- tryCatch(stats::lm(fml, data = dat), error = function(e) NULL)
+      if (is.null(fit)) next
+
+      row <- broom::tidy(fit) %>%
+        dplyr::filter(term == lz)
+
+      if (nrow(row) == 0) next
+
+      out[[length(out) + 1]] <- tibble::tibble(
         dataset = dataset_name,
-        niche = dplyr::recode(dataset_name, T0_NP="NP", T0_OP="OP"),
+        niche = dplyr::recode(dataset_name, T0_NP = "NP", T0_OP = "OP"),
         alpha_metric = a,
         lung_var = lz,
-        estimate = row$estimate, std.error = row$std.error, p.value = row$p.value,
+        estimate = row$estimate,
+        std.error = row$std.error,
+        p.value = row$p.value,
         n_used = stats::nobs(fit)
       )
     }
   }
+
   dplyr::bind_rows(out)
 }
 
-
+# ------------------------------------------------------------
+# Run models
+# ------------------------------------------------------------
 mv_all <- dplyr::bind_rows(
   fit_pooled_mv(dataset_list$T0_NP, "T0_NP"),
   fit_pooled_mv(dataset_list$T0_OP, "T0_OP")
 ) %>%
   dplyr::mutate(
     alpha_metric = dplyr::recode(alpha_metric, !!!pretty_alpha),
-    lung_var     = dplyr::recode(lung_var, !!!pretty_lung)
+    lung_var = dplyr::recode(lung_var, !!!pretty_lung)
   ) %>%
   dplyr::group_by(dataset) %>%
-  dplyr::mutate(q.value = p.adjust(p.value, method="BH"),
-                stars   = dplyr::case_when(q.value<=0.05~"***", q.value<=0.10~"**", q.value<=0.25~"*", TRUE~"")) %>%
+  dplyr::mutate(
+    q.value = p.adjust(p.value, method = "BH"),
+    stars = dplyr::case_when(
+      q.value <= 0.05 ~ "***",
+      q.value <= 0.10 ~ "**",
+      q.value <= 0.25 ~ "*",
+      TRUE ~ ""
+    )
+  ) %>%
   dplyr::ungroup()
 
+
 # Plot heatmap
-pal <- try(rcartocolor::carto_pal(7, "Geyser"), silent=TRUE)
-if (inherits(pal, "try-error")) pal <- c("#2166ac","#67a9cf","#d1e5f0","#f7f7f7","#fddbc7","#ef8a62","#b2182b")
-lim <- max(abs(mv_all$estimate), na.rm=TRUE); if (!is.finite(lim)) lim <- 1
+pal <- try(rcartocolor::carto_pal(7, "Geyser"), silent = TRUE)
+if (inherits(pal, "try-error")) {
+  pal <- c("#2166ac", "#67a9cf", "#d1e5f0", "#f7f7f7", "#fddbc7", "#ef8a62", "#b2182b")
+}
+
+lim <- max(abs(mv_all$estimate), na.rm = TRUE)
+if (!is.finite(lim)) lim <- 1
 
 plot_df <- mv_all %>%
   dplyr::mutate(
-    lung_var = factor(lung_var, levels = rev(c("FEV1 % predicted (T1)",
-                                               "FVC % predicted (T1)",
-                                               "FEV1/FVC % predicted (T1)",
-                                               "MMEF % predicted (T1)",
-                                               "Delta FEV1 % predicted (T1-T0)",
-                                               "Delta FVC % predicted (T1-T0)",
-                                               "Delta FEV1FVC % predicted (T1-T0)",
-                                               "Delta MMEF % predicted (T1-T0)"))),
-    alpha_metric = factor(alpha_metric, levels=c("Observed richness","Shannon diversity","Simpson diversity")),
-    niche = factor(dplyr::recode(dataset, T0_NP="NP", T0_OP="OP"), levels=c("NP","OP"))
+    lung_var = factor(
+      lung_var,
+      levels = rev(c(
+        "FEV1 % predicted (T1)",
+        "FVC % predicted (T1)",
+        "FEV1/FVC % predicted (T1)",
+        "MMEF % predicted (T1)",
+        "Delta FEV1 % predicted (T1-T0)",
+        "Delta FVC % predicted (T1-T0)",
+        "Delta FEV1FVC % predicted (T1-T0)",
+        "Delta MMEF % predicted (T1-T0)"
+      ))
+    ),
+    alpha_metric = factor(
+      alpha_metric,
+      levels = c("Observed richness", "Shannon diversity", "Simpson diversity")
+    ),
+    niche = factor(niche, levels = c("NP", "OP"))
   )
 
-p_mv <- ggplot2::ggplot(plot_df, aes(x = alpha_metric, y = lung_var, fill = estimate)) +
-  ggplot2::geom_tile(color="white") +
-  ggplot2::geom_text(aes(label = stars), size=4) +
-  ggplot2::scale_fill_gradient2(low=pal[1], mid=pal[4], high=pal[7], midpoint=0, limits=c(-lim,lim),
-                                name="Std. β (per 1 SD higher lung function)") +
-  ggplot2::facet_wrap(~ niche, nrow=1) +
-  ggplot2::theme_minimal(base_size=12) +
-  ggplot2::theme(panel.grid=element_blank(), axis.text.x=element_text(angle=30,hjust=1),
-                 strip.text=element_text(face="bold")) +
-  ggplot2::labs(x="Alpha diversity metric", y="Lung function metric",
-                title="Multivariable models (pooled; adjusted for Age, Gender, Smoking, Season)")
+p_mv <- ggplot2::ggplot(
+  plot_df,
+  ggplot2::aes(x = alpha_metric, y = lung_var, fill = estimate)
+) +
+  ggplot2::geom_tile(color = "white") +
+  ggplot2::geom_text(ggplot2::aes(label = stars), size = 4) +
+  ggplot2::scale_fill_gradient2(
+    low = pal[1],
+    mid = pal[4],
+    high = pal[7],
+    midpoint = 0,
+    limits = c(-lim, lim),
+    name = "Std. β (per 1 SD higher lung function)"
+  ) +
+  ggplot2::facet_wrap(~ niche, nrow = 1) +
+  ggplot2::theme_minimal(base_size = 12) +
+  ggplot2::theme(
+    panel.grid = ggplot2::element_blank(),
+    axis.text.x = ggplot2::element_text(angle = 30, hjust = 1),
+    strip.text = ggplot2::element_text(face = "bold")
+  ) +
+  ggplot2::labs(
+    x = "Alpha diversity metric",
+    y = "Lung function metric",
+    title = "Multivariable models (pooled; adjusted for age, gender, smoking, season)"
+  )
 
-ggplot2::ggsave("../Output/Longitudinal/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_heatmap.svg", p_mv, width=8, height=4)
+ggplot2::ggsave(
+  "../Output/Longitudinal/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_heatmap.svg",
+  p_mv,
+  width = 8,
+  height = 4
+)
 
-readr::write_csv(mv_all,"../Output/Longitudinal/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_results.csv")
-
+readr::write_csv(
+  mv_all,
+  "../Output/Longitudinal/Alpha_diversity/Multivariable/Non_stratified/Multivariable_alpha_results.csv"
+)
 ```
+
 
 # Beta diversity 
 ### Multivariable PERMANOVA
 ```{r}
-lung_outcomes <- c("FEV1_pred_T1","FVC_pred_T1","FEV1FVC_pred_T1","MMEF_pred_T1", "delta_FEV1_pred","delta_FVC_pred" , "delta_FEV1FVC_pred", "delta_MMEF_pred")
-covars_adj    <- c("age_T0","gender_T0","smoke_status_T0","season_microbiome_sampling")
-perms         <- 999
+# ============================================================
+# RQ1: Multivariable PERMANOVA
+# T0 microbiome composition vs T1 lung function / lung function change
+# ============================================================
+
+perms <- 999
 set.seed(202501)
 
-# Helper: samples x taxa matrix
-otu_samples_x_taxa <- function(ps) {
-  M <- as(otu_table(ps), "matrix")
-  if (taxa_are_rows(ps)) M <- t(M)
-  mode(M) <- "numeric"
-  M
-}
+# ------------------------------------------------------------
+# 1. Read RQ1 phyloseq and original longitudinal metadata
+# ------------------------------------------------------------
+ps_rq1 <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth_withSeason.rds")
 
-# Main runner for one niche
-run_permanova_niche <- function(ps_rq1, niche_keep, outcomes, covars, perms = 999) {
+metadata_all <- read.csv("../Output/Longitudinal/Participant_data/VGO_combined_longitudinal.csv") %>%
+  dplyr::mutate(
+    ID = as.character(ID),
+    timepoint = as.character(timepoint),
+    age = suppressWarnings(as.numeric(as.character(age))),
+    gender = as.character(gender),
+    smoke_status = as.character(smoke_status),
+    FEV1_pred = suppressWarnings(as.numeric(as.character(FEV1_pred))),
+    FVC_pred = suppressWarnings(as.numeric(as.character(FVC_pred))),
+    FEV1FVC_pred = suppressWarnings(as.numeric(as.character(FEV1FVC_pred))),
+    MMEF_pred = suppressWarnings(as.numeric(as.character(MMEF_pred))),
+    delta_FEV1_pred = suppressWarnings(as.numeric(as.character(delta_FEV1_pred))),
+    delta_FVC_pred = suppressWarnings(as.numeric(as.character(delta_FVC_pred))),
+    delta_FEV1FVC_pred = suppressWarnings(as.numeric(as.character(delta_FEV1FVC_pred))),
+    delta_MMEF_pred = suppressWarnings(as.numeric(as.character(delta_MMEF_pred)))
+  )
 
-  sd0 <- as(sample_data(ps_rq1), "data.frame")
+# ------------------------------------------------------------
+# 2. Build explicit T0 covariates + T1 outcomes by ID
+# ------------------------------------------------------------
+meta_T0 <- metadata_all %>%
+  dplyr::filter(timepoint == "T0") %>%
+  dplyr::transmute(
+    ID,
+    age_T0 = age,
+    gender_T0 = factor(stringr::str_to_title(gender)),
+    smoke_status_T0 = factor(
+      tolower(smoke_status),
+      levels = c("non", "former", "current"),
+      ordered = TRUE
+    )
+  )
+
+meta_T1 <- metadata_all %>%
+  dplyr::filter(timepoint == "T1") %>%
+  dplyr::transmute(
+    ID,
+    FEV1_pred_T1 = FEV1_pred,
+    FVC_pred_T1 = FVC_pred,
+    FEV1FVC_pred_T1 = FEV1FVC_pred,
+    MMEF_pred_T1 = MMEF_pred
+  )
+
+meta_rq1_explicit <- meta_T0 %>%
+  dplyr::inner_join(meta_T1, by = "ID")
+
+
+# ------------------------------------------------------------
+# 3. Merge explicit metadata into ps_rq1 sample_data
+# ------------------------------------------------------------
+sd_rq1 <- as(sample_data(ps_rq1), "data.frame") %>%
+  tibble::rownames_to_column("SampleID") %>%
+  dplyr::mutate(ID = as.character(ID))
+
+sd_rq1_explicit <- sd_rq1 %>%
+  dplyr::left_join(meta_rq1_explicit, by = "ID") %>%
+  dplyr::mutate(
+    season_microbiome_sampling_T0 = factor(
+      stringr::str_to_title(as.character(season_microbiome_sampling_T0)),
+      levels = c("Winter", "Spring", "Summer", "Autumn"),
+      ordered = TRUE
+    )
+  )
+
+rownames(sd_rq1_explicit) <- sd_rq1_explicit$SampleID
+sd_rq1_explicit$SampleID <- NULL
+sample_data(ps_rq1) <- sample_data(sd_rq1_explicit)
+
+# ------------------------------------------------------------
+# 4. Variables for PERMANOVA
+# ------------------------------------------------------------
+lung_outcomes <- c(
+  "FEV1_pred_T1",
+  "FVC_pred_T1",
+  "FEV1FVC_pred_T1",
+  "MMEF_pred_T1",
+  "delta_FEV1_pred",
+  "delta_FVC_pred",
+  "delta_FEV1FVC_pred",
+  "delta_MMEF_pred"
+)
+
+covars_adj <- c(
+  "age_T0",
+  "gender_T0",
+  "smoke_status_T0",
+  "season_microbiome_sampling_T0"
+)
+
+# ------------------------------------------------------------
+# 5. Main runner
+# ------------------------------------------------------------
+run_permanova_niche <- function(ps_obj, niche_keep, outcomes, covars, perms = 999) {
+  sd0 <- as(sample_data(ps_obj), "data.frame")
+
   keep_samp <- as.character(sd0$niche) == niche_keep
-
-  ps_n <- prune_samples(keep_samp, ps_rq1)
+  ps_n <- prune_samples(keep_samp, ps_obj)
   ps_n <- prune_taxa(taxa_sums(ps_n) > 0, ps_n)
 
-  # relative abundance
-  ps_ra <- transform_sample_counts(ps_n, function(x) if (sum(x) == 0) x else x / sum(x))
+  if (nsamples(ps_n) < 2) {
+    return(tibble::tibble())
+  }
 
-  # samples x taxa
+  # Relative abundance
+  ps_ra <- transform_sample_counts(
+    ps_n,
+    function(x) if (sum(x) == 0) x else x / sum(x)
+  )
+
+  # Samples x taxa
   otu <- as(otu_table(ps_ra), "matrix")
   if (taxa_are_rows(ps_ra)) otu <- t(otu)
   mode(otu) <- "numeric"
@@ -2981,18 +3490,19 @@ run_permanova_niche <- function(ps_rq1, niche_keep, outcomes, covars, perms = 99
   bray <- vegan::vegdist(otu, method = "bray")
 
   out <- lapply(outcomes, function(y) {
-
     if (!(y %in% names(meta))) return(NULL)
 
-    need <- c(y, covars)
-    need <- need[need %in% names(meta)]
-
     df <- meta %>%
-      dplyr::select(dplyr::all_of(need)) %>%
       dplyr::mutate(
-        y_num = suppressWarnings(as.numeric(as.character(.data[[y]]))),
-        y_z   = as.numeric(scale(y_num))
-      ) %>%
+        outcome_raw = suppressWarnings(as.numeric(as.character(.data[[y]]))),
+        outcome_z = as.numeric(scale(outcome_raw))
+      )
+
+    need <- c("outcome_z", covars)
+    need <- need[need %in% names(df)]
+
+    df <- df %>%
+      dplyr::select(dplyr::all_of(need)) %>%
       tidyr::drop_na()
 
     ids <- intersect(rownames(df), attr(bray, "Labels"))
@@ -3010,78 +3520,409 @@ run_permanova_niche <- function(ps_rq1, niche_keep, outcomes, covars, perms = 99
       length(unique(x)) > 1
     }, logical(1))]
 
-    fml <- as.formula(paste(
-      "br ~ y_z",
-      if (length(cov_use)) paste("+", paste(cov_use, collapse = " + ")) else ""
-    ))
+    rhs <- c("outcome_z", cov_use)
+    fml <- stats::as.formula(
+      paste("br ~", paste(rhs, collapse = " + "))
+    )
 
-    fit <- vegan::adonis2(fml, data = df, permutations = perms, by = "margin")
+    fit <- tryCatch(
+      vegan::adonis2(fml, data = df, permutations = perms, by = "margin"),
+      error = function(e) NULL
+    )
+
+    if (is.null(fit)) return(NULL)
+    if (!("outcome_z" %in% rownames(fit))) return(NULL)
 
     tibble::tibble(
-      niche   = niche_keep,
+      niche = niche_keep,
       outcome = y,
-      n_used  = length(ids),
-      R2      = fit["y_z", "R2"],
-      F       = fit["y_z", "F"],
-      p       = fit["y_z", "Pr(>F)"]
+      n_used = length(ids),
+      R2 = fit["outcome_z", "R2"],
+      F = fit["outcome_z", "F"],
+      p = fit["outcome_z", "Pr(>F)"]
     )
   })
 
   res <- dplyr::bind_rows(out)
-  if (nrow(res)) res <- res %>% dplyr::mutate(q = p.adjust(p, method = "BH"))
+
+  if (nrow(res) > 0) {
+    res <- res %>%
+      dplyr::mutate(q = p.adjust(p, method = "BH"))
+  }
+
   res
 }
 
-
-
-# Run PERMANOVA
-
-ps_rq1 <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
-
+# ------------------------------------------------------------
+# 6. Run PERMANOVA
+# ------------------------------------------------------------
 res_np <- run_permanova_niche(ps_rq1, "NP", lung_outcomes, covars_adj, perms)
 res_op <- run_permanova_niche(ps_rq1, "OP", lung_outcomes, covars_adj, perms)
 
-res_all <- bind_rows(res_np, res_op) %>%
-  mutate(
-    group = ifelse(grepl("^delta_", outcome), "delta", "T1")
+res_all <- dplyr::bind_rows(res_np, res_op) %>%
+  dplyr::mutate(
+    group = dplyr::if_else(grepl("^delta_", outcome), "delta", "T1")
   ) %>%
-  group_by(niche, group) %>%
-  mutate(q = p.adjust(p, method = "BH")) %>%
-  ungroup()
+  dplyr::group_by(niche, group) %>%
+  dplyr::mutate(q = p.adjust(p, method = "BH")) %>%
+  dplyr::ungroup()
 
+print(res_all)
 
-res_all
-write.csv(res_all, "../Output/Longitudinal/Beta_diversity/RQ1_PERMANOVA_T0composition_vs_T1lung_byNiche.csv",
-          row.names = FALSE)
+write.csv(
+  res_all,
+  "../Output/Longitudinal/Beta_diversity/RQ1_PERMANOVA_T0composition_vs_T1lung_byNiche.csv",
+  row.names = FALSE
+)
 
-
-# Plot results in bar plot
+# ------------------------------------------------------------
+# 7. Plot results
+# ------------------------------------------------------------
 pretty_outcomes <- c(
-  "FEV1_pred_T1"    = "FEV1 % predicted",
-  "FVC_pred_T1"     = "FVC % predicted",
-  "FEV1FVC_pred_T1" = "FEV1/FVC % predicted",
-  "MMEF_pred_T1"    = "MMEF % predicted",
+  "FEV1_pred_T1" = "FEV1 % predicted (T1)",
+  "FVC_pred_T1" = "FVC % predicted (T1)",
+  "FEV1FVC_pred_T1" = "FEV1/FVC % predicted (T1)",
+  "MMEF_pred_T1" = "MMEF % predicted (T1)",
   "delta_FEV1_pred" = "Delta FEV1 % predicted (T1-T0)",
-  "delta_FVC_pred"  = "Delta FVC % predicted (T1-T0)",
+  "delta_FVC_pred" = "Delta FVC % predicted (T1-T0)",
   "delta_FEV1FVC_pred" = "Delta FEV1FVC % predicted (T1-T0)",
   "delta_MMEF_pred" = "Delta MMEF % predicted (T1-T0)"
-  )
+)
 
 desired_outcome_order <- c(
-  "FEV1 % predicted","FVC % predicted","FEV1/FVC % predicted","MMEF % predicted", "Delta FEV1 % predicted (T1-T0)", "Delta FVC % predicted (T1-T0)", "Delta FEV1FVC % predicted (T1-T0)","Delta MMEF % predicted (T1-T0)"
+  "FEV1 % predicted (T1)",
+  "FVC % predicted (T1)",
+  "FEV1/FVC % predicted (T1)",
+  "MMEF % predicted (T1)",
+  "Delta FEV1 % predicted (T1-T0)",
+  "Delta FVC % predicted (T1-T0)",
+  "Delta FEV1FVC % predicted (T1-T0)",
+  "Delta MMEF % predicted (T1-T0)"
 )
 
 q_lung_sig_thresh <- 0.25
+
+nice_ceiling <- function(x, step = 0.0025) {
+  step * ceiling(x / step)
+}
+
+plot_df <- res_all %>%
+  dplyr::mutate(
+    outcome_lab = dplyr::recode(outcome, !!!pretty_outcomes, .default = outcome),
+    outcome_f = factor(outcome_lab, levels = rev(desired_outcome_order)),
+    niche_f = factor(niche, levels = c("NP", "OP")),
+    fill_q = factor(
+      dplyr::if_else(!is.na(q) & q <= q_lung_sig_thresh, "q ≤ 0.25", "ns"),
+      levels = c("ns", "q ≤ 0.25")
+    ),
+    stars_q = dplyr::case_when(
+      is.na(q)  ~ "",
+      q <= 0.05 ~ "***",
+      q <= 0.10 ~ "**",
+      q <= 0.25 ~ "*",
+      TRUE      ~ ""
+    )
+  )
+
+xlim_all <- nice_ceiling(max(plot_df$R2, na.rm = TRUE) * 1.05)
+if (!is.finite(xlim_all) || xlim_all <= 0) xlim_all <- 0.01
+
+stars_legend_df <- tibble::tibble(
+  stars_level = factor(c("*", "**", "***"), levels = c("*", "**", "***")),
+  x = 0,
+  y = 0
+)
+
+p <- ggplot2::ggplot(plot_df, ggplot2::aes(x = R2 * 100, y = outcome_f, fill = fill_q)) +
+  ggplot2::geom_col(width = 0.7) +
+  ggplot2::geom_text(
+    data = dplyr::filter(plot_df, stars_q != ""),
+    ggplot2::aes(x = pmax((R2 * 100) / 2, 0.1), y = outcome_f, label = stars_q),
+    inherit.aes = FALSE,
+    color = "white",
+    fontface = "bold",
+    size = 3.2,
+    vjust = 0.6
+  ) +
+  ggplot2::facet_grid(
+    cols = ggplot2::vars(niche_f),
+    scales = "free_y",
+    space = "free_y",
+    drop = FALSE
+  ) +
+  ggplot2::scale_x_continuous(
+    limits = c(0, xlim_all * 100),
+    breaks = scales::pretty_breaks(n = 5),
+    labels = scales::label_number(accuracy = 0.1),
+    expand = ggplot2::expansion(mult = c(0, 0.05))
+  ) +
+  ggplot2::scale_fill_manual(
+    values = c("ns" = "grey30", "q ≤ 0.25" = "#F28E2B"),
+    labels = c("Non-significant", "Significant (q ≤ 0.25)"),
+    name = NULL
+  ) +
+  ggplot2::labs(
+    x = "Explained variance (% R²)",
+    y = NULL,
+    title = "RQ1: T0 microbiome composition vs T1 lung function (PERMANOVA; adjusted)"
+  ) +
+  ggplot2::theme_minimal(base_size = 11) +
+  ggplot2::theme(
+    panel.grid.major.y = ggplot2::element_blank(),
+    panel.grid.minor = ggplot2::element_blank(),
+    strip.text = ggplot2::element_text(face = "bold"),
+    axis.text.y = ggplot2::element_text(size = 9),
+    plot.title = ggplot2::element_text(face = "bold", hjust = 0),
+    plot.margin = ggplot2::margin(t = 4, r = 8, b = 4, l = 4)
+  ) +
+  ggplot2::geom_point(
+    data = stars_legend_df,
+    ggplot2::aes(x = x, y = y, shape = stars_level),
+    inherit.aes = FALSE,
+    alpha = 0,
+    size = 0,
+    show.legend = TRUE
+  ) +
+  ggplot2::scale_shape_manual(
+    values = c("*" = 16, "**" = 16, "***" = 16),
+    labels = c(
+      "*" = "* q ≤ 0.25",
+      "**" = "** q ≤ 0.10",
+      "***" = "*** q ≤ 0.05"
+    ),
+    name = "Significance"
+  ) +
+  ggplot2::guides(
+    fill = ggplot2::guide_legend(order = 1),
+    shape = ggplot2::guide_legend(order = 2)
+  ) +
+  ggplot2::coord_cartesian(clip = "off")
+
+ggplot2::ggsave(
+  "../Output/Longitudinal/Beta_diversity/T0composition_vs_T1lung_barplot.svg",
+  p,
+  width = 7,
+  height = 4
+)
+```
+## Fixed multivar perm
+```{r}
+# ============================================================
+# RQ1: Multivariable PERMANOVA
+# T0 microbiome composition vs T1 lung function / lung function change
+# ============================================================
+
+perms <- 999
+set.seed(202501)
+
+# ------------------------------------------------------------
+# 1. Read RQ1 phyloseq object
+# ------------------------------------------------------------
+ps_rq1 <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
+
+# ------------------------------------------------------------
+# 2. Clean / harmonise metadata already inside phyloseq
+# ------------------------------------------------------------
+sd_rq1 <- as(sample_data(ps_rq1), "data.frame") %>%
+  dplyr::mutate(
+    age_T0 = suppressWarnings(as.numeric(as.character(age_T0))),
+
+    FEV1_pred_T1 = suppressWarnings(as.numeric(as.character(FEV1_pred_T1))),
+    FVC_pred_T1 = suppressWarnings(as.numeric(as.character(FVC_pred_T1))),
+    FEV1FVC_pred_T1 = suppressWarnings(as.numeric(as.character(FEV1FVC_pred_T1))),
+    MMEF_pred_T1 = suppressWarnings(as.numeric(as.character(MMEF_pred_T1))),
+
+    delta_FEV1_pred = suppressWarnings(as.numeric(as.character(delta_FEV1_pred))),
+    delta_FVC_pred = suppressWarnings(as.numeric(as.character(delta_FVC_pred))),
+    delta_FEV1FVC_pred = suppressWarnings(as.numeric(as.character(delta_FEV1FVC_pred))),
+    delta_MMEF_pred = suppressWarnings(as.numeric(as.character(delta_MMEF_pred))),
+
+    gender_T0 = factor(stringr::str_to_title(as.character(gender_T0))),
+    smoke_status_T0 = factor(
+      tolower(as.character(smoke_status_T0)),
+      levels = c("non", "former", "current"),
+      ordered = TRUE
+    ),
+    season_microbiome_sampling_T0 = factor(
+      stringr::str_to_title(as.character(season_microbiome_sampling_T0)),
+      levels = c("Winter", "Spring", "Summer", "Autumn"),
+      ordered = TRUE
+    )
+  )
+
+sample_data(ps_rq1) <- sample_data(sd_rq1)
+
+# Variables for PERMANOVA
+lung_outcomes <- c(
+  "FEV1_pred_T1",
+  "FVC_pred_T1",
+  "FEV1FVC_pred_T1",
+  "MMEF_pred_T1",
+  "delta_FEV1_pred",
+  "delta_FVC_pred",
+  "delta_FEV1FVC_pred",
+  "delta_MMEF_pred"
+)
+
+covars_adj <- c(
+  "age_T0",
+  "gender_T0",
+  "smoke_status_T0",
+  "season_microbiome_sampling_T0"
+)
+
+# ------------------------------------------------------------
+# 4. Main runner for one niche
+# ------------------------------------------------------------
+run_permanova_niche <- function(ps_obj, niche_keep, outcomes, covars, perms = 999) {
+
+  sd0 <- as(sample_data(ps_obj), "data.frame")
+  keep_samp <- as.character(sd0$niche) == niche_keep
+
+  ps_n <- prune_samples(keep_samp, ps_obj)
+  ps_n <- prune_taxa(taxa_sums(ps_n) > 0, ps_n)
+
+  if (nsamples(ps_n) < 2) return(tibble::tibble())
+
+  # Relative abundance
+  ps_ra <- transform_sample_counts(
+    ps_n,
+    function(x) if (sum(x) == 0) x else x / sum(x)
+  )
+
+  # Samples x taxa matrix
+  otu <- as(otu_table(ps_ra), "matrix")
+  if (taxa_are_rows(ps_ra)) otu <- t(otu)
+  mode(otu) <- "numeric"
+
+  meta <- as(sample_data(ps_ra), "data.frame")
+  bray <- vegan::vegdist(otu, method = "bray")
+
+  out <- lapply(outcomes, function(y) {
+
+    if (!(y %in% names(meta))) return(NULL)
+
+    df <- meta %>%
+      dplyr::mutate(
+        outcome_raw = suppressWarnings(as.numeric(as.character(.data[[y]]))),
+        outcome_z = as.numeric(scale(outcome_raw))
+      )
+
+    need <- c("outcome_z", covars)
+    need <- need[need %in% names(df)]
+
+    df <- df %>%
+      dplyr::select(dplyr::all_of(need)) %>%
+      tidyr::drop_na()
+
+    ids <- intersect(rownames(df), attr(bray, "Labels"))
+    if (length(ids) < 20) return(NULL)
+
+    df <- df[ids, , drop = FALSE]
+    br <- as.dist(as.matrix(bray)[ids, ids, drop = FALSE])
+
+    cov_use <- covars[covars %in% names(df)]
+    cov_use <- cov_use[vapply(cov_use, function(v) {
+      x <- df[[v]]
+      x <- x[!is.na(x)]
+      if (!length(x)) return(FALSE)
+      if (is.numeric(x)) return(stats::sd(x) > 0)
+      length(unique(x)) > 1
+    }, logical(1))]
+
+    rhs <- c("outcome_z", cov_use)
+
+    fml <- stats::as.formula(
+      paste("br ~", paste(rhs, collapse = " + "))
+    )
+
+    fit <- tryCatch(
+      vegan::adonis2(fml, data = df, permutations = perms, by = "margin"),
+      error = function(e) NULL
+    )
+
+    if (is.null(fit)) return(NULL)
+    if (!("outcome_z" %in% rownames(fit))) return(NULL)
+
+    tibble::tibble(
+      niche = niche_keep,
+      outcome = y,
+      n_used = length(ids),
+      R2 = fit["outcome_z", "R2"],
+      F = fit["outcome_z", "F"],
+      p = fit["outcome_z", "Pr(>F)"]
+    )
+  })
+
+  res <- dplyr::bind_rows(out)
+
+  if (nrow(res) > 0) {
+    res <- res %>%
+      dplyr::mutate(q = p.adjust(p, method = "BH"))
+  }
+
+  res
+}
+
+# ------------------------------------------------------------
+# 5. Run PERMANOVA
+# ------------------------------------------------------------
+res_np <- run_permanova_niche(ps_rq1, "NP", lung_outcomes, covars_adj, perms)
+res_op <- run_permanova_niche(ps_rq1, "OP", lung_outcomes, covars_adj, perms)
+
+res_all <- dplyr::bind_rows(res_np, res_op) %>%
+  dplyr::mutate(
+    group = dplyr::if_else(grepl("^delta_", outcome), "delta", "T1")
+  ) %>%
+  dplyr::group_by(niche, group) %>%
+  dplyr::mutate(q = p.adjust(p, method = "BH")) %>%
+  dplyr::ungroup()
+
+print(res_all)
+
+write.csv(
+  res_all,
+  "../Output/Longitudinal/Beta_diversity/RQ1_PERMANOVA_T0composition_vs_T1lung_byNiche.csv",
+  row.names = FALSE
+)
+
+# Plot results — keep original look
+pretty_outcomes <- c(
+  "FEV1_pred_T1" = "FEV1 % predicted (T1)",
+  "FVC_pred_T1" = "FVC % predicted (T1)",
+  "FEV1FVC_pred_T1" = "FEV1/FVC % predicted (T1)",
+  "MMEF_pred_T1" = "MMEF % predicted (T1)",
+  "delta_FEV1_pred" = "Delta FEV1 % predicted (T1-T0)",
+  "delta_FVC_pred" = "Delta FVC % predicted (T1-T0)",
+  "delta_FEV1FVC_pred" = "Delta FEV1FVC % predicted (T1-T0)",
+  "delta_MMEF_pred" = "Delta MMEF % predicted (T1-T0)"
+)
+
+desired_outcome_order <- c(
+  "FEV1 % predicted (T1)",
+  "FVC % predicted (T1)",
+  "FEV1/FVC % predicted (T1)",
+  "MMEF % predicted (T1)",
+  "Delta FEV1 % predicted (T1-T0)",
+  "Delta FVC % predicted (T1-T0)",
+  "Delta FEV1FVC % predicted (T1-T0)",
+  "Delta MMEF % predicted (T1-T0)"
+)
+
+q_lung_sig_thresh <- 0.25
+
 nice_ceiling <- function(x, step = 0.0025) step * ceiling(x / step)
 
 plot_df <- res_all %>%
-  mutate(
-    outcome_lab = recode(outcome, !!!pretty_outcomes, .default = outcome),
+  dplyr::mutate(
+    outcome_lab = dplyr::recode(outcome, !!!pretty_outcomes, .default = outcome),
     outcome_f   = factor(outcome_lab, levels = rev(desired_outcome_order)),
-    niche_f     = factor(niche, levels = c("NP","OP")),
-    fill_q      = factor(if_else(!is.na(q) & q <= q_lung_sig_thresh, "q \u2264 0.25", "ns"),
-                         levels = c("ns","q \u2264 0.25")),
-    stars_q     = case_when(
+    niche_f     = factor(niche, levels = c("NP", "OP")),
+    fill_q      = factor(
+      dplyr::if_else(!is.na(q) & q <= q_lung_sig_thresh, "q ≤ 0.25", "ns"),
+      levels = c("ns", "q ≤ 0.25")
+    ),
+    stars_q     = dplyr::case_when(
       is.na(q)   ~ "",
       q <= 0.05  ~ "***",
       q <= 0.10  ~ "**",
@@ -3096,34 +3937,38 @@ xlim_all <- nice_ceiling(max(plot_df$R2, na.rm = TRUE) * 1.05)
 if (!is.finite(xlim_all) || xlim_all <= 0) xlim_all <- 0.01
 
 # dummy df to force a "Significance" legend
-stars_legend_df <- tibble(
-  stars_level = factor(c("*","**","***"), levels = c("*","**","***")),
-  x = 0, y = 0
+stars_legend_df <- tibble::tibble(
+  stars_level = factor(c("*", "**", "***"), levels = c("*", "**", "***")),
+  x = 0,
+  y = 0
 )
 
-# --- Make the plot ---
 p <- ggplot(plot_df, aes(x = R2 * 100, y = outcome_f, fill = fill_q)) +
   geom_col(width = 0.7) +
   geom_text(
-    data = filter(plot_df, label_inside != ""),
+    data = dplyr::filter(plot_df, label_inside != ""),
     aes(x = pmax((R2 * 100) / 2, 0.1), y = outcome_f, label = label_inside),
     inherit.aes = FALSE,
-    color = "white", fontface = "bold", size = 3.2, vjust = 0.6
+    color = "white",
+    fontface = "bold",
+    size = 3.2,
+    vjust = 0.6
   ) +
   facet_grid(cols = vars(niche_f), scales = "free_y", space = "free_y", drop = FALSE) +
   scale_x_continuous(
     limits = c(0, xlim_all * 100),
-    breaks = pretty_breaks(n = 5),
-    labels = label_number(accuracy = 0.1),
+    breaks = scales::pretty_breaks(n = 5),
+    labels = scales::label_number(accuracy = 0.1),
     expand = expansion(mult = c(0, 0.05))
   ) +
   scale_fill_manual(
-    values = c("ns" = "grey30", "q \u2264 0.25" = "#F28E2B"),
-    labels = c("Non significant", "Significant (q \u2264 0.25)"),
-    name   = NULL
+    values = c("ns" = "grey30", "q ≤ 0.25" = "#F28E2B"),
+    labels = c("Non significant", "Significant (q ≤ 0.25)"),
+    name = NULL
   ) +
   labs(
-    x = "Explained variance (% R\u00B2)", y = NULL,
+    x = "Explained variance (% R²)",
+    y = NULL,
     title = "RQ1: T0 microbiome composition vs T1 lung function (PERMANOVA; adjusted)"
   ) +
   theme_minimal(base_size = 11) +
@@ -3135,26 +3980,38 @@ p <- ggplot(plot_df, aes(x = R2 * 100, y = outcome_f, fill = fill_q)) +
     plot.title         = element_text(face = "bold", hjust = 0),
     plot.margin        = margin(t = 4, r = 8, b = 4, l = 4)
   ) +
-  # legend hack (optional)
   geom_point(
     data = stars_legend_df,
     aes(x = x, y = y, shape = stars_level),
-    inherit.aes = FALSE, alpha = 0, size = 0, show.legend = TRUE
+    inherit.aes = FALSE,
+    alpha = 0,
+    size = 0,
+    show.legend = TRUE
   ) +
   scale_shape_manual(
     values = c("*" = 16, "**" = 16, "***" = 16),
-    labels = c("*" = "* q \u2264 0.25","**" = "** q \u2264 0.10","***" = "*** q \u2264 0.05"),
-    name   = "Significance"
+    labels = c(
+      "*" = "* q ≤ 0.25",
+      "**" = "** q ≤ 0.10",
+      "***" = "*** q ≤ 0.05"
+    ),
+    name = "Significance"
   ) +
-  guides(fill = guide_legend(order = 1), shape = guide_legend(order = 2)) +
+  guides(
+    fill = guide_legend(order = 1),
+    shape = guide_legend(order = 2)
+  ) +
   coord_cartesian(clip = "off")
 
-ggsave("../Output/Longitudinal/Beta_diversity/T0composition_vs_T1lung_barplot.svg",p, width =7, height = 4)
-
-
-
-
+ggsave(
+  "../Output/Longitudinal/Beta_diversity/T0composition_vs_T1lung_barplot.svg",
+  p,
+  width = 7,
+  height = 4
+)
 ```
+
+
 ## PCoAs
 ```{r}
 # helper
@@ -3322,20 +4179,183 @@ OPvsNP_PCoA <- make_pretty_pcoa_cat(
 ggsave(file.path(out_dir, "Niche_OPvsNP_PCoA2.svg"), OPvsNP_PCoA, width=7, height=5)
 
 ```
-
-
 # Differential abundance analysis
+## Preprocessing
+```{r}
+# These ps objects are already filtered and converted to RA
+T0_NP_filtered
+T0_OP_filtered
+
+# Quick counts
+length(unique(as.data.frame(tax_table(T0_NP_filtered))$ASV))
+length(unique(as.data.frame(tax_table(T0_NP_filtered))$Genus))
+length(unique(as.data.frame(tax_table(T0_OP_filtered))$ASV))
+length(unique(as.data.frame(tax_table(T0_OP_filtered))$Genus))
+
+
+## Convert ASV RA -> "absolute" abundance via qPCR 
+
+# Helper functions
+otu_tab_to_df <- function(ps) {
+  otu <- as(phyloseq::otu_table(ps), "matrix")
+  if (phyloseq::taxa_are_rows(ps)) otu <- t(otu)
+  otu <- as.data.frame(otu, check.names = FALSE)
+  otu <- tibble::rownames_to_column(otu, "sample_id")
+  otu
+}
+
+meta_to_df <- function(ps, sample_name = "sample_id") {
+  meta <- as(phyloseq::sample_data(ps), "data.frame")
+  meta <- tibble::rownames_to_column(meta, sample_name)
+  meta
+}
+
+#### T0 NP ####
+t0_np_otu  <- otu_tab_to_df(T0_NP_filtered)
+t0_np_meta <- meta_to_df(T0_NP_filtered, sample_name = "sample_id")
+
+t0_np_otu <- t0_np_otu %>%
+  dplyr::left_join(t0_np_meta[, c("sample_id", "qPCR")], by = "sample_id") %>%
+  dplyr::mutate(qPCR = suppressWarnings(as.numeric(as.character(qPCR)))) %>%
+  dplyr::filter(!is.na(qPCR)) %>%
+  dplyr::mutate(dplyr::across(-c(sample_id, qPCR), ~ .x * qPCR)) %>%
+  dplyr::select(-qPCR) %>%
+  as.data.frame()
+
+rownames(t0_np_otu) <- t0_np_otu$sample_id
+t0_np_otu <- t0_np_otu[, -1] %>% t() %>% as.data.frame()
+
+t0_np_ps_abs <- phyloseq(
+  otu_table(as.matrix(t0_np_otu), taxa_are_rows = TRUE),
+  tax_table(T0_NP_filtered),
+  sample_data(prune_samples(colnames(t0_np_otu), T0_NP_filtered))
+)
+
+t0_np_ps_abs <- prune_taxa(taxa_sums(t0_np_ps_abs) > 0, t0_np_ps_abs)
+
+#### T0 OP ####
+t0_op_otu  <- otu_tab_to_df(T0_OP_filtered)
+t0_op_meta <- meta_to_df(T0_OP_filtered, sample_name = "sample_id")
+
+t0_op_otu <- t0_op_otu %>%
+  dplyr::left_join(t0_op_meta[, c("sample_id", "qPCR")], by = "sample_id") %>%
+  dplyr::mutate(qPCR = suppressWarnings(as.numeric(as.character(qPCR)))) %>%
+  dplyr::filter(!is.na(qPCR)) %>%
+  dplyr::mutate(dplyr::across(-c(sample_id, qPCR), ~ .x * qPCR)) %>%
+  dplyr::select(-qPCR) %>%
+  as.data.frame()
+
+rownames(t0_op_otu) <- t0_op_otu$sample_id
+t0_op_otu <- t0_op_otu[, -1] %>% t() %>% as.data.frame()
+
+t0_op_ps_abs <- phyloseq(
+  otu_table(as.matrix(t0_op_otu), taxa_are_rows = TRUE),
+  tax_table(T0_OP_filtered),
+  sample_data(prune_samples(colnames(t0_op_otu), T0_OP_filtered))
+)
+
+t0_op_ps_abs <- prune_taxa(taxa_sums(t0_op_ps_abs) > 0, t0_op_ps_abs)
+
+## Agglomerate absolute phyloseqs to Genus level
+
+set_genus_names <- function(ps) {
+  tt <- as(phyloseq::tax_table(ps), "matrix")
+
+  genus_col <- colnames(tt)[tolower(colnames(tt)) == "genus"]
+  if (length(genus_col) == 0) stop("No Genus column found in tax_table.")
+
+  g <- as.character(tt[, genus_col[1]])
+  missing_idx <- is.na(g) | g == ""
+  g[missing_idx] <- paste0("Unclassified_Genus_", seq_len(sum(missing_idx)))
+
+  if (any(duplicated(g))) {
+    dup <- duplicated(g) | duplicated(g, fromLast = TRUE)
+    g[dup] <- paste0(g[dup], "_", ave(seq_along(g[dup]), g[dup], FUN = seq_along))
+  }
+
+  taxa_names(ps) <- g
+  ps
+}
+
+t0_np_ps_genus_abs <- t0_np_ps_abs %>% tax_glom(taxrank = "genus") %>% set_genus_names()
+t0_op_ps_genus_abs <- t0_op_ps_abs %>% tax_glom(taxrank = "genus") %>% set_genus_names()
+
+
+
+rel_thresh <- 0.005
+prev_frac  <- 0.10
+
+# Helper: apply RA-based prevalence filter, return ABS pruned
+filter_abs_by_RA_rule <- function(ps_abs, rel_thresh, prev_frac) {
+  ps_ra <- phyloseq::transform_sample_counts(ps_abs, function(x) {
+    s <- sum(x)
+    if (s == 0) x else x / s
+  })
+
+  ns <- phyloseq::nsamples(ps_ra)
+  need <- ceiling(ns * prev_frac)
+
+  otu <- as(otu_table(ps_ra), "matrix")
+  if (!taxa_are_rows(ps_ra)) otu <- t(otu)
+
+  keep_taxa <- rownames(otu)[rowSums(otu >= rel_thresh) >= need]
+  phyloseq::prune_taxa(keep_taxa, ps_abs)
+}
+
+#### ASV level ####
+t0_np_ps_abs_filt <- filter_abs_by_RA_rule(t0_np_ps_abs, rel_thresh, prev_frac)
+t0_op_ps_abs_filt <- filter_abs_by_RA_rule(t0_op_ps_abs, rel_thresh, prev_frac)
+
+#### Genus level ####
+t0_np_ps_genus_abs_filt <- filter_abs_by_RA_rule(t0_np_ps_genus_abs, rel_thresh, prev_frac)
+t0_op_ps_genus_abs_filt <- filter_abs_by_RA_rule(t0_op_ps_genus_abs, rel_thresh, prev_frac)
+
+# Per-niche lists
+ps_list_DA_ASV <- list(
+  T0_NP = t0_np_ps_abs_filt,
+  T0_OP = t0_op_ps_abs_filt
+)
+
+ps_list_DA_genus <- list(
+  T0_NP = t0_np_ps_genus_abs_filt,
+  T0_OP = t0_op_ps_genus_abs_filt
+)
+
+cat("\n=== Longitudinal T0 NP ===\n")
+cat("RA object samples:", nsamples(T0_NP_filtered), "\n") # 95
+cat("ABS object samples:", nsamples(t0_np_ps_abs), "\n") # 95
+cat("ASV filtered samples:", nsamples(t0_np_ps_abs_filt), "\n") # 95
+cat("ASV filtered taxa:", ntaxa(t0_np_ps_abs_filt), "\n") # 27
+cat("Genus filtered taxa:", ntaxa(t0_np_ps_genus_abs_filt), "\n") # 24
+
+cat("\n=== Longitudinal T0 OP ===\n")
+cat("RA object samples:", nsamples(T0_OP_filtered), "\n") # 73
+cat("ABS object samples:", nsamples(t0_op_ps_abs), "\n")# 73
+cat("ASV filtered samples:", nsamples(t0_op_ps_abs_filt), "\n")# 73
+cat("ASV filtered taxa:", ntaxa(t0_op_ps_abs_filt), "\n") # 48 
+cat("Genus filtered taxa:", ntaxa(t0_op_ps_genus_abs_filt), "\n") # 23
+
+cat("\n=== Metadata columns available for DAA ===\n")
+print(colnames(as(sample_data(t0_np_ps_abs_filt), "data.frame")))
+```
+
 ## MaAsLin2
 ```{r}
+
 # Differential abundance analysis – MaAsLin2 (Longitudinal)
-# Outcomes: T1 lung function + Delta lung function (RAW direction, no negation)
+# Outcomes: T1 lung function + Delta lung function
 
 outcomes_raw <- c(
   "FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1",
   "delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred"
 )
 
-covariates <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
+covariates <- c(
+  "age_T0",
+  "gender_T0",
+  "smoke_status_T0",
+  "season_microbiome_sampling_T0"
+)
 
 safe_name <- function(x) gsub("[^A-Za-z0-9._-]+", "_", x)
 out_root  <- "../Output/Longitudinal/DA/MaAsLin2"
@@ -3350,20 +4370,38 @@ run_maaslin2_longitudinal <- function(ps, outcome_var, covariates, out_dir,
     if (verbose) message("  [SKIP] outcome missing: ", outcome_var)
     return(NULL)
   }
+
   miss_cov <- setdiff(covariates, colnames(meta0))
   if (length(miss_cov)) {
     if (verbose) message("  [SKIP] missing covariates: ", paste(miss_cov, collapse = ", "))
     return(NULL)
   }
 
-  # Coerce outcome numeric (NO negation)
   meta0[[outcome_var]] <- suppressWarnings(as.numeric(as.character(meta0[[outcome_var]])))
 
-  # Coerce covariates
-  if ("age_T0" %in% covariates) meta0$age_T0 <- suppressWarnings(as.numeric(as.character(meta0$age_T0)))
-  if ("gender_T0" %in% covariates) meta0$gender_T0 <- factor(as.character(meta0$gender_T0))
-  if ("smoke_status_T0" %in% covariates) meta0$smoke_status_T0 <- factor(tolower(as.character(meta0$smoke_status_T0)))
-  if ("season_microbiome_sampling" %in% covariates) meta0$season_microbiome_sampling <- factor(as.character(meta0$season_microbiome_sampling))
+  if ("age_T0" %in% covariates) {
+    meta0$age_T0 <- suppressWarnings(as.numeric(as.character(meta0$age_T0)))
+  }
+
+  if ("gender_T0" %in% covariates) {
+    meta0$gender_T0 <- factor(stringr::str_to_title(as.character(meta0$gender_T0)))
+  }
+
+  if ("smoke_status_T0" %in% covariates) {
+    meta0$smoke_status_T0 <- factor(
+      tolower(as.character(meta0$smoke_status_T0)),
+      levels = c("non", "former", "current"),
+      ordered = TRUE
+    )
+  }
+
+  if ("season_microbiome_sampling_T0" %in% covariates) {
+    meta0$season_microbiome_sampling_T0 <- factor(
+      stringr::str_to_title(as.character(meta0$season_microbiome_sampling_T0)),
+      levels = c("Winter", "Spring", "Summer", "Autumn"),
+      ordered = TRUE
+    )
+  }
 
   need <- c(outcome_var, covariates)
   keep <- stats::complete.cases(meta0[, need, drop = FALSE])
@@ -3388,12 +4426,15 @@ run_maaslin2_longitudinal <- function(ps, outcome_var, covariates, out_dir,
   common <- intersect(rownames(meta_df), rownames(otu_df))
   meta_df <- meta_df[common, , drop = FALSE]
   otu_df  <- otu_df[common, , drop = FALSE]
+
   if (!identical(rownames(meta_df), rownames(otu_df))) {
     if (verbose) message("  [SKIP] rowname mismatch after alignment")
     return(NULL)
   }
 
-  if (verbose) message("  running MaAsLin2: n=", nrow(meta_df), " | features=", ncol(otu_df))
+  if (verbose) {
+    message("  running MaAsLin2: n=", nrow(meta_df), " | features=", ncol(otu_df))
+  }
 
   fit <- Maaslin2::Maaslin2(
     input_data     = otu_df,
@@ -3459,10 +4500,7 @@ run_all_maaslin_models <- function(ps_lists, outcomes, covars, out_root, min_n =
           }
         )
 
-        if (is.null(res) || !nrow(res)) {
-          message("No results for: ", niche, " | ", level, " | ", v)
-          next
-        }
+        if (is.null(res) || !nrow(res)) next
 
         res$niche <- niche
         res$level <- level
@@ -3479,7 +4517,21 @@ run_all_maaslin_models <- function(ps_lists, outcomes, covars, out_root, min_n =
   res_df
 }
 
-ps_lists_longitudinal <- list(ASV = ps_list_DA_ASV, Genus = ps_list_DA_genus)
+# Use the NEW filtered absolute-abundance objects
+ps_list_DA_ASV <- list(
+  T0_NP = t0_np_ps_abs_filt,
+  T0_OP = t0_op_ps_abs_filt
+)
+
+ps_list_DA_genus <- list(
+  T0_NP = t0_np_ps_genus_abs_filt,
+  T0_OP = t0_op_ps_genus_abs_filt
+)
+
+ps_lists_longitudinal <- list(
+  ASV   = ps_list_DA_ASV,
+  Genus = ps_list_DA_genus
+)
 
 maaslin_results_longitudinal <- run_all_maaslin_models(
   ps_lists = ps_lists_longitudinal,
@@ -3489,15 +4541,9 @@ maaslin_results_longitudinal <- run_all_maaslin_models(
   min_n    = 10
 )
 
-
-
 ```
 ### MaAsLin2 heatmaps
 ```{r}
-library(dplyr)
-library(ggplot2)
-library(readr)
-library(patchwork)
 
 root_dir <- "../Output/Longitudinal/DA/MaAsLin2"
 summary_file <- file.path(root_dir, "MaAsLin2_all_results_summary.csv")
@@ -3777,10 +4823,6 @@ ggsave(file.path(root_dir, "Heatmap_Maaslin_results_ASV_sig.svg"),
        asv_grid, width = 10, height = 2.8)
 ggsave(file.path(root_dir, "Heatmap_Maaslin_results_Genus_sig.svg"),
        genus_grid, width = 7, height = 2)
-
-
-
-
 ```
 
 ## ANCOMBC2 
@@ -3799,7 +4841,7 @@ fix_factors <- function(tse) {
   cd$gender_T0 <- factor(tolower(as.character(cd$gender_T0)),
                          levels = c("male", "female"))
 
-  cd$season_microbiome_sampling <- factor(as.character(cd$season_microbiome_sampling),
+  cd$season_microbiome_sampling_T0 <- factor(as.character(cd$season_microbiome_sampling_T0),
                                           levels = c("Winter","Spring","Summer","Autumn"))
 
   cd$smoke_status_T0 <- factor(tolower(as.character(cd$smoke_status_T0)),
@@ -3820,7 +4862,7 @@ T0_op_genus_tse <- fix_factors(T0_op_genus_tse)
 # Set reference levels (NOTE: your refs list had a typo "gender_0" -> "gender_T0")
 refs <- list(
   gender_T0 = "male",
-  season_microbiome_sampling = "Winter"
+  season_microbiome_sampling_T0 = "Winter"
 )
 
 relevel_tse <- function(tse, refs) {
@@ -3841,14 +4883,14 @@ T0_op_genus_tse <- relevel_tse(T0_op_genus_tse, refs)
 
 # Models using RAW outcomes (no decline variables)
 models <- list(
-  FEV1         = "FEV1_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
-  FVC          = "FVC_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
-  FEV1FVC      = "FEV1FVC_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
-  MMEF         = "MMEF_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
-  Delta_FEV1   = "delta_FEV1_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
-  Delta_FVC    = "delta_FVC_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
-  Delta_FEV1FVC= "delta_FEV1FVC_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling",
-  Delta_MMEF   = "delta_MMEF_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling"
+  FEV1         = "FEV1_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  FVC          = "FVC_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  FEV1FVC      = "FEV1FVC_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  MMEF         = "MMEF_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  Delta_FEV1   = "delta_FEV1_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  Delta_FVC    = "delta_FVC_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  Delta_FEV1FVC= "delta_FEV1FVC_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  Delta_MMEF   = "delta_MMEF_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0"
 )
 
 # Output dirs
@@ -3912,6 +4954,211 @@ save_ancom_list(ancom_op_genus,
                 prefix = "ANCOMBC2_OP_Genus",
                 file_suffixes = file_names)
 
+```
+
+# ANCOM-BC2 (updated)
+```{r}
+## ANCOMBC2 (Longitudinal) — RAW lung function direction
+
+# ------------------------------------------------------------
+# 1. Create TSE objects (UPDATED OBJECT NAMES)
+# ------------------------------------------------------------
+# Use the NEW filtered absolute-abundance objects
+T0_np_asv_tse   <- mia::makeTreeSummarizedExperimentFromPhyloseq(t0_np_ps_abs_filt)
+T0_op_asv_tse   <- mia::makeTreeSummarizedExperimentFromPhyloseq(t0_op_ps_abs_filt)
+
+T0_np_genus_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(t0_np_ps_genus_abs_filt)
+T0_op_genus_tse <- mia::makeTreeSummarizedExperimentFromPhyloseq(t0_op_ps_genus_abs_filt)
+
+
+# Clean metadata (aligned with your current structure)
+fix_factors <- function(tse) {
+
+  cd <- as.data.frame(SummarizedExperiment::colData(tse), check.names = FALSE)
+
+  # --- Outcome variables (IMPORTANT)
+  outcome_vars <- c(
+    "FEV1_pred_T1","FVC_pred_T1","FEV1FVC_pred_T1","MMEF_pred_T1",
+    "delta_FEV1_pred","delta_FVC_pred","delta_FEV1FVC_pred","delta_MMEF_pred"
+  )
+
+  for (v in outcome_vars) {
+    if (v %in% names(cd)) {
+      cd[[v]] <- suppressWarnings(as.numeric(as.character(cd[[v]])))
+    }
+  }
+
+  # --- Covariates
+  if ("age_T0" %in% names(cd)) {
+    cd$age_T0 <- suppressWarnings(as.numeric(as.character(cd$age_T0)))
+  }
+
+  if ("gender_T0" %in% names(cd)) {
+    cd$gender_T0 <- factor(
+      tolower(as.character(cd$gender_T0)),
+      levels = c("male", "female")
+    )
+  }
+
+  if ("smoke_status_T0" %in% names(cd)) {
+    cd$smoke_status_T0 <- factor(
+      tolower(as.character(cd$smoke_status_T0)),
+      levels = c("non","former","current"),
+      ordered = TRUE
+    )
+  }
+
+  if ("season_microbiome_sampling_T0" %in% names(cd)) {
+    cd$season_microbiome_sampling_T0 <- factor(
+      stringr::str_to_title(as.character(cd$season_microbiome_sampling_T0)),
+      levels = c("Winter","Spring","Summer","Autumn"),
+      ordered = TRUE
+    )
+  }
+
+  SummarizedExperiment::colData(tse) <- S4Vectors::DataFrame(cd, row.names = rownames(cd))
+  tse
+}
+
+# Apply
+T0_np_asv_tse   <- fix_factors(T0_np_asv_tse)
+T0_op_asv_tse   <- fix_factors(T0_op_asv_tse)
+T0_np_genus_tse <- fix_factors(T0_np_genus_tse)
+T0_op_genus_tse <- fix_factors(T0_op_genus_tse)
+
+
+# ------------------------------------------------------------
+# 3. Set reference levels (SAFE)
+# ------------------------------------------------------------
+refs <- list(
+  gender_T0 = "male",
+  season_microbiome_sampling_T0 = "Winter"
+)
+
+relevel_tse <- function(tse, refs) {
+
+  cd <- as.data.frame(SummarizedExperiment::colData(tse), check.names = FALSE)
+
+  for (nm in names(refs)) {
+    if (nm %in% names(cd)) {
+      cd[[nm]] <- stats::relevel(factor(cd[[nm]]), ref = refs[[nm]])
+    }
+  }
+
+  SummarizedExperiment::colData(tse) <- S4Vectors::DataFrame(cd, row.names = rownames(cd))
+  tse
+}
+
+T0_np_asv_tse   <- relevel_tse(T0_np_asv_tse, refs)
+T0_op_asv_tse   <- relevel_tse(T0_op_asv_tse, refs)
+T0_np_genus_tse <- relevel_tse(T0_np_genus_tse, refs)
+T0_op_genus_tse <- relevel_tse(T0_op_genus_tse, refs)
+
+
+# ------------------------------------------------------------
+# 4. Models (UNCHANGED — already correct)
+# ------------------------------------------------------------
+models <- list(
+  FEV1          = "FEV1_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  FVC           = "FVC_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  FEV1FVC       = "FEV1FVC_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  MMEF          = "MMEF_pred_T1 + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  Delta_FEV1    = "delta_FEV1_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  Delta_FVC     = "delta_FVC_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  Delta_FEV1FVC = "delta_FEV1FVC_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0",
+  Delta_MMEF    = "delta_MMEF_pred + age_T0 + gender_T0 + smoke_status_T0 + season_microbiome_sampling_T0"
+)
+
+
+# ------------------------------------------------------------
+# 5. Runner (UNCHANGED)
+# ------------------------------------------------------------
+run_ancom_for_tse <- function(tse, models) {
+  purrr::map(models, ~ ANCOMBC::ancombc2(
+    data         = tse,
+    fix_formula  = .x,
+    rand_formula = NULL,
+    p_adj_method = "BH",
+    prv_cut      = 0,
+    lib_cut      = 0,
+    struc_zero   = FALSE,
+    alpha        = 0.05,
+    global       = FALSE,
+    pairwise     = FALSE
+  ))
+}
+
+
+# ------------------------------------------------------------
+# 6. Run analyses
+# ------------------------------------------------------------
+root_ancom <- "../Output/Longitudinal/DA/ANCOMBC2"
+dir.create(root_ancom, recursive = TRUE, showWarnings = FALSE)
+
+file_names <- c("FEV1","FVC","FEV1FVC","MMEF","Delta_FEV1","Delta_FVC","Delta_FEV1FVC","Delta_MMEF")
+
+colnames(SummarizedExperiment::colData(T0_np_asv_tse))
+
+## NP ASV
+ancom_np_asv <- run_ancom_for_tse(T0_np_asv_tse, models)
+
+## OP ASV
+ancom_op_asv <- run_ancom_for_tse(T0_op_asv_tse, models)
+
+## NP Genus
+ancom_np_genus <- run_ancom_for_tse(T0_np_genus_tse, models)
+
+## OP Genus
+ancom_op_genus <- run_ancom_for_tse(T0_op_genus_tse, models)
+
+# ------------------------------------------------------------
+# 7. SAVE RESULTS (THIS IS WHAT YOU’RE MISSING)
+# ------------------------------------------------------------
+
+save_ancom_list <- function(ancom_list, output_dir, prefix, file_suffixes) {
+  dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+  ancom_res <- purrr::map(ancom_list, ~ dplyr::mutate_if(.x$res, is.numeric, ~ round(.x, 3)))
+
+  purrr::walk2(ancom_res, file_suffixes, ~ readr::write_csv(
+    .x,
+    file.path(output_dir, paste0(prefix, "_", .y, ".csv"))
+  ))
+
+  invisible(ancom_res)
+}
+
+## NP ASV
+save_ancom_list(
+  ancom_np_asv,
+  output_dir = file.path(root_ancom, "NP", "ASV"),
+  prefix = "ANCOMBC2_NP_ASV",
+  file_suffixes = file_names
+)
+
+## OP ASV
+save_ancom_list(
+  ancom_op_asv,
+  output_dir = file.path(root_ancom, "OP", "ASV"),
+  prefix = "ANCOMBC2_OP_ASV",
+  file_suffixes = file_names
+)
+
+## NP Genus
+save_ancom_list(
+  ancom_np_genus,
+  output_dir = file.path(root_ancom, "NP", "Genus"),
+  prefix = "ANCOMBC2_NP_Genus",
+  file_suffixes = file_names
+)
+
+## OP Genus
+save_ancom_list(
+  ancom_op_genus,
+  output_dir = file.path(root_ancom, "OP", "Genus"),
+  prefix = "ANCOMBC2_OP_Genus",
+  file_suffixes = file_names
+)
 ```
 ### ANCOM-BC2 heatmaps 
 ```{r}
@@ -4279,7 +5526,1289 @@ ggsave(file.path(root_ancom, "Heatmap_ANCOMBC2_Genus_sig.svg"),
        p_gen_grid, width = 8, height = 4)
 ```
 
+# MaAsLin3
+```{r}
+outcomes_raw <- c(
+  "FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1",
+  "delta_FEV1_pred", "delta_FVC_pred", "delta_FEV1FVC_pred", "delta_MMEF_pred"
+)
 
+covariates <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling_T0")
+
+safe_name <- function(x) gsub("[^A-Za-z0-9._-]+", "_", x)
+out_root  <- "../Output/Longitudinal/DA/MaAsLin3"
+
+# CORE FUNCTION
+run_maaslin3_longitudinal <- function(ps, outcome_var, covariates, out_dir,
+                                      min_n = 10, verbose = TRUE,
+                                      q_cutoff = NULL,
+                                      reference = NULL) {
+
+  stopifnot(inherits(ps, "phyloseq"))
+
+  meta0 <- data.frame(phyloseq::sample_data(ps), check.names = FALSE)
+
+  if (!outcome_var %in% colnames(meta0)) {
+    if (verbose) message("  [SKIP] outcome missing: ", outcome_var)
+    return(NULL)
+  }
+
+  miss_cov <- setdiff(covariates, colnames(meta0))
+  if (length(miss_cov)) {
+    if (verbose) message("  [SKIP] missing covariates: ", paste(miss_cov, collapse = ", "))
+    return(NULL)
+  }
+
+  fixed <- c(outcome_var, covariates)
+
+  # --------------------------------------------------------
+  # STRICT TYPE CLEANING
+  # --------------------------------------------------------
+
+  # outcome
+  meta0[[outcome_var]] <- suppressWarnings(as.numeric(as.character(meta0[[outcome_var]])))
+
+  # covariates
+  if ("age_T0" %in% covariates) {
+    meta0$age_T0 <- suppressWarnings(as.numeric(as.character(meta0$age_T0)))
+  }
+
+  if ("gender_T0" %in% covariates) {
+    meta0$gender_T0 <- factor(
+      stringr::str_to_title(as.character(meta0$gender_T0)),
+      levels = c("Male", "Female")
+    )
+  }
+
+  if ("smoke_status_T0" %in% covariates) {
+    meta0$smoke_status_T0 <- factor(
+      tolower(as.character(meta0$smoke_status_T0)),
+      levels = c("non", "former", "current"),
+      ordered = TRUE
+    )
+  }
+
+  if ("season_microbiome_sampling_T0" %in% covariates) {
+    meta0$season_microbiome_sampling_T0 <- factor(
+      stringr::str_to_title(as.character(meta0$season_microbiome_sampling_T0)),
+      levels = c("Winter", "Spring", "Summer", "Autumn"),
+      ordered = TRUE
+    )
+  }
+
+  # --------------------------------------------------------
+  # COMPLETE CASE FILTER
+  # --------------------------------------------------------
+  keep <- stats::complete.cases(meta0[, fixed, drop = FALSE])
+
+  if (verbose) {
+    message(
+      "  outcome non-NA: ", sum(!is.na(meta0[[outcome_var]])), "/", nrow(meta0),
+      " | complete cases: ", sum(keep), "/", nrow(meta0)
+    )
+  }
+
+  ps2 <- phyloseq::prune_samples(keep, ps)
+
+  if (phyloseq::nsamples(ps2) < min_n) {
+    if (verbose) message("  [SKIP] too few samples after filtering")
+    return(NULL)
+  }
+
+  meta_df <- data.frame(phyloseq::sample_data(ps2), check.names = FALSE)
+
+  # --------------------------------------------------------
+  # DROP ZERO-VARIANCE PREDICTORS
+  # --------------------------------------------------------
+  drop_fx <- vapply(fixed, function(nm) {
+    x <- meta_df[[nm]]
+    if (is.factor(x)) {
+      nlevels(droplevels(x)) < 2
+    } else if (is.numeric(x)) {
+      isTRUE(all.equal(sd(x, na.rm = TRUE), 0))
+    } else {
+      FALSE
+    }
+  }, logical(1))
+
+  if (any(drop_fx)) {
+    if (verbose) message("  dropping zero-variance: ", paste(fixed[drop_fx], collapse = ", "))
+    fixed <- fixed[!drop_fx]
+  }
+
+  if (!outcome_var %in% fixed) return(NULL)
+
+  # --------------------------------------------------------
+  # OTU TABLE
+  # --------------------------------------------------------
+  otu <- as(phyloseq::otu_table(ps2), "matrix")
+  if (phyloseq::taxa_are_rows(ps2)) otu <- t(otu)
+
+  otu_df <- as.data.frame(otu, check.names = FALSE)
+  otu_df[] <- lapply(otu_df, function(x) suppressWarnings(as.numeric(x)))
+
+  # align
+  common <- intersect(rownames(meta_df), rownames(otu_df))
+  meta_df <- meta_df[common, , drop = FALSE]
+  otu_df  <- otu_df[common, , drop = FALSE]
+
+  if (!identical(rownames(meta_df), rownames(otu_df))) {
+    if (verbose) message("  [SKIP] rowname mismatch after alignment")
+    return(NULL)
+  }
+
+  if (nrow(meta_df) < min_n) return(NULL)
+
+  # --------------------------------------------------------
+  # RUN MODEL
+  # --------------------------------------------------------
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  formula_str <- paste0("~ ", paste(fixed, collapse = " + "))
+
+  fit <- maaslin3::maaslin3(
+    input_data        = otu_df,
+    input_metadata    = meta_df,
+    output            = out_dir,
+    formula           = formula_str,
+    normalization     = "NONE",
+    transform         = "LOG",
+    min_abundance     = 0,
+    min_prevalence    = 0,
+    plot_associations = FALSE,
+    plot_summary_plot = FALSE,
+    augment           = TRUE,
+    reference         = reference
+  )
+
+  # keep BOTH abundance and prevalence results if present
+  abundance_res  <- NULL
+  prevalence_res <- NULL
+
+  if (!is.null(fit$fit_data_abundance$results) && nrow(fit$fit_data_abundance$results) > 0) {
+    abundance_res <- as.data.frame(fit$fit_data_abundance$results, check.names = FALSE)
+  }
+
+  if (!is.null(fit$fit_data_prevalence$results) && nrow(fit$fit_data_prevalence$results) > 0) {
+    prevalence_res <- as.data.frame(fit$fit_data_prevalence$results, check.names = FALSE)
+  }
+
+  res <- bind_rows(abundance_res, prevalence_res)
+
+  if (is.null(res) || !nrow(res)) return(NULL)
+
+  res <- res %>%
+    dplyr::filter(metadata == outcome_var)
+
+  if (!nrow(res)) return(NULL)
+
+
+  # HARMONISE STANDARD MAASLIN3 Q-VALUES
+  res <- res %>%
+    dplyr::mutate(
+      pval_individual = suppressWarnings(as.numeric(pval_individual)),
+      qval_individual = suppressWarnings(as.numeric(qval_individual)),
+      pval_joint      = suppressWarnings(as.numeric(pval_joint)),
+      qval_joint      = suppressWarnings(as.numeric(qval_joint)),
+      coef            = suppressWarnings(as.numeric(coef)),
+      stderr          = suppressWarnings(as.numeric(stderr))
+    )
+
+  res <- res %>%
+    dplyr::mutate(
+      qval_standard = dplyr::case_when(
+        !is.na(qval_individual) ~ qval_individual,
+        !is.na(qval_joint) ~ qval_joint,
+        TRUE ~ NA_real_
+      ),
+      pval_standard = dplyr::case_when(
+        !is.na(pval_individual) ~ pval_individual,
+        !is.na(pval_joint) ~ pval_joint,
+        TRUE ~ NA_real_
+      )
+    )
+
+  # ADD CI + LABELS (STANDARD)
+  res <- res %>%
+    dplyr::mutate(
+      conf.low  = ifelse(!is.na(coef) & !is.na(stderr), coef - 1.96 * stderr, NA_real_),
+      conf.high = ifelse(!is.na(coef) & !is.na(stderr), coef + 1.96 * stderr, NA_real_),
+      label_standard = dplyr::case_when(
+        is.na(qval_standard)     ~ NA_character_,
+        qval_standard <= 0.05    ~ "***",
+        qval_standard <= 0.10    ~ "**",
+        qval_standard <= 0.25    ~ "*",
+        TRUE                     ~ NA_character_
+      ),
+      outcome = outcome_var
+    )
+
+  if (!is.null(q_cutoff)) {
+    res <- res %>%
+      dplyr::filter(!is.na(qval_standard) & qval_standard <= q_cutoff)
+
+    if (!nrow(res)) return(NULL)
+  }
+
+  res
+}
+
+
+# BATCH RUNNER
+run_all_maaslin3_models <- function(ps_lists, outcomes, covars, out_root,
+                                    min_n = 10, q_cutoff = NULL, verbose = TRUE) {
+  results_all <- list()
+
+  for (level in names(ps_lists)) {
+    for (niche in names(ps_lists[[level]])) {
+      ps <- ps_lists[[level]][[niche]]
+      if (is.null(ps)) next
+
+      for (v in outcomes) {
+        subdir <- file.path(out_root, niche, level)
+        dir.create(subdir, recursive = TRUE, showWarnings = FALSE)
+
+        out_dir <- file.path(subdir, safe_name(v))
+        dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+        message("Running: ", niche, " | ", level, " | ", v)
+
+        res <- tryCatch(
+          run_maaslin3_longitudinal(
+            ps = ps,
+            outcome_var = v,
+            covariates = covars,
+            out_dir = out_dir,
+            min_n = min_n,
+            verbose = verbose,
+            q_cutoff = q_cutoff
+          ),
+          error = function(e) {
+            message("  [ERROR] ", conditionMessage(e))
+            return(NULL)
+          }
+        )
+
+        if (is.null(res) || !nrow(res)) {
+          message("No results for: ", niche, " | ", level, " | ", v)
+          next
+        }
+
+        res$niche <- niche
+        res$level <- level
+
+        results_all[[paste(niche, level, v, sep = "_")]] <- res
+
+        fn <- paste0(niche, "_", level, "_", safe_name(v), ".csv")
+        readr::write_csv(res, file.path(subdir, fn))
+      }
+    }
+  }
+
+  res_df <- dplyr::bind_rows(results_all)
+
+  # ADD LESS STRICT POST HOC FDR
+  # Adjust only within niche x level x outcome x model
+  if (nrow(res_df) > 0) {
+    res_df <- res_df %>%
+      dplyr::group_by(niche, level, outcome, model) %>%
+      dplyr::mutate(
+        qval_within_model = p.adjust(pval_standard, method = "BH"),
+        label_within_model = dplyr::case_when(
+          is.na(qval_within_model)   ~ NA_character_,
+          qval_within_model <= 0.05  ~ "***",
+          qval_within_model <= 0.10  ~ "**",
+          qval_within_model <= 0.25  ~ "*",
+          TRUE                       ~ NA_character_
+        )
+      ) %>%
+      dplyr::ungroup()
+  }
+
+  # save full summary with both q-value versions
+  readr::write_csv(
+    res_df,
+    file.path(out_root, "MaAsLin3_all_results_summary_with_both_qvalues.csv")
+  )
+
+  # save a simpler summary too
+  if (nrow(res_df) > 0) {
+    res_df %>%
+      dplyr::select(
+        feature, metadata, model, coef, stderr,
+        pval_standard, qval_standard, label_standard,
+        qval_within_model, label_within_model,
+        outcome, niche, level, conf.low, conf.high
+      ) %>%
+      readr::write_csv(
+        file.path(out_root, "MaAsLin3_results_compact_with_both_qvalues.csv")
+      )
+  }
+
+  res_df
+}
+
+# INPUT PHYLOSEQ LISTS
+ps_list_DA_ASV <- list(
+  T0_NP = t0_np_ps_abs_filt,
+  T0_OP = t0_op_ps_abs_filt
+)
+
+ps_list_DA_genus <- list(
+  T0_NP = t0_np_ps_genus_abs_filt,
+  T0_OP = t0_op_ps_genus_abs_filt
+)
+
+ps_lists_longitudinal <- list(
+  ASV   = ps_list_DA_ASV,
+  Genus = ps_list_DA_genus
+)
+
+# RUN MAASLIN3
+maaslin3_results_longitudinal <- run_all_maaslin3_models(
+  ps_lists  = ps_lists_longitudinal,
+  outcomes  = outcomes_raw,
+  covars    = covariates,
+  out_root  = out_root,
+  min_n     = 10,
+  q_cutoff  = NULL,
+  verbose   = TRUE
+)
+
+
+# QUICK CHECKS
+maaslin3_results_longitudinal %>%
+  dplyr::summarise(
+    n_total = dplyr::n(),
+    min_p = min(pval_standard, na.rm = TRUE),
+    min_q_standard = min(qval_standard, na.rm = TRUE),
+    min_q_within_model = min(qval_within_model, na.rm = TRUE),
+    n_q25_standard = sum(qval_standard <= 0.25, na.rm = TRUE),
+    n_q25_within_model = sum(qval_within_model <= 0.25, na.rm = TRUE)
+  )
+
+maaslin3_results_longitudinal %>%
+  dplyr::group_by(niche, level, outcome, model) %>%
+  dplyr::summarise(
+    min_p = min(pval_standard, na.rm = TRUE),
+    min_q_standard = min(qval_standard, na.rm = TRUE),
+    min_q_within_model = min(qval_within_model, na.rm = TRUE),
+    n_q25_standard = sum(qval_standard <= 0.25, na.rm = TRUE),
+    n_q25_within_model = sum(qval_within_model <= 0.25, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  print(n = Inf)
+
+
+
+# standard MaAsLin3 significant hits
+maaslin3_results_longitudinal %>%
+  filter(qval_standard <= 0.25) %>%
+  arrange(qval_standard) %>%
+  select(feature, outcome, niche, level, model, coef, pval_standard, qval_standard)
+
+# less strict within-model hits
+maaslin3_results_longitudinal %>%
+  filter(qval_within_model <= 0.25) %>%
+  arrange(qval_within_model) %>%
+  select(feature, outcome, niche, level, model, coef, pval_standard, qval_within_model)
+```
+## MaAsLin3 heatmaps 
+```{r}
+### MaAsLin3 heatmaps — strict and less strict q-values
+# Uses summary file with:
+# - qval_standard
+# - qval_within_model
+# - model (Abundance / Prevalence)
+# - niche, level, outcome, feature, coef
+
+# Paths
+root_dir_m3 <- "../Output/Longitudinal/DA/MaAsLin3"
+summary_file_m3 <- file.path(root_dir_m3, "MaAsLin3_all_results_summary_with_both_qvalues.csv")
+
+# Outcomes shown on x-axis
+custom_metadata_order <- c(
+  "FEV1_pred_T1",
+  "FVC_pred_T1",
+  "FEV1FVC_pred_T1",
+  "MMEF_pred_T1",
+  "delta_FEV1_pred",
+  "delta_FVC_pred",
+  "delta_FEV1FVC_pred",
+  "delta_MMEF_pred"
+)
+
+pretty_labels <- c(
+  "FEV1 % predicted (T1)",
+  "FVC % predicted (T1)",
+  "FEV1/FVC % predicted (T1)",
+  "MMEF % predicted (T1)",
+  "Delta FEV1 % predicted (T1-T0)",
+  "Delta FVC % predicted (T1-T0)",
+  "Delta FEV1FVC % predicted (T1-T0)",
+  "Delta MMEF % predicted (T1-T0)"
+)
+names(pretty_labels) <- custom_metadata_order
+
+
+# Niche colours
+niche_cols <- c(
+  NP = "#7987af",
+  OP = "#7c674d"
+)
+
+
+# Helper: niche header strip
+make_niche_strip <- function(label, fill, text_col = "white") {
+  ggplot() +
+    annotate("rect", xmin = 0, xmax = 1, ymin = 0, ymax = 1,
+             fill = fill, colour = fill) +
+    annotate("text", x = 0.5, y = 0.5, label = label,
+             colour = text_col, fontface = "bold", size = 3.8) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
+    theme_void()
+}
+
+wrap_with_niche_header <- function(plot_obj, niche = c("NP", "OP")) {
+  niche <- match.arg(niche)
+
+  header <- if (niche == "NP") {
+    make_niche_strip("Nasopharynx", niche_cols["NP"])
+  } else {
+    make_niche_strip("Oropharynx", niche_cols["OP"])
+  }
+
+  header / plot_obj + patchwork::plot_layout(heights = c(0.055, 1))
+}
+
+# Label formatters
+format_asv_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    if (grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)
+      bquote(italic(.(trimws(text))) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+
+format_genus_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    bquote(italic(.(lab)))
+  })
+}
+
+
+# Read summary file
+m3_all <- readr::read_csv(summary_file_m3, show_col_types = FALSE)
+
+# Safety checks / harmonisation
+m3_all <- m3_all %>%
+  mutate(
+    feature = as.character(feature),
+    outcome = as.character(outcome),
+    niche   = as.character(niche),
+    level   = as.character(level),
+    model   = as.character(model),
+    coef    = suppressWarnings(as.numeric(coef)),
+    qval_standard = suppressWarnings(as.numeric(qval_standard)),
+    qval_within_model = suppressWarnings(as.numeric(qval_within_model)),
+    model_plot = case_when(
+      tolower(model) %in% c("abundance", "linear")    ~ "Abundance",
+      tolower(model) %in% c("prevalence", "logistic") ~ "Prevalence",
+      TRUE ~ model
+    )
+  ) %>%
+  filter(outcome %in% custom_metadata_order)
+
+
+# Reader from summary table
+# q_type = "standard" or "within_model"
+# q_show = NULL for all rows, or e.g. 0.25 to keep only features
+#          with q <= 0.25 anywhere within that niche+level panel
+read_maaslin3_summary_results <- function(df_all,
+                                          niche_keep,
+                                          level_keep,
+                                          q_type = c("standard", "within_model"),
+                                          q_show = NULL) {
+
+  q_type <- match.arg(q_type)
+
+  q_col <- if (q_type == "standard") "qval_standard" else "qval_within_model"
+
+  df <- df_all %>%
+    filter(
+      niche == niche_keep,
+      level == level_keep
+    ) %>%
+    mutate(
+      qval_plot = .data[[q_col]],
+      label = case_when(
+        is.na(qval_plot)   ~ "",
+        qval_plot <= 0.05  ~ "***",
+        qval_plot <= 0.10  ~ "**",
+        qval_plot <= 0.25  ~ "*",
+        TRUE               ~ ""
+      )
+    )
+
+  if (!nrow(df)) return(NULL)
+
+  if (!is.null(q_show)) {
+    keep_features <- df %>%
+      filter(!is.na(qval_plot) & qval_plot <= q_show) %>%
+      distinct(feature) %>%
+      pull(feature)
+
+    df <- df %>%
+      filter(feature %in% keep_features)
+
+    if (!nrow(df)) return(NULL)
+  }
+
+  df$metadata_raw <- factor(df$outcome, levels = custom_metadata_order)
+  df$metadata_plot <- factor(
+    pretty_labels[as.character(df$metadata_raw)],
+    levels = pretty_labels
+  )
+
+  feat_order <- df %>%
+    group_by(feature) %>%
+    summarise(
+      best_q = min(qval_plot, na.rm = TRUE),
+      max_abs_coef = max(abs(coef), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(best_q = ifelse(is.infinite(best_q), NA_real_, best_q)) %>%
+    arrange(best_q, desc(max_abs_coef)) %>%
+    pull(feature)
+
+  df$feature <- factor(df$feature, levels = rev(feat_order))
+  df$model_plot <- factor(df$model_plot, levels = c("Abundance", "Prevalence"))
+
+  df
+}
+
+# Pretty heatmap
+# - NP and OP get separate scales
+# - within each niche, Abundance and Prevalence share one scale
+# - outliers can be greyed out and excluded from scale
+make_maaslin3_dual_heatmap_pretty <- function(df,
+                                              level = c("ASV", "Genus"),
+                                              fill_limits = NULL,
+                                              outlier_thresh = NULL) {
+  level <- match.arg(level)
+
+  if (is.null(df) || !nrow(df)) {
+    return(ggplot() + theme_void())
+  }
+
+  feat_levels  <- levels(df$feature)
+  meta_levels  <- levels(df$metadata_plot)
+  model_levels <- levels(df$model_plot)
+
+  df_plot <- df %>%
+    select(feature, metadata_plot, model_plot, coef, label) %>%
+    mutate(
+      is_outlier = if (!is.null(outlier_thresh)) abs(coef) > outlier_thresh else FALSE,
+      coef_plot  = if_else(is_outlier, NA_real_, coef)
+    ) %>%
+    tidyr::complete(
+      feature = factor(feat_levels, levels = feat_levels),
+      metadata_plot = factor(meta_levels, levels = meta_levels),
+      model_plot = factor(model_levels, levels = model_levels),
+      fill = list(
+        coef = NA_real_,
+        label = "",
+        is_outlier = FALSE,
+        coef_plot = NA_real_
+      )
+    )
+
+  lim <- if (is.null(fill_limits)) {
+    max(abs(df_plot$coef_plot), na.rm = TRUE)
+  } else {
+    fill_limits
+  }
+
+  if (!is.finite(lim) || lim <= 0) lim <- 1
+
+  p <- ggplot(df_plot, aes(x = metadata_plot, y = feature, fill = coef_plot)) +
+    geom_tile(
+      width = 0.995,
+      height = 0.995,
+      colour = NA
+    ) +
+    geom_text(
+      aes(label = label),
+      colour = "black",
+      size = 2.6,
+      fontface = "bold",
+      na.rm = TRUE
+    ) +
+    facet_grid(. ~ model_plot, scales = "fixed", space = "fixed") +
+    scale_fill_gradient2(
+      low = rcartocolor::carto_pal(7, "Geyser")[1],
+      mid = rcartocolor::carto_pal(7, "Geyser")[4],
+      high = rcartocolor::carto_pal(7, "Geyser")[7],
+      midpoint = 0,
+      limits = c(-lim, lim),
+      oob = scales::squish,
+      na.value = "grey80",
+      name = "Coefficient"
+    ) +
+    scale_x_discrete(expand = c(0, 0)) +
+    scale_y_discrete(expand = c(0, 0)) +
+    labs(x = NULL, y = NULL) +
+    theme_minimal(base_size = 10.5) +
+    theme(
+      panel.background = element_rect(fill = "grey93", colour = NA),
+      panel.border = element_rect(colour = "grey40", fill = NA, linewidth = 0.5),
+      panel.grid = element_blank(),
+      strip.text = element_text(face = "bold", size = 11, colour = "black"),
+      strip.background = element_rect(fill = "grey91", colour = "grey45", linewidth = 0.45),
+      axis.text.x = element_text(
+        angle = 45, hjust = 1, vjust = 1,
+        colour = "black", size = 8.8
+      ),
+      axis.text.y = element_text(
+        colour = "black", size = 8.5,
+        margin = margin(r = 4)
+      ),
+      axis.ticks = element_blank(),
+      panel.spacing.x = unit(1.5, "mm"),
+      plot.margin = margin(2, 2, 2, 2),
+      legend.title = element_text(size = 9.5),
+      legend.text = element_text(size = 8.5),
+      legend.key.height = unit(18, "mm"),
+      legend.key.width = unit(4, "mm")
+    )
+
+  if (level == "ASV") {
+    p <- p + scale_y_discrete(labels = format_asv_labels, expand = c(0, 0))
+  } else {
+    p <- p + scale_y_discrete(labels = format_genus_labels, expand = c(0, 0))
+  }
+
+  p
+}
+
+
+# Figure builder
+make_maaslin_figure <- function(df_np,
+                                df_op,
+                                level = c("ASV", "Genus"),
+                                outlier_thresh_np = NULL,
+                                outlier_thresh_op = NULL,
+                                width = 10.5,
+                                height = NULL) {
+  level <- match.arg(level)
+
+  p_np <- make_maaslin3_dual_heatmap_pretty(
+    df_np,
+    level = level,
+    fill_limits = NULL,
+    outlier_thresh = outlier_thresh_np
+  ) |> wrap_with_niche_header("NP")
+
+  p_op <- make_maaslin3_dual_heatmap_pretty(
+    df_op,
+    level = level,
+    fill_limits = NULL,
+    outlier_thresh = outlier_thresh_op
+  ) |> wrap_with_niche_header("OP")
+
+  final_plot <- ((p_np | p_op) +
+    patchwork::plot_layout(guides = "collect", widths = c(1, 1))) +
+    theme(legend.position = "right")
+
+  if (is.null(height)) {
+    n_rows <- max(
+      if (!is.null(df_np) && nrow(df_np)) nlevels(df_np$feature) else 0,
+      if (!is.null(df_op) && nrow(df_op)) nlevels(df_op$feature) else 0
+    )
+    height <- max(5.5, 1.4 + n_rows * ifelse(level == "ASV", 0.26, 0.34))
+  }
+
+  list(plot = final_plot, width = width, height = height)
+}
+
+
+# Wrapper to build and save one set of heatmaps
+# q_type = "standard" or "within_model"
+# suffix is added to filenames
+build_and_save_maaslin3_heatmaps <- function(df_all,
+                                             q_type = c("standard", "within_model"),
+                                             q_show = NULL,
+                                             outlier_thresh_asv_np = 20,
+                                             outlier_thresh_asv_op = 20,
+                                             outlier_thresh_genus_np = NULL,
+                                             outlier_thresh_genus_op = NULL,
+                                             file_suffix = "") {
+
+  q_type <- match.arg(q_type)
+
+  # ASV
+  df_np_asv <- read_maaslin3_summary_results(
+    df_all = df_all,
+    niche_keep = "T0_NP",
+    level_keep = "ASV",
+    q_type = q_type,
+    q_show = q_show
+  )
+
+  df_op_asv <- read_maaslin3_summary_results(
+    df_all = df_all,
+    niche_keep = "T0_OP",
+    level_keep = "ASV",
+    q_type = q_type,
+    q_show = q_show
+  )
+
+  asv_out <- make_maaslin_figure(
+    df_np = df_np_asv,
+    df_op = df_op_asv,
+    level = "ASV",
+    outlier_thresh_np = outlier_thresh_asv_np,
+    outlier_thresh_op = outlier_thresh_asv_op,
+    width = 10.5
+  )
+
+  ggsave(
+    file.path(root_dir_m3, paste0("Heatmap_Maaslin3_results_ASV_", file_suffix, ".svg")),
+    asv_out$plot,
+    width = asv_out$width,
+    height = asv_out$height
+  )
+
+  # Genus
+  df_np_genus <- read_maaslin3_summary_results(
+    df_all = df_all,
+    niche_keep = "T0_NP",
+    level_keep = "Genus",
+    q_type = q_type,
+    q_show = q_show
+  )
+
+  df_op_genus <- read_maaslin3_summary_results(
+    df_all = df_all,
+    niche_keep = "T0_OP",
+    level_keep = "Genus",
+    q_type = q_type,
+    q_show = q_show
+  )
+
+  genus_out <- make_maaslin_figure(
+    df_np = df_np_genus,
+    df_op = df_op_genus,
+    level = "Genus",
+    outlier_thresh_np = outlier_thresh_genus_np,
+    outlier_thresh_op = outlier_thresh_genus_op,
+    width = 10
+  )
+
+  ggsave(
+    file.path(root_dir_m3, paste0("Heatmap_Maaslin3_results_Genus_", file_suffix, ".svg")),
+    genus_out$plot,
+    width = genus_out$width,
+    height = genus_out$height
+  )
+}
+
+
+# MAKE ALL FOUR VERSIONS
+# 1. Strict FDR - all rows
+build_and_save_maaslin3_heatmaps(
+  df_all = m3_all,
+  q_type = "standard",
+  q_show = NULL,
+  file_suffix = "strict_all"
+)
+
+# 2. Strict FDR - only taxa with q <= 0.25 anywhere
+build_and_save_maaslin3_heatmaps(
+  df_all = m3_all,
+  q_type = "standard",
+  q_show = 0.25,
+  file_suffix = "strict_q025"
+)
+
+# 3. Less strict within-model FDR - all rows
+build_and_save_maaslin3_heatmaps(
+  df_all = m3_all,
+  q_type = "within_model",
+  q_show = NULL,
+  file_suffix = "withinModel_all"
+)
+
+# 4. Less strict within-model FDR - only taxa with q <= 0.25 anywhere
+build_and_save_maaslin3_heatmaps(
+  df_all = m3_all,
+  q_type = "within_model",
+  q_show = 0.25,
+  file_suffix = "withinModel_q025"
+)
+```
+
+# MaAsLin3 heatmaps
+```{r}
+### heatmaps strict and less strict q-values
+# Updated:
+# - each NP/OP panel keeps its OWN coefficient legend
+# - legend appears to the right of each plot
+# - save width/height can be set manually for each output
+
+
+# Paths
+
+root_dir_m3 <- "../Output/Longitudinal/DA/MaAsLin3"
+summary_file_m3 <- file.path(root_dir_m3, "MaAsLin3_all_results_summary_with_both_qvalues.csv")
+
+
+# Outcomes shown on x-axis
+custom_metadata_order <- c(
+  "FEV1_pred_T1",
+  "FVC_pred_T1",
+  "FEV1FVC_pred_T1",
+  "MMEF_pred_T1",
+  "delta_FEV1_pred",
+  "delta_FVC_pred",
+  "delta_FEV1FVC_pred",
+  "delta_MMEF_pred"
+)
+
+pretty_labels <- c(
+  "FEV1 % predicted (T1)",
+  "FVC % predicted (T1)",
+  "FEV1/FVC % predicted (T1)",
+  "MMEF % predicted (T1)",
+  "Delta FEV1 % predicted (T1-T0)",
+  "Delta FVC % predicted (T1-T0)",
+  "Delta FEV1FVC % predicted (T1-T0)",
+  "Delta MMEF % predicted (T1-T0)"
+)
+names(pretty_labels) <- custom_metadata_order
+
+
+# Niche colours
+niche_cols <- c(
+  NP = "#7987af",
+  OP = "#7c674d"
+)
+
+# Helper: niche header strip
+make_niche_strip <- function(label, fill, text_col = "white") {
+  ggplot() +
+    annotate("rect", xmin = 0, xmax = 1, ymin = 0, ymax = 1,
+             fill = fill, colour = fill) +
+    annotate("text", x = 0.5, y = 0.5, label = label,
+             colour = text_col, fontface = "bold", size = 3.8) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
+    theme_void()
+}
+
+wrap_with_niche_header <- function(plot_obj, niche = c("NP", "OP")) {
+  niche <- match.arg(niche)
+
+  header <- if (niche == "NP") {
+    make_niche_strip("Nasopharynx", niche_cols["NP"])
+  } else {
+    make_niche_strip("Oropharynx", niche_cols["OP"])
+  }
+
+  header / plot_obj + patchwork::plot_layout(heights = c(0.055, 1))
+}
+
+# Label formatters
+format_asv_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    if (grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)
+      bquote(italic(.(trimws(text))) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+
+format_genus_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    bquote(italic(.(lab)))
+  })
+}
+
+
+# Read summary file
+m3_all <- readr::read_csv(summary_file_m3, show_col_types = FALSE)
+
+m3_all <- m3_all %>%
+  mutate(
+    feature = as.character(feature),
+    outcome = dplyr::coalesce(as.character(outcome), as.character(metadata)),
+    niche   = as.character(niche),
+    level   = as.character(level),
+    model   = as.character(model),
+    coef    = suppressWarnings(as.numeric(coef)),
+    qval_standard = suppressWarnings(as.numeric(qval_standard)),
+    qval_within_model = suppressWarnings(as.numeric(qval_within_model)),
+    model_plot = case_when(
+      tolower(model) %in% c("abundance", "linear")    ~ "Abundance",
+      tolower(model) %in% c("prevalence", "logistic") ~ "Prevalence",
+      TRUE ~ model
+    )
+  ) %>%
+  filter(outcome %in% custom_metadata_order)
+
+
+# Reader from summary table
+
+read_maaslin3_summary_results <- function(df_all,
+                                          niche_keep,
+                                          level_keep,
+                                          q_type = c("standard", "within_model"),
+                                          q_show = NULL) {
+
+  q_type <- match.arg(q_type)
+  q_col <- if (q_type == "standard") "qval_standard" else "qval_within_model"
+
+  df <- df_all %>%
+    filter(
+      niche == niche_keep,
+      level == level_keep
+    ) %>%
+    mutate(
+      qval_plot = .data[[q_col]],
+      label = case_when(
+        is.na(qval_plot)   ~ "",
+        qval_plot <= 0.05  ~ "***",
+        qval_plot <= 0.10  ~ "**",
+        qval_plot <= 0.25  ~ "*",
+        TRUE               ~ ""
+      )
+    )
+
+  if (!nrow(df)) return(NULL)
+
+  if (!is.null(q_show)) {
+    keep_features <- df %>%
+      filter(!is.na(qval_plot) & qval_plot <= q_show) %>%
+      distinct(feature) %>%
+      pull(feature)
+
+    df <- df %>%
+      filter(feature %in% keep_features)
+
+    if (!nrow(df)) return(NULL)
+  }
+
+  df$metadata_raw <- factor(df$outcome, levels = custom_metadata_order)
+  df$metadata_plot <- factor(
+    pretty_labels[as.character(df$metadata_raw)],
+    levels = pretty_labels
+  )
+
+  feat_order <- df %>%
+    group_by(feature) %>%
+    summarise(
+      best_q = min(qval_plot, na.rm = TRUE),
+      max_abs_coef = max(abs(coef), na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(best_q = ifelse(is.infinite(best_q), NA_real_, best_q)) %>%
+    arrange(best_q, desc(max_abs_coef)) %>%
+    pull(feature)
+
+  df$feature <- factor(df$feature, levels = rev(feat_order))
+  df$model_plot <- factor(df$model_plot, levels = c("Abundance", "Prevalence"))
+
+  df
+}
+
+# ------------------------------------------------------------
+# Pretty heatmap
+# - one legend per plot
+# - same scale within niche across abundance/prevalence
+# - outliers can be greyed out and excluded from scale
+# ------------------------------------------------------------
+make_maaslin3_dual_heatmap_pretty <- function(df,
+                                              level = c("ASV", "Genus"),
+                                              fill_limits = NULL,
+                                              outlier_thresh = NULL) {
+  level <- match.arg(level)
+
+  if (is.null(df) || !nrow(df)) {
+    return(ggplot() + theme_void())
+  }
+
+  feat_levels  <- levels(df$feature)
+  meta_levels  <- levels(df$metadata_plot)
+  model_levels <- levels(df$model_plot)
+
+  df_plot <- df %>%
+    select(feature, metadata_plot, model_plot, coef, label) %>%
+    mutate(
+      is_outlier = if (!is.null(outlier_thresh)) abs(coef) > outlier_thresh else FALSE,
+      coef_plot  = if_else(is_outlier, NA_real_, coef)
+    ) %>%
+    tidyr::complete(
+      feature = factor(feat_levels, levels = feat_levels),
+      metadata_plot = factor(meta_levels, levels = meta_levels),
+      model_plot = factor(model_levels, levels = model_levels),
+      fill = list(
+        coef = NA_real_,
+        label = "",
+        is_outlier = FALSE,
+        coef_plot = NA_real_
+      )
+    )
+
+  lim <- if (is.null(fill_limits)) {
+    max(abs(df_plot$coef_plot), na.rm = TRUE)
+  } else {
+    fill_limits
+  }
+
+  if (!is.finite(lim) || lim <= 0) lim <- 1
+
+  p <- ggplot(df_plot, aes(x = metadata_plot, y = feature, fill = coef_plot)) +
+    geom_tile(
+      width = 0.995,
+      height = 0.995,
+      colour = NA
+    ) +
+    geom_text(
+      aes(label = label),
+      colour = "black",
+      size = 5,
+      fontface = "bold",
+      na.rm = TRUE
+    ) +
+    facet_grid(. ~ model_plot, scales = "fixed", space = "fixed") +
+    scale_fill_gradient2(
+      low = rcartocolor::carto_pal(7, "Geyser")[1],
+      mid = rcartocolor::carto_pal(7, "Geyser")[4],
+      high = rcartocolor::carto_pal(7, "Geyser")[7],
+      midpoint = 0,
+      limits = c(-lim, lim),
+      oob = scales::squish,
+      na.value = "grey80",
+      name = "Coefficient"
+    ) +
+    scale_x_discrete(expand = c(0, 0)) +
+    scale_y_discrete(expand = c(0, 0)) +
+    labs(x = NULL, y = NULL) +
+    theme_minimal(base_size = 10.5) +
+    theme(
+      panel.background = element_rect(fill = "grey93", colour = NA),
+      panel.border = element_rect(colour = "grey40", fill = NA, linewidth = 0.5),
+      panel.grid = element_blank(),
+      strip.text = element_text(face = "bold", size = 11, colour = "black"),
+      strip.background = element_rect(fill = "grey91", colour = "grey45", linewidth = 0.45),
+      axis.text.x = element_text(
+        angle = 45, hjust = 1, vjust = 1,
+        colour = "black", size = 8.8
+      ),
+      axis.text.y = element_text(
+        colour = "black", size = 8.5,
+        margin = margin(r = 4)
+      ),
+      axis.ticks = element_blank(),
+      panel.spacing.x = unit(1.5, "mm"),
+      plot.margin = margin(2, 2, 2, 2),
+      legend.position = "right",
+      legend.title = element_text(size = 9.5),
+      legend.text = element_text(size = 8.5),
+      legend.key.height = unit(18, "mm"),
+      legend.key.width = unit(4, "mm")
+    )
+
+  if (level == "ASV") {
+    p <- p + scale_y_discrete(labels = format_asv_labels, expand = c(0, 0))
+  } else {
+    p <- p + scale_y_discrete(labels = format_genus_labels, expand = c(0, 0))
+  }
+
+  p
+}
+
+# ------------------------------------------------------------
+# Figure builder
+# IMPORTANT:
+# - no guide collection
+# - each niche keeps its own legend
+# - width/height can be set manually
+# ------------------------------------------------------------
+make_maaslin_figure <- function(df_np,
+                                df_op,
+                                level = c("ASV", "Genus"),
+                                outlier_thresh_np = NULL,
+                                outlier_thresh_op = NULL) {
+  level <- match.arg(level)
+
+  p_np <- make_maaslin3_dual_heatmap_pretty(
+    df_np,
+    level = level,
+    fill_limits = NULL,
+    outlier_thresh = outlier_thresh_np
+  ) |> wrap_with_niche_header("NP")
+
+  p_op <- make_maaslin3_dual_heatmap_pretty(
+    df_op,
+    level = level,
+    fill_limits = NULL,
+    outlier_thresh = outlier_thresh_op
+  ) |> wrap_with_niche_header("OP")
+
+  final_plot <- (p_np | p_op) +
+    patchwork::plot_layout(widths = c(1, 1))
+
+  final_plot
+}
+
+# ------------------------------------------------------------
+# Wrapper to build and save one set of heatmaps
+# You can now set width/height separately for ASV and Genus
+# ------------------------------------------------------------
+build_and_save_maaslin3_heatmaps <- function(df_all,
+                                             q_type = c("standard", "within_model"),
+                                             q_show = NULL,
+                                             outlier_thresh_asv_np = 20,
+                                             outlier_thresh_asv_op = 20,
+                                             outlier_thresh_genus_np = NULL,
+                                             outlier_thresh_genus_op = NULL,
+                                             file_suffix = "",
+                                             width_asv = 14,
+                                             height_asv = 8,
+                                             width_genus = 12,
+                                             height_genus = 7) {
+
+  q_type <- match.arg(q_type)
+
+  # ASV
+  df_np_asv <- read_maaslin3_summary_results(
+    df_all = df_all,
+    niche_keep = "T0_NP",
+    level_keep = "ASV",
+    q_type = q_type,
+    q_show = q_show
+  )
+
+  df_op_asv <- read_maaslin3_summary_results(
+    df_all = df_all,
+    niche_keep = "T0_OP",
+    level_keep = "ASV",
+    q_type = q_type,
+    q_show = q_show
+  )
+
+  asv_plot <- make_maaslin_figure(
+    df_np = df_np_asv,
+    df_op = df_op_asv,
+    level = "ASV",
+    outlier_thresh_np = outlier_thresh_asv_np,
+    outlier_thresh_op = outlier_thresh_asv_op
+  )
+
+  ggsave(
+    file.path(root_dir_m3, paste0("Heatmap_Maaslin3_results_ASV_", file_suffix, ".svg")),
+    asv_plot,
+    width = width_asv,
+    height = height_asv
+  )
+
+  # Genus
+  df_np_genus <- read_maaslin3_summary_results(
+    df_all = df_all,
+    niche_keep = "T0_NP",
+    level_keep = "Genus",
+    q_type = q_type,
+    q_show = q_show
+  )
+
+  df_op_genus <- read_maaslin3_summary_results(
+    df_all = df_all,
+    niche_keep = "T0_OP",
+    level_keep = "Genus",
+    q_type = q_type,
+    q_show = q_show
+  )
+
+  genus_plot <- make_maaslin_figure(
+    df_np = df_np_genus,
+    df_op = df_op_genus,
+    level = "Genus",
+    outlier_thresh_np = outlier_thresh_genus_np,
+    outlier_thresh_op = outlier_thresh_genus_op
+  )
+
+  ggsave(
+    file.path(root_dir_m3, paste0("Heatmap_Maaslin3_results_Genus_", file_suffix, ".svg")),
+    genus_plot,
+    width = width_genus,
+    height = height_genus
+  )
+}
+
+# ------------------------------------------------------------
+# MAKE ALL FOUR VERSIONS
+# Adjust widths/heights here as you like
+# ------------------------------------------------------------
+
+# 1. Strict FDR - all rows
+build_and_save_maaslin3_heatmaps(
+  df_all = m3_all,
+  q_type = "standard",
+  q_show = NULL,
+  file_suffix = "strict_all",
+  width_asv = 13,
+  height_asv = 10,
+  width_genus = 13,
+  height_genus = 6
+)
+
+# 2. Strict FDR - only taxa with q <= 0.25 anywhere
+build_and_save_maaslin3_heatmaps(
+  df_all = m3_all,
+  q_type = "standard",
+  q_show = 0.25,
+  file_suffix = "strict_q025",
+  width_asv = 13,
+  height_asv = 6,
+  width_genus = 13,
+  height_genus = 6
+)
+
+# 3. Less strict within-model FDR - all rows
+build_and_save_maaslin3_heatmaps(
+  df_all = m3_all,
+  q_type = "within_model",
+  q_show = NULL,
+  file_suffix = "withinModel_all",
+  width_asv = 13,
+  height_asv = 10,
+  width_genus = 13,
+  height_genus = 6
+)
+
+# 4. Less strict within-model FDR - only taxa with q <= 0.25 anywhere
+build_and_save_maaslin3_heatmaps(
+  df_all = m3_all,
+  q_type = "within_model",
+  q_show = 0.25,
+  file_suffix = "withinModel_q025",
+  width_asv = 16,
+  height_asv = 6,
+  width_genus = 13,
+  height_genus = 5
+)
+```
 # Machine learning to predict lung function outcomes at T1
 # ASV-level models
 ## Elastic net
@@ -4296,7 +6825,7 @@ seeds_n  <- 10
 cv_times <- 10   
 kfold    <- 5   
 
-covars <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
+covars <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling_T0")
 outcomes <- c("FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1")
 
 # Helper functions
@@ -4332,7 +6861,7 @@ preprocess_safe <- function(dat, outcome_col) {
       age_T0 = as.numeric(age_T0),
       gender_T0 = factor(gender_T0),
       smoke_status_T0 = factor(smoke_status_T0),
-      season_microbiome_sampling = factor(season_microbiome_sampling)
+      season_microbiome_sampling_T0 = factor(season_microbiome_sampling_T0)
     ) %>%
     mutate(across(where(is.character), as.factor))
 
@@ -4461,7 +6990,7 @@ for (outcome in outcomes) {
         age_T0 = as.numeric(age_T0),
         gender_T0 = factor(gender_T0),
         smoke_status_T0 = factor(smoke_status_T0),
-        season_microbiome_sampling = factor(season_microbiome_sampling)
+        season_microbiome_sampling_T0 = factor(season_microbiome_sampling_T0)
       )
 
     pre <- preprocess_safe(m_in, outcome_col = outcome)
@@ -4725,7 +7254,7 @@ seeds_n  <- 10
 cv_times <- 10   
 kfold    <- 5    
 
-covars <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
+covars <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling_T0")
 outcomes <- c("FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1")
 
 # RF hyperparameters (small grid for speed)
@@ -4765,7 +7294,7 @@ preprocess_safe <- function(dat, outcome_col) {
       age_T0 = as.numeric(age_T0),
       gender_T0 = factor(gender_T0),
       smoke_status_T0 = factor(smoke_status_T0),
-      season_microbiome_sampling = factor(season_microbiome_sampling)
+      season_microbiome_sampling_T0 = factor(season_microbiome_sampling_T0)
     ) %>%
     mutate(across(where(is.character), as.factor))
 
@@ -4889,7 +7418,7 @@ for (outcome in outcomes) {
         age_T0 = as.numeric(age_T0),
         gender_T0 = factor(gender_T0),
         smoke_status_T0 = factor(smoke_status_T0),
-        season_microbiome_sampling = factor(season_microbiome_sampling)
+        season_microbiome_sampling_T0 = factor(season_microbiome_sampling_T0)
       )
 
     pre <- preprocess_safe(m_in, outcome_col = outcome)
@@ -5129,7 +7658,7 @@ imp_sum <- imp_df2 %>%
 imp_df_clean <- imp_df2 %>%
   mutate(feature_clean = case_when(
     str_detect(feature, "smoke_status_T0") ~ "Smoking status (baseline)",
-    str_detect(feature, "season_microbiome_sampling") ~ "Sampling season (baseline)",
+    str_detect(feature, "season_microbiome_sampling_T0") ~ "Sampling season (baseline)",
     str_detect(feature, "gender_T0") ~ "Sex (baseline)",
     str_detect(feature, "age_T0") ~ "Age (baseline)",
     TRUE ~ feature
@@ -5286,7 +7815,7 @@ seeds_n  <- 10
 cv_times <- 10
 kfold    <- 5
 
-covars   <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling")
+covars   <- c("age_T0", "gender_T0", "smoke_status_T0", "season_microbiome_sampling_T0")
 outcomes <- c("FEV1_pred_T1", "FVC_pred_T1", "FEV1FVC_pred_T1", "MMEF_pred_T1")
 
 # --- reuse helper functions from your script (copy if not in env) ---
@@ -5317,7 +7846,7 @@ preprocess_safe <- function(dat, outcome_col) {
       age_T0 = as.numeric(age_T0),
       gender_T0 = factor(gender_T0),
       smoke_status_T0 = factor(smoke_status_T0),
-      season_microbiome_sampling = factor(season_microbiome_sampling)
+      season_microbiome_sampling_T0 = factor(season_microbiome_sampling_T0)
     ) %>%
     mutate(across(where(is.character), as.factor))
 
@@ -5373,14 +7902,12 @@ extract_featimp <- function(model_list, dataset_name, outcome_name, method_name)
   })
 }
 
-# ---- Load genus phyloseqs (provided by you) ----
+#  Load genus phyloseqs
 ps_np_genus_t0 <- T0_np_ps_genus_abs_filt
 ps_op_genus_t0 <- T0_op_ps_genus_abs_filt
 
 
-# -----------------------------
 # Restrict to "significant genera" (MaAsLin2 Genus)
-# -----------------------------
 ps_np_genus_t0 <- T0_np_ps_genus_abs_filt
 ps_op_genus_t0 <- T0_op_ps_genus_abs_filt
 
