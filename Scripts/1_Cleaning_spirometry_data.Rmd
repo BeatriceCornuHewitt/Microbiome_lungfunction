@@ -51,7 +51,7 @@ old_spiro <- read_sas("O:/DGK/IRAS/EEPI/Projects/VGO/VGO I en II/VGO gezondheid/
 old_endo <- read.csv("O:/DGK/IRAS/EEPI/Projects/VGO-COPD/Microbiome/Warner_R_projects/dada2 analyse COPD microbioom/00_raw_data/VGO_2494_EUpred_WvK.csv") %>% select(-X) 
     
 old_endo <- read.csv("O:/DGK/IRAS/EEPI/Projects/VGO-COPD/Microbiome/Warner_R_projects/dada2 analyse COPD microbioom/00_raw_data/VGO_2494_PM10CONCpred_WvK.csv") %>% select(-X) %>% left_join(old_endo,.,by="respnr")
-    
+
 # Old complete (for continuous exposure proxies)
 old_full <- read_sas("O:/DGK/IRAS/EEPI/Projects/VGO/VGO I en II/VGO gezondheid/Overdracht VGO gezondheid/Sas dataset/datasetmyrna18072017.sas7bdat")
 
@@ -695,6 +695,7 @@ field_f_clean <- field_f_clean %>%
 
 #### VGO2 baseline (old_full, old_intake, old_spiro) – shared pieces ####
 # VGO2 questionnaire baseline data
+
 old_full_clean <- old_full %>%
   select(
     respnr, educationlevel, gender, age, Height, Weight, bmi, Ethnicity, Atopisch,
