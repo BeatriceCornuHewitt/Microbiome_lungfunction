@@ -754,6 +754,7 @@ ps4 <- prune_taxa(taxa_sums(ps4) > 0, ps4)
 
 ps3; ps4
 
+
 # phyloseq-class experiment-level object
 # otu_table()   OTU Table:         [ 18288 taxa and 1901 samples ]
 # sample_data() Sample Data:       [ 1901 samples by 61 sample variables ]
@@ -1291,6 +1292,7 @@ writexl::write_xlsx(
 Firstly we look at the relationship between the microbiome and lung function cross-sectionally in 2021/22 (VGO3)
 # Data 
 ```{r}
+# ps4_m <- readRDS("../Output/Cross_sectional/Phyloseq/ps_final_VGO3.rds")
 ps_final_VGO3 <- ps4_m
 
 ps_final_VGO3
@@ -1564,7 +1566,8 @@ niche_cols <- c(
 base_theme <- theme_minimal(base_size = 12) +
   theme(
     panel.grid = element_blank(),
-    strip.text = element_text(face = "bold"),
+    strip.text = element_text(face = "bold", size = 11, colour = "black"),
+    strip.background = element_rect(fill = "grey92", colour = "black", linewidth = 0.6),
     plot.title = element_text(hjust = 0.5, face = "bold"),
     axis.title.x = element_blank()
   )
@@ -3783,7 +3786,7 @@ if (!nrow(multi_raw)) {
 
 
 
-## Stratified
+ ## Stratified
 ### Univariable
 ```{r}
 # Stratified Univariable PERMANOVAs by RespDx (existing)
@@ -4593,7 +4596,6 @@ ord_vgo3_np <- vegdist(otu_vgo3_np, method = "bray")
 ord_vgo3_op <- vegdist(otu_vgo3_op, method = "bray")
 mean(ord_vgo3_np); mean(ord_vgo3_op)
 ```
-
 ## Convert to absolute abundances
 ```{r}
 ## Convert ASV RA -> "absolute" abundance via qPCR 
@@ -4690,7 +4692,10 @@ ps_list_DA_genus <- list(
   VGO3_NP = vgo3_np_ps_genus_abs_filt,
   VGO3_OP = vgo3_op_ps_genus_abs_filt
 )
+
+colnames(vgo3_np_ps_abs_filt@sam_data)
 ```
+
 ## Non-stratified analysis
 #### MaAsLin2
 ```{r}
@@ -4926,6 +4931,7 @@ ensure_dirs <- function(out_root, ps_lists) {
   }
 }
 
+
 run_maaslin_batch <- function(ps_lists, vars, covars, out_root,
                              refs = NULL, arrange_by = "coef",
                              q_cutoff = 0.10,
@@ -5001,14 +5007,8 @@ run_maaslin_batch <- function(ps_lists, vars, covars, out_root,
   dplyr::bind_rows(all_out)
 }
 
-
-
-
-
 # Where to write outputs
 out_root <- "../Output/Cross_sectional/DA/MaAsLin2/Non_stratified"
-
-
 
 # Run all (ASV + Genus) and collect a single summary table
 maaslin_summary <- run_maaslin_batch(
@@ -5022,7 +5022,6 @@ maaslin_summary <- run_maaslin_batch(
 
 
 readr::write_csv(maaslin_summary, file.path(out_root, "Maaslin2_all_results_summary.csv"))
-
 
 ```
 
@@ -5720,6 +5719,12 @@ make_heatmap <- function(df, title, level = c("ASV","Genus")) {
     return(ggplot() + theme_void() + ggtitle(paste0(title, " (no data)")))
   }
 
+  # ✅ Alphabetical ordering A → Z (top → bottom)
+  df <- df %>%
+  dplyr::mutate(feature = gsub("_", " ", feature)) %>%
+  dplyr::arrange(feature) %>% 
+  dplyr::mutate(feature = factor(feature, levels = rev(unique(feature))))
+
   pal <- rcartocolor::carto_pal(7, "Geyser")
 
   p <- ggplot(df, aes(x = metadata_plot, y = feature, fill = coef)) +
@@ -5728,7 +5733,6 @@ make_heatmap <- function(df, title, level = c("ASV","Genus")) {
       low = pal[1], mid = pal[4], high = pal[7],
       midpoint = 0, name = "Coefficient"
     ) +
-    # star colour: black if passed structural-zero screen; white otherwise
     geom_text(
       aes(label = label, color = ifelse(passed_ss, "black", "white")),
       size = 5, na.rm = TRUE
@@ -5752,13 +5756,59 @@ make_heatmap <- function(df, title, level = c("ASV","Genus")) {
     ) +
     ggtitle(title)
 
-  # Y-axis taxon label formatting
   if (level == "ASV") {
     p + scale_y_discrete(labels = format_asv_labels)
   } else {
     p + scale_y_discrete(labels = format_genus_labels)
   }
 }
+
+
+# make_heatmap <- function(df, title, level = c("ASV","Genus")) {
+#   level <- match.arg(level)
+#   if (is.null(df) || !nrow(df)) {
+#     return(ggplot() + theme_void() + ggtitle(paste0(title, " (no data)")))
+#   }
+# 
+#   pal <- rcartocolor::carto_pal(7, "Geyser")
+# 
+#   p <- ggplot(df, aes(x = metadata_plot, y = feature, fill = coef)) +
+#     geom_tile(color = "white") +
+#     scale_fill_gradient2(
+#       low = pal[1], mid = pal[4], high = pal[7],
+#       midpoint = 0, name = "Coefficient"
+#     ) +
+#     # star colour: black if passed structural-zero screen; white otherwise
+#     geom_text(
+#       aes(label = label, color = ifelse(passed_ss, "black", "white")),
+#       size = 5, na.rm = TRUE
+#     ) +
+#     scale_color_identity(
+#       guide = guide_legend(
+#         title = "Structural-zero screen",
+#         override.aes = list(label = "*", size = 5),
+#         labels = c("Passed (black *)", "Not passed (white *)")
+#       ),
+#       breaks = c("black","white")
+#     ) +
+#     theme_minimal(base_size = 11) +
+#     theme(
+#       axis.text.x  = element_text(angle = 45, hjust = 1),
+#       axis.title.x = element_blank(),
+#       axis.title.y = element_blank(),
+#       panel.grid   = element_blank(),
+#       plot.title   = element_text(hjust = 0.5),
+#       plot.margin  = unit(c(6, 6, 6, 12), "pt")
+#     ) +
+#     ggtitle(title)
+# 
+#   # Y-axis taxon label formatting
+#   if (level == "ASV") {
+#     p + scale_y_discrete(labels = format_asv_labels)
+#   } else {
+#     p + scale_y_discrete(labels = format_genus_labels)
+#   }
+# }
 
 # Read + plot (NP vs OP) for ASV 
 np_asv <- read_ancom_folder(paths$NP_ASV)
@@ -5786,6 +5836,129 @@ p_gen_grid <- (p_np_gen | p_op_gen) +
 ggsave(file.path(root_ancom, "Heatmap_ANCOMBC2_Genus_combined.svg"),
        p_gen_grid, width = 11, height = 8)
 ```
+#### ANCOM-BC2 heatmaps (with blue stars, separate for NP and OP)
+```{r}
+# SETTINGS
+root_abc <- "../Output/Cross_sectional/DA/ANCOMBC2/Non_stratified"
+output_dir <- "../Output/Cross_sectional/DA/ANCOMBC2/Non_stratified"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+custom_metadata_order <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
+pretty_labels <- c("FEV1 % pred", "FVC % pred", "FEV1/FVC % pred", "MMEF % pred")
+names(pretty_labels) <- custom_metadata_order
+
+#  FORMATTERS
+format_taxon_labels <- function(labels, is_asv = TRUE) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    if (is_asv && grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)
+      bquote(italic(.(trimws(text))) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+
+# DATA LOADING
+load_ancom_data <- function(dir, niche, level) {
+  folder <- file.path(dir, niche, level)
+  files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
+  if (!length(files)) return(NULL)
+
+  out <- lapply(files, function(f) {
+    df <- suppressMessages(readr::read_csv(f, show_col_types = FALSE))
+    if (!nrow(df)) return(NULL)
+
+    b <- basename(f)
+    var_match <- stringr::str_match(b, "_(FEV1FVC|FEV1|FVC|MMEF)\\.csv$")[, 2]
+    if (is.na(var_match)) return(NULL)
+    std_var <- paste0(var_match, "_pred")
+
+    nms_lower <- tolower(names(df))
+    target_pattern <- tolower(std_var)
+    
+    lfc_idx <- which(grepl(paste0("^lfc_", target_pattern, "$"), nms_lower))
+    q_idx   <- which(grepl(paste0("^q_", target_pattern, "$"), nms_lower))
+    ps_idx  <- which(grepl(paste0("^passed_ss_", target_pattern, "$"), nms_lower))
+
+    if (!length(lfc_idx) || !length(q_idx) || !length(ps_idx)) return(NULL)
+
+    tibble::tibble(
+      feature   = df[[1]],
+      metadata  = std_var,
+      coef      = as.numeric(df[[lfc_idx[1]]]),   
+      q_value   = as.numeric(df[[q_idx[1]]]),     
+      passed_ss = as.logical(df[[ps_idx[1]]]), 
+      label = dplyr::case_when(
+        q_value <= 0.05 ~ "***",
+        q_value <= 0.10 ~ "**",
+        q_value <= 0.25 ~ "*",
+        TRUE ~ ""
+      )
+    )
+  })
+
+  d <- dplyr::bind_rows(out)
+  if (is.null(d) || !nrow(d)) return(NULL)
+  
+  d %>% 
+    filter(metadata %in% custom_metadata_order) %>%
+    mutate(metadata_plot = factor(pretty_labels[metadata], levels = pretty_labels))
+}
+
+# PLOTTING FUNCTION
+plot_ancom_heatmap <- function(df, title, is_asv = TRUE) {
+  if (is.null(df) || !nrow(df)) return(NULL)
+
+  pal <- rcartocolor::carto_pal(7, "Geyser")
+  
+  ggplot(df, aes(x = metadata_plot, y = feature, fill = coef)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient2(low = pal[1], mid = pal[4], high = pal[7], midpoint = 0, name = "LFC") +
+    # --- UPDATED STAR LOGIC WITH LEGEND ---
+    # Map passed_ss to color to generate the legend
+    geom_text(aes(label = label, color = passed_ss), 
+              size = 4, fontface = "bold") +
+    scale_color_manual(
+      values = c("TRUE" = "black", "FALSE" = "blue"),
+      labels = c("TRUE" = "Passed Sensitivity (Robust)", "FALSE" = "Failed Sensitivity (Less Robust)"),
+      name = "Sensitivity Test"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title = element_blank(), 
+          panel.grid = element_blank(),
+          plot.title = element_text(face = "bold", hjust = 0.5),
+          legend.position = "right",
+          legend.box = "vertical") +
+    scale_y_discrete(labels = function(x) format_taxon_labels(x, is_asv)) +
+    ggtitle(title) +
+    # Ensure stars in legend are visible and not too small
+    guides(color = guide_legend(override.aes = list(label = "*", size = 6)))
+}
+
+# EXECUTE & SAVE
+tasks <- list(
+  list(niche = "NP", level = "ASV",   is_asv = TRUE),
+  list(niche = "OP", level = "ASV",   is_asv = TRUE),
+  list(niche = "NP", level = "Genus", is_asv = FALSE),
+  list(niche = "OP", level = "Genus", is_asv = FALSE)
+)
+
+for (task in tasks) {
+  data <- load_ancom_data(root_abc, task$niche, task$level)
+  if (!is.null(data)) {
+    title <- paste0("ANCOM-BC2: ", task$niche, " (", task$level, ")")
+    p <- plot_ancom_heatmap(data, title, is_asv = task$is_asv)
+    
+    file_name <- paste0("ANCOMBC2_", task$niche, "_", task$level, "_with_legend.svg")
+    ggsave(file.path(output_dir, file_name), p, width = 6, height = 6)
+  }
+}
+```
+
 #### ANCOM-BC2 heatmaps (only q<0.25 results) 
 ```{r}
 #### ANCOM-BC2 heatmaps — show only taxa with q <= 0.25 in ANY analysis ####
@@ -5992,100 +6165,881 @@ ggplot2::ggsave(file.path(root_ancom, "Heatmap_ANCOMBC2_Genus_q025_anywhere.svg"
                 p_gen_grid, width = 8, height = 4)
 
 ```
-
-## Stratified by Respiratory disease 
-### MaAsLin2 
+#### MaAsLin3
 ```{r}
-# Helper to prune phyloseq by a metadata level
-prune_ps_by_level <- function(ps, var, level) {
-  md <- data.frame(sample_data(ps), check.names = FALSE)
-  if (!var %in% names(md)) stop("Column not found in metadata: ", var)
+#### MaAsLin3
+# Corrected MaAsLin3 wrapper:
+# - keeps your metadata cleaning logic
+# - extracts abundance results correctly from the MaAsLin3 object
+# - creates a qval column for downstream compatibility
+# - returns results formatted similarly to your MaAsLin2 output
 
-  vv <- trimws(tolower(as.character(md[[var]])))
-  keep_ids <- rownames(md)[vv == tolower(level) & !is.na(vv)]
+do_maaslin3 <- function(ps, var, other_var = NULL, ref = NULL, out_dir = NULL,
+                        stratify_by = NULL, strata_levels = NULL,
+                        q_cutoff = 0.10, min_n = 10, verbose = TRUE) {
 
-  if (!length(keep_ids)) {
-    warning("No samples for ", var, " = ", level)
-    return(NULL)
+  stopifnot(inherits(ps, "phyloseq"))
+  if (is.null(other_var)) other_var <- character(0)
+
+  .run_single <- function(ps, var, other_var, ref, out_dir, q_cutoff) {
+
+    fixed <- unique(c(var, other_var))
+
+    # 1) Check metadata has required columns, drop rows with missing model vars
+    meta0 <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
+    miss <- setdiff(fixed, colnames(meta0))
+    if (length(miss)) stop("Missing columns in metadata: ", paste(miss, collapse = ", "))
+
+    keep <- stats::complete.cases(meta0[, fixed, drop = FALSE])
+    ps   <- phyloseq::prune_samples(keep, ps)
+
+    # 2) Rebuild metadata after pruning
+    meta <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
+
+    # 3) Flatten non-atomic columns
+    is_bad <- vapply(meta, function(x) is.list(x) || is.data.frame(x) || is.matrix(x), logical(1))
+    if (any(is_bad)) {
+      for (nm in names(meta)[is_bad]) meta[[nm]] <- as.character(meta[[nm]])
+    }
+
+    # 4) Special handling for RespDx if used
+    if ("RespDx" %in% fixed && "RespDx" %in% names(meta)) {
+      raw <- trimws(tolower(as.character(meta$RespDx)))
+      raw2 <- dplyr::recode(
+        raw,
+        "no respiratory diagnosis" = "no",
+        "respiratory diagnosis"    = "yes",
+        "0" = "no",
+        "1" = "yes",
+        "no" = "no",
+        "yes" = "yes",
+        .default = NA_character_
+      )
+      meta$RespDx <- factor(raw2, levels = c("no", "yes"))
+      if (any(is.na(meta$RespDx))) {
+        warning("RespDx had unrecognized values -> NA (samples will be dropped).")
+      }
+    }
+
+    # 5) Coerce ONLY fixed-effect columns
+    for (nm in fixed) {
+      x <- meta[[nm]]
+      if (is.ordered(x))        meta[[nm]] <- factor(x, ordered = FALSE)
+      else if (is.character(x)) meta[[nm]] <- factor(x)
+      else if (is.logical(x))   meta[[nm]] <- factor(x, levels = c(FALSE, TRUE))
+    }
+
+    # 6) Numeric coercion for expected numeric predictors
+    num_candidates <- intersect(
+      c("age", "Age", "bmi", "BMI", "packyears",
+        "FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred"),
+      fixed
+    )
+    for (nm in num_candidates) {
+      meta[[nm]] <- suppressWarnings(as.numeric(as.character(meta[[nm]])))
+    }
+
+    # 7) Drop rows with NA in fixed effects after coercion
+    keep2 <- stats::complete.cases(meta[, fixed, drop = FALSE])
+    if (!all(keep2)) {
+      meta <- meta[keep2, , drop = FALSE]
+      ps   <- phyloseq::prune_samples(rownames(meta), ps)
+    }
+
+    # 8) Drop zero-variance predictors
+    drop_fx <- vapply(fixed, function(nm) {
+      x <- meta[[nm]]
+      if (is.factor(x)) nlevels(x) < 2
+      else if (is.numeric(x)) isTRUE(all.equal(stats::sd(x, na.rm = TRUE), 0))
+      else FALSE
+    }, logical(1))
+
+    if (any(drop_fx)) {
+      warning("Dropping zero-variance predictors: ", paste(fixed[drop_fx], collapse = ", "))
+      fixed <- fixed[!drop_fx]
+    }
+    if (!length(fixed)) stop("All predictors dropped (zero variance).")
+
+    # 9) Build OTU table with samples as rows, ensure numeric
+    otu <- phyloseq::otu_table(ps)
+    otu_df <- as.data.frame(otu, check.names = FALSE)
+    if (phyloseq::taxa_are_rows(ps)) otu_df <- t(otu_df)
+    otu_df <- as.data.frame(otu_df, check.names = FALSE)
+    otu_df[] <- lapply(otu_df, function(x) suppressWarnings(as.numeric(x)))
+    if (anyNA(otu_df)) warning("NA introduced in OTU table during numeric coercion.")
+
+    # 10) Align rows strictly
+    common <- intersect(rownames(meta), rownames(otu_df))
+    meta   <- meta[common, , drop = FALSE]
+    otu_df <- otu_df[common, , drop = FALSE]
+    stopifnot(identical(rownames(meta), rownames(otu_df)))
+
+    if (verbose) {
+      message("Running MaAsLin3: ", var,
+              " | n_samples=", nrow(meta),
+              " | n_features=", ncol(otu_df))
+    }
+
+    # 11) Output dir
+    if (is.null(out_dir)) out_dir <- file.path(tempdir(), paste0("Maaslin3_", var))
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+    # 12) Build formula
+    formula_str <- paste0("~ ", paste(fixed, collapse = " + "))
+
+    # 13) Run MaAsLin3
+    ms <- maaslin3::maaslin3(
+      input_data       = otu_df,
+      input_metadata   = meta,
+      output           = out_dir,
+      formula          = formula_str,
+      normalization    = "NONE",
+      transform        = "LOG",
+      min_abundance    = 0,
+      min_prevalence   = 0,
+      plot_associations = FALSE,
+      plot_summary_plot = FALSE,
+      augment          = TRUE,
+      reference        = ref
+    )
+
+    if (verbose) {
+      message("MaAsLin3 returned objects: ", paste(names(ms), collapse = ", "))
+    }
+
+    # 14) Extract abundance results only
+    # This is the closest comparison to MaAsLin2
+    res <- ms$fit_data_abundance$results
+
+    if (is.null(res) || !nrow(res)) {
+      return(data.frame())
+    }
+
+    res <- as.data.frame(res, check.names = FALSE)
+
+    # 15) Numeric coercion for downstream compatibility
+    for (nm in intersect(c("coef", "stderr", "qval_individual", "qval_joint",
+                           "pval_individual", "pval_joint"), names(res))) {
+      res[[nm]] <- suppressWarnings(as.numeric(res[[nm]]))
+    }
+
+    # 16) Keep only the metadata variable currently being tested
+    res$var <- var
+    res <- res[res$metadata == var, , drop = FALSE]
+    if (!nrow(res)) return(res)
+
+    # 17) Create a generic qval column for compatibility with your downstream code
+    if ("qval_individual" %in% names(res)) {
+      res$qval <- res$qval_individual
+    } else if ("qval_joint" %in% names(res)) {
+      res$qval <- res$qval_joint
+    } else {
+      res$qval <- NA_real_
+    }
+
+    # 18) Optional q filtering on returned results
+    if (!is.null(q_cutoff)) {
+      res2 <- res[!is.na(res$qval) & res$qval <= q_cutoff, , drop = FALSE]
+      if (!nrow(res2)) {
+        attr(res, "filtered_out_by_q") <- TRUE
+        return(res[0, , drop = FALSE])
+      }
+      res <- res2
+    }
+
+    # 19) Add CI + significance labels
+    if (all(c("coef", "stderr") %in% names(res))) {
+      res$conf.low  <- res$coef - 1.96 * res$stderr
+      res$conf.high <- res$coef + 1.96 * res$stderr
+    } else {
+      res$conf.low  <- NA_real_
+      res$conf.high <- NA_real_
+    }
+
+    res$label <- dplyr::case_when(
+      is.na(res$qval)  ~ NA_character_,
+      res$qval <= 0.05 ~ "***",
+      res$qval <= 0.10 ~ "**",
+      res$qval <= 0.25 ~ "*",
+      TRUE             ~ NA_character_
+    )
+
+    return(res)
   }
-  prune_samples(keep_ids, ps)
-}
 
-# Set levels
-resp_levels  <- c("no","yes")
-covars_strat <- c("Age","Gender","season_microbiome_sampling","Smoking_status")
-
-#### MaAsLin2 — STRATIFIED by RespDx ####
-out_root_strat <- "../Output/Cross_sectional/DA/MaAsLin2/Stratified"
-dir.create(out_root_strat, recursive = TRUE, showWarnings = FALSE)
-
-# Helper used to prune phyloseq by RespDx level
-prune_ps_by_level <- function(ps, var = "RespDx", level = "no") {
-  md <- data.frame(sample_data(ps), check.names = FALSE)
-  if (!var %in% names(md)) stop("Column not found in metadata: ", var)
-
-  vv <- trimws(tolower(as.character(md[[var]])))
-  keep_ids <- rownames(md)[vv == tolower(level) & !is.na(vv)]
-  if (!length(keep_ids)) return(NULL)
-
-  ps_sub <- prune_samples(keep_ids, ps)
-  if (nsamples(ps_sub) == 0) return(NULL)
-
-  ps_sub
-}
-
-# Create stratified lists
-ps_list_DA_ASV_strat   <- list()
-ps_list_DA_genus_strat <- list()
-
-for (lv in resp_levels) {
-  ps_list_DA_ASV_strat[[paste0("RespDx_", lv)]] <- list(
-    VGO3_NP = prune_ps_by_level(vgo3_np_ps_abs_filt, "RespDx", lv),
-    VGO3_OP = prune_ps_by_level(vgo3_op_ps_abs_filt, "RespDx", lv)
-  )
-  ps_list_DA_genus_strat[[paste0("RespDx_", lv)]] <- list(
-    VGO3_NP = prune_ps_by_level(vgo3_np_ps_genus_abs_filt, "RespDx", lv),
-    VGO3_OP = prune_ps_by_level(vgo3_op_ps_genus_abs_filt, "RespDx", lv)
-  )
-}
-
-# ensure output dirs exist
-maaslin_strat_summaries <- list()
-
-for (tag in names(ps_list_DA_ASV_strat)) {
-  ps_asv_tag   <- Filter(Negate(is.null), ps_list_DA_ASV_strat[[tag]])
-  ps_genus_tag <- Filter(Negate(is.null), ps_list_DA_genus_strat[[tag]])
-  if (length(ps_asv_tag) == 0 && length(ps_genus_tag) == 0) {
-    message("Skipping ", tag, " (no samples).")
-    next
+  # Non-stratified
+  if (is.null(stratify_by)) {
+    return(.run_single(ps, var, other_var, ref, out_dir, q_cutoff))
   }
-  out_tag <- file.path(out_root_strat, tag)
-  dir.create(out_tag, recursive = TRUE, showWarnings = FALSE)
 
-  # create needed subfolders
-  # make_dirs_for_pslists(out_tag, list(ASV = ps_asv_tag, Genus = ps_genus_tag))
-  summ_tag <- run_maaslin_batch(
-    ps_lists = list(ASV = ps_asv_tag, Genus = ps_genus_tag),
-    vars     = vars_cont,
-    covars   = covars_strat,
-    out_root = out_tag
-  )
+  # Stratified
+  meta_all <- data.frame(as(phyloseq::sample_data(ps), "data.frame"), check.names = FALSE)
+  if (!stratify_by %in% names(meta_all)) {
+    stop("stratify_by column not found in metadata: ", stratify_by)
+  }
 
-  summ_tag$RespDx_stratum <- tag
-  maaslin_strat_summaries[[tag]] <- summ_tag
+  strat_fac <- factor(meta_all[[stratify_by]])
+  lvls <- if (!is.null(strata_levels)) strata_levels else levels(strat_fac)
+  safe_name_local <- function(x) gsub("[^[:alnum:]_.-]+", "_", as.character(x))
+
+  out_list <- list()
+  for (lv in lvls) {
+    idx <- which(!is.na(strat_fac) & strat_fac == lv)
+    if (length(idx) < min_n) {
+      if (verbose) message("Skipping stratum '", lv, "' (n=", length(idx), " < ", min_n, ").")
+      next
+    }
+
+    samp_ids <- rownames(meta_all)[idx]
+    ps_sub   <- phyloseq::prune_samples(samp_ids, ps)
+    odir     <- if (is.null(out_dir)) NULL else file.path(out_dir, paste0(stratify_by, "=", safe_name_local(lv)))
+
+    res_lv <- try(.run_single(ps_sub, var, other_var, ref, odir, q_cutoff), silent = TRUE)
+    if (inherits(res_lv, "try-error") || is.null(res_lv) || !nrow(res_lv)) {
+      if (verbose) message("No results for stratum '", lv, "'.")
+      next
+    }
+
+    res_lv[[stratify_by]] <- lv
+    res_lv$n_samples <- phyloseq::nsamples(ps_sub)
+    out_list[[as.character(lv)]] <- res_lv
+  }
+
+  if (!length(out_list)) return(invisible(data.frame()))
+  res_all <- do.call(rbind, out_list)
+  rownames(res_all) <- NULL
+  res_all
 }
 
-maaslin_summary_strat <- dplyr::bind_rows(maaslin_strat_summaries)
 
-readr::write_csv(
-  maaslin_summary_strat,
-  file.path(out_root_strat, "Maaslin2_all_results_summary_stratified_by_RespDx.csv")
+# Variables + covariates
+vars_cont_T0 <- c("FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred")
+covars_T0    <- c("Age", "Gender", "season_microbiome_sampling", "Smoking_status")
+
+safe_name <- function(x) gsub("[^A-Za-z0-9._-]+", "_", x)
+
+ensure_dirs <- function(out_root, ps_lists) {
+  for (lvl in names(ps_lists)) {
+    for (ds in names(ps_lists[[lvl]])) {
+      subdir <- file.path(out_root, ds, lvl)
+      dir.create(subdir, recursive = TRUE, showWarnings = FALSE)
+      if (!dir.exists(subdir)) stop("Cannot create output dir: ", subdir)
+    }
+  }
+}
+
+
+run_maaslin3_batch <- function(ps_lists, vars, covars, out_root,
+                               refs = NULL, arrange_by = "coef",
+                               q_cutoff = 0.10,
+                               verbose = TRUE) {
+
+  all_out <- list()
+  ensure_dirs(out_root, ps_lists)
+
+  for (level in names(ps_lists)) {
+    for (dataset in names(ps_lists[[level]])) {
+
+      ps <- ps_lists[[level]][[dataset]]
+      if (is.null(ps)) {
+        message("Skipping NULL phyloseq: ", dataset, " | ", level)
+        next
+      }
+
+      for (v in vars) {
+
+        ref_spec <- if (!is.null(refs) && v %in% names(refs)) refs[[v]] else NULL
+
+        subdir <- file.path(out_root, dataset, level, safe_name(v))
+
+        res <- tryCatch(
+          do_maaslin3(
+            ps        = ps,
+            var       = v,
+            other_var = covars,
+            ref       = ref_spec,
+            out_dir   = subdir,
+            q_cutoff  = q_cutoff,
+            verbose   = verbose
+          ),
+          error = function(e) {
+            message("ERROR: ", dataset, " | ", level, " | ", v, " -> ", conditionMessage(e))
+            return(NULL)
+          }
+        )
+
+        if (is.null(res)) next
+
+        if (!nrow(res)) {
+          filtered_out <- isTRUE(attr(res, "filtered_out_by_q"))
+          if (filtered_out) {
+            message("FILTERED OUT by q_cutoff (", q_cutoff, "): ", dataset, " | ", level, " | ", v)
+          } else {
+            message("EMPTY results: ", dataset, " | ", level, " | ", v)
+          }
+          next
+        }
+
+        if (!is.null(arrange_by) && arrange_by %in% names(res)) {
+          res <- dplyr::arrange(res, dplyr::desc(.data[[arrange_by]]))
+        }
+
+        res$dataset <- dataset
+        res$level   <- level
+
+        key <- paste(level, dataset, v, sep = "___")
+        all_out[[key]] <- res
+
+        dir.create(file.path(out_root, dataset, level), recursive = TRUE, showWarnings = FALSE)
+        fn <- paste0(safe_name(dataset), "_", level, "_", safe_name(v), ".csv")
+        utils::write.csv(res, file.path(out_root, dataset, level, fn), row.names = FALSE)
+      }
+    }
+  }
+
+  dplyr::bind_rows(all_out)
+}
+
+
+# Where to write outputs
+out_root_m3 <- "../Output/Cross_sectional/DA/MaAsLin3/Non_stratified"
+
+# Run all (ASV + Genus) and collect a single summary table
+maaslin3_summary <- run_maaslin3_batch(
+  ps_lists = list(ASV = ps_list_DA_ASV, Genus = ps_list_DA_genus),
+  vars     = vars_cont_T0,
+  covars   = covars_T0,
+  out_root = out_root_m3,
+  q_cutoff = NULL,   # keep NULL for debugging/comparison
+  verbose  = TRUE
+)
+
+readr::write_csv(maaslin3_summary, file.path(out_root_m3, "Maaslin3_all_results_summary.csv"))
+
+```
+## MaAsLin3 heatmaps
+```{r}
+root_dir_m3 <- "../Output/Cross_sectional/DA/MaAsLin3/Non_stratified"
+
+folders_m3 <- list(
+  ASV = list(
+    NP = file.path(root_dir_m3, "VGO3_NP", "ASV"),
+    OP = file.path(root_dir_m3, "VGO3_OP", "ASV")
+  ),
+  Genus = list(
+    NP = file.path(root_dir_m3, "VGO3_NP", "Genus"),
+    OP = file.path(root_dir_m3, "VGO3_OP", "Genus")
+  )
+)
+
+custom_metadata_order <- c("FEV1_pred", "FVC_pred", "FEV1FVC_pred", "MMEF_pred")
+
+pretty_labels <- c(
+  FEV1_pred    = "FEV1 % predicted",
+  FVC_pred     = "FVC % predicted",
+  FEV1FVC_pred = "FEV1/FVC % predicted",
+  MMEF_pred    = "MMEF % predicted"
+)
+
+niche_cols <- c(
+  NP = "#7987af",
+  OP = "#7c674d"
+)
+
+# Helpers
+format_asv_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    if (grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)
+      bquote(italic(.(trimws(text))) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+
+format_genus_labels <- function(labels) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    bquote(italic(.(lab)))
+  })
+}
+
+# A at the top
+alphabetical_top_to_bottom <- function(x) {
+  x <- unique(as.character(x))
+  x[order(tolower(x), decreasing = TRUE)]
+}
+
+make_niche_strip <- function(label, fill, text_col = "white") {
+  ggplot() +
+    annotate("rect", xmin = 0, xmax = 1, ymin = 0, ymax = 1,
+             fill = fill, colour = fill) +
+    annotate("text", x = 0.5, y = 0.5, label = label,
+             colour = text_col, fontface = "bold", size = 3.8) +
+    coord_cartesian(xlim = c(0, 1), ylim = c(0, 1), expand = FALSE) +
+    theme_void()
+}
+
+wrap_with_niche_header <- function(plot_obj, niche = c("NP", "OP")) {
+  niche <- match.arg(niche)
+
+  header <- if (niche == "NP") {
+    make_niche_strip("Nasopharynx", niche_cols["NP"])
+  } else {
+    make_niche_strip("Oropharynx", niche_cols["OP"])
+  }
+
+  header / plot_obj + patchwork::plot_layout(heights = c(0.055, 1))
+}
+
+# Reader
+read_maaslin3_all_results <- function(folder,
+                                      q_show = NULL,
+                                      use_q = c("individual", "joint"),
+                                      star_style = c("three_level", "manuscript")) {
+
+  use_q <- match.arg(use_q)
+  star_style <- match.arg(star_style)
+
+  predictor_dirs <- list.dirs(folder, recursive = FALSE, full.names = TRUE)
+  if (!length(predictor_dirs)) return(NULL)
+
+  all_files <- file.path(predictor_dirs, "all_results.tsv")
+  all_files <- all_files[file.exists(all_files)]
+  if (!length(all_files)) return(NULL)
+
+  df <- lapply(all_files, function(f) {
+    x <- tryCatch(read.delim(f, check.names = FALSE), error = function(e) NULL)
+    if (is.null(x) || !nrow(x)) return(NULL)
+    x$predictor_folder <- basename(dirname(f))
+    x
+  }) |>
+    bind_rows()
+
+  if (is.null(df) || !nrow(df)) return(NULL)
+
+  df <- df |>
+    mutate(
+      metadata = trimws(as.character(metadata)),
+      feature  = as.character(feature),
+      model    = as.character(model)
+    ) |>
+    filter(metadata %in% custom_metadata_order)
+
+  if (!nrow(df)) return(NULL)
+
+  q_col <- if (use_q == "individual") "qval_individual" else "qval_joint"
+
+  if (!q_col %in% names(df)) {
+    stop("Column not found in all_results.tsv: ", q_col)
+  }
+
+  df <- df |>
+    mutate(
+      coef = suppressWarnings(as.numeric(coef)),
+      qval_plot = suppressWarnings(as.numeric(.data[[q_col]])),
+      model_plot = case_when(
+        tolower(model) %in% c("abundance", "linear")    ~ "Abundance",
+        tolower(model) %in% c("prevalence", "logistic") ~ "Prevalence",
+        TRUE ~ as.character(model)
+      )
+    )
+
+  df$label <- if (star_style == "three_level") {
+    case_when(
+      is.na(df$qval_plot)   ~ "",
+      df$qval_plot <= 0.05  ~ "***",
+      df$qval_plot <= 0.10  ~ "**",
+      df$qval_plot <= 0.25  ~ "*",
+      TRUE                  ~ ""
+    )
+  } else {
+    case_when(
+      is.na(df$qval_plot)   ~ "",
+      df$qval_plot <= 0.01  ~ "**",
+      df$qval_plot <= 0.05  ~ "*",
+      TRUE                  ~ ""
+    )
+  }
+
+  if (!is.null(q_show)) {
+    keep_features <- df |>
+      filter(!is.na(qval_plot) + qval_plot <= q_show) |>
+      distinct(feature) |>
+      pull(feature)
+
+    df <- df |>
+      filter(feature %in% keep_features)
+
+    if (!nrow(df)) return(NULL)
+  }
+
+  df <- df |>
+    mutate(
+      metadata_raw = factor(metadata, levels = custom_metadata_order),
+      metadata_plot = factor(
+        pretty_labels[as.character(metadata_raw)],
+        levels = unname(pretty_labels[custom_metadata_order])
+      ),
+      feature = factor(feature, levels = alphabetical_top_to_bottom(feature)),
+      model_plot = factor(model_plot, levels = c("Abundance", "Prevalence"))
+    )
+
+  df
+}
+
+
+# Plotter
+make_maaslin3_dual_heatmap <- function(df,
+                                       level = c("ASV", "Genus"),
+                                       fill_limits = NULL) {
+  level <- match.arg(level)
+
+  if (is.null(df) || !nrow(df)) {
+    return(ggplot() + theme_void())
+  }
+
+  feat_levels  <- levels(df$feature)
+  meta_levels  <- levels(df$metadata_plot)
+  model_levels <- levels(df$model_plot)
+
+  df_plot <- df |>
+    select(feature, metadata_plot, model_plot, coef, label) |>
+    tidyr::complete(
+      feature = factor(feat_levels, levels = feat_levels),
+      metadata_plot = factor(meta_levels, levels = meta_levels),
+      model_plot = factor(model_levels, levels = model_levels),
+      fill = list(coef = NA_real_, label = "")
+    )
+
+  lim <- if (is.null(fill_limits)) {
+    max(abs(df_plot$coef), na.rm = TRUE)
+  } else {
+    fill_limits
+  }
+
+  if (!is.finite(lim) || lim <= 0) lim <- 1
+
+  p <- ggplot(df_plot, aes(x = metadata_plot, y = feature, fill = coef)) +
+    geom_tile(width = 0.995, height = 0.995, colour = NA) +
+    geom_text(
+      aes(label = label),
+      colour = "black",
+      size = 5,
+      fontface = "bold",
+      na.rm = TRUE
+    ) +
+    facet_grid(. ~ model_plot, scales = "fixed", space = "fixed") +
+    scale_fill_gradient2(
+      low = rcartocolor::carto_pal(7, "Geyser")[1],
+      mid = rcartocolor::carto_pal(7, "Geyser")[4],
+      high = rcartocolor::carto_pal(7, "Geyser")[7],
+      midpoint = 0,
+      limits = c(-lim, lim),
+      oob = scales::squish,
+      na.value = "grey93",
+      name = "Coefficient"
+    ) +
+    scale_x_discrete(expand = c(0, 0)) +
+    scale_y_discrete(expand = c(0, 0)) +
+    labs(x = NULL, y = NULL) +
+    theme_minimal(base_size = 10.5) +
+    theme(
+      panel.background = element_rect(fill = "grey93", colour = NA),
+      panel.border = element_rect(colour = "grey40", fill = NA, linewidth = 0.5),
+      panel.grid = element_blank(),
+      strip.text = element_text(face = "bold", size = 11, colour = "black"),
+      strip.background = element_rect(fill = "grey91", colour = "grey45", linewidth = 0.45),
+      axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1, colour = "black", size = 8.8),
+      axis.text.y = element_text(colour = "black", size = 8.5, margin = margin(r = 4)),
+      axis.ticks = element_blank(),
+      panel.spacing.x = unit(1.5, "mm"),
+      plot.margin = margin(2, 2, 2, 2),
+      legend.title = element_text(size = 9.5),
+      legend.text = element_text(size = 8.5),
+      legend.key.height = unit(5, "mm"),
+      legend.key.width = unit(6, "mm")
+    )
+
+  if (level == "ASV") {
+    p <- p + scale_y_discrete(labels = format_asv_labels, expand = c(0, 0))
+  } else {
+    p <- p + scale_y_discrete(labels = format_genus_labels, expand = c(0, 0))
+  }
+
+  p
+}
+
+# -------------------------------------------------------------------------
+# Figure builder
+# -------------------------------------------------------------------------
+
+make_maaslin_figure <- function(folder_np,
+                                folder_op,
+                                level = c("ASV", "Genus"),
+                                q_show = NULL,
+                                use_q = c("individual", "joint"),
+                                star_style = c("three_level", "manuscript")) {
+  level <- match.arg(level)
+  use_q <- match.arg(use_q)
+  star_style <- match.arg(star_style)
+
+  df_np <- read_maaslin3_all_results(
+    folder_np,
+    q_show = q_show,
+    use_q = use_q,
+    star_style = star_style
+  )
+
+  df_op <- read_maaslin3_all_results(
+    folder_op,
+    q_show = q_show,
+    use_q = use_q,
+    star_style = star_style
+  )
+
+  p_np <- make_maaslin3_dual_heatmap(df_np, level = level, fill_limits = NULL) |>
+    wrap_with_niche_header("NP")
+
+  p_op <- make_maaslin3_dual_heatmap(df_op, level = level, fill_limits = NULL) |>
+    wrap_with_niche_header("OP")
+
+  ((p_np | p_op) + patchwork::plot_layout(widths = c(1, 1)))
+}
+
+
+# Save all four figures
+# ASV - all
+asv_all <- make_maaslin_figure(
+  folder_np = folders_m3$ASV$NP,
+  folder_op = folders_m3$ASV$OP,
+  level = "ASV",
+  q_show = NULL,
+  use_q = "individual",
+  star_style = "three_level"
+)
+
+ggsave(
+  file.path(root_dir_m3, "Heatmap_Maaslin3_results_ASV_pretty.svg"),
+  asv_all,
+  width = 11,
+  height = 8
+)
+
+# Genus - all
+genus_all <- make_maaslin_figure(
+  folder_np = folders_m3$Genus$NP,
+  folder_op = folders_m3$Genus$OP,
+  level = "Genus",
+  q_show = NULL,
+  use_q = "individual",
+  star_style = "three_level"
+)
+
+ggsave(
+  file.path(root_dir_m3, "Heatmap_Maaslin3_results_Genus_pretty.svg"),
+  genus_all,
+  width = 10,
+  height = 8
+)
+
+# ASV - q <= 0.25 anywhere
+asv_q025 <- make_maaslin_figure(
+  folder_np = folders_m3$ASV$NP,
+  folder_op = folders_m3$ASV$OP,
+  level = "ASV",
+  q_show = 0.25,
+  use_q = "individual",
+  star_style = "three_level"
+)
+
+ggsave(
+  file.path(root_dir_m3, "Heatmap_Maaslin3_results_ASV_q025_abundance_prevalence.svg"),
+  asv_q025,
+  width = 8,
+  height = 6
+)
+
+# Genus - q <= 0.25 anywhere
+genus_q025 <- make_maaslin_figure(
+  folder_np = folders_m3$Genus$NP,
+  folder_op = folders_m3$Genus$OP,
+  level = "Genus",
+  q_show = 0.25,
+  use_q = "individual",
+  star_style = "three_level"
+)
+
+ggsave(
+  file.path(root_dir_m3, "Heatmap_Maaslin3_results_Genus_q025_abundance_prevalence.svg"),
+  genus_q025,
+  width = 10,
+  height = 6
+)
+
+
+ggsave(
+  file.path(root_dir_m3, "Heatmap_Maaslin3_results_Genus_q025_abundance_prevalence.png"),
+  genus_q025,
+  width = 10,
+  height = 6
 )
 ```
+
+
+# Compare DA methods 
+```{r}
+# SETTINGS & PATHS
+root_m2  <- "../Output/Cross_sectional/DA/MaAsLin2/Non_stratified"
+root_m3  <- "../Output/Cross_sectional/DA/MaAsLin3/Non_stratified"
+root_abc <- "../Output/Cross_sectional/DA/ANCOMBC2/Non_stratified"
+output_dir <- "../Output/Cross_sectional/DA"
+
+custom_metadata_order <- c("FEV1_pred","FVC_pred","FEV1FVC_pred","MMEF_pred")
+pretty_labels <- c("FEV1 % pred", "FVC % pred", "FEV1/FVC % pred", "MMEF % pred")
+names(pretty_labels) <- custom_metadata_order
+
+# --- 2. FORMATTERS ---
+format_taxon_labels <- function(labels, is_asv = TRUE) {
+  sapply(labels, function(lab) {
+    lab <- gsub("_", " ", lab)
+    if (is_asv && grepl(" [0-9]+$", lab)) {
+      text <- sub("([0-9]+)$", "", lab)
+      num  <- sub(".* ([0-9]+)$", "\\1", lab)
+      bquote(italic(.(trimws(text))) ~ "(" * .(num) * ")")
+    } else {
+      bquote(italic(.(lab)))
+    }
+  })
+}
+
+# --- 3. UNIVERSAL PLOTTER ---
+make_comp_plot <- function(df, title, is_asv = TRUE, is_ancom = FALSE) {
+  if (is.null(df) || !nrow(df)) return(ggplot() + theme_void() + ggtitle(paste(title, "(No Data)")))
+  
+  pal <- rcartocolor::carto_pal(7, "Geyser")
+  
+  p <- ggplot(df, aes(x = metadata_plot, y = feature, fill = coef)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient2(low = pal[1], mid = pal[4], high = pal[7], midpoint = 0, name = "LFC / Coef") +
+    theme_minimal(base_size = 10) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title = element_blank(), 
+          panel.grid = element_blank(),
+          
+          plot.title = element_text(size = 11, face = "bold", hjust = 0.5)) +
+    ggtitle(title)
+
+  if (is_ancom) {
+    # We force passed_ss to be a factor so the legend is discrete
+    df$passed_ss <- factor(df$passed_ss, levels = c("TRUE", "FALSE"))
+    
+    p <- p + geom_text(aes(label = label, color = passed_ss), size = 3.5, fontface = "bold") +
+      scale_color_manual(
+        values = c("TRUE" = "black", "FALSE" = "blue"),
+        labels = c("TRUE" = "Passed Sensitivity (Robust)", "FALSE" = "Failed Sensitivity (Less Robust)"),
+        name = "ANCOM-BC2 Status",
+        drop = FALSE # Forces the legend to exist even if data is missing one type
+      ) +
+      guides(color = guide_legend(override.aes = list(label = "*", size = 6)))
+  } else {
+    p <- p + geom_text(aes(label = label), color = "black", size = 3.5)
+  }
+  
+  p + scale_y_discrete(labels = function(x) format_taxon_labels(x, is_asv))
+}
+
+# DATA LOADING HELPERS
+load_maaslin <- function(dir, dataset, level) {
+  path <- file.path(dir, dataset, level)
+  files <- list.files(path, pattern = "\\.csv$", full.names = TRUE)
+  if(!length(files)) return(NULL)
+  df <- lapply(files, read_csv, show_col_types = FALSE) %>% bind_rows()
+  if(!nrow(df)) return(NULL)
+  df %>% filter(metadata %in% custom_metadata_order) %>%
+    mutate(metadata_plot = factor(pretty_labels[metadata], levels = pretty_labels))
+}
+
+read_ancom_folder_fixed <- function(folder) {
+  files <- list.files(folder, pattern = "\\.csv$", full.names = TRUE)
+  if (!length(files)) return(NULL)
+  out <- lapply(files, function(f) {
+    df <- suppressMessages(readr::read_csv(f, show_col_types = FALSE))
+    if (!nrow(df)) return(NULL)
+    b <- basename(f)
+    var_match <- stringr::str_match(b, "_(FEV1FVC|FEV1|FVC|MMEF)\\.csv$")[, 2]
+    if (is.na(var_match)) return(NULL)
+    std_var <- paste0(var_match, "_pred")
+    nms_lower <- tolower(names(df))
+    target_pattern <- tolower(std_var)
+    lfc_idx <- which(grepl(paste0("^lfc_", target_pattern, "$"), nms_lower))
+    q_idx   <- which(grepl(paste0("^q_", target_pattern, "$"), nms_lower))
+    ps_idx  <- which(grepl(paste0("^passed_ss_", target_pattern, "$"), nms_lower))
+    if (!length(lfc_idx) || !length(q_idx) || !length(ps_idx)) return(NULL)
+    tibble::tibble(
+      feature   = df[[1]],
+      metadata  = std_var,
+      coef      = as.numeric(df[[lfc_idx[1]]]),   
+      q_value   = as.numeric(df[[q_idx[1]]]),     
+      passed_ss = as.logical(df[[ps_idx[1]]]),
+      label = dplyr::case_when(
+        q_value <= 0.05 ~ "***", q_value <= 0.10 ~ "**", q_value <= 0.25 ~ "*", TRUE ~ ""
+      )
+    )
+  })
+  d <- dplyr::bind_rows(out)
+  if (is.null(d) || !nrow(d)) return(NULL)
+  return(d)
+}
+
+load_ancom <- function(dir, niche, level) {
+  path <- file.path(dir, niche, level)
+  df <- tryCatch(read_ancom_folder_fixed(path), error = function(e) NULL)
+  if (is.null(df) || nrow(df) == 0) return(NULL)
+  df %>% filter(metadata %in% custom_metadata_order) %>%
+    mutate(metadata_plot = factor(pretty_labels[metadata], levels = pretty_labels))
+}
+
+# GENERATE & SAVE COMPARISONS
+
+generate_comparison_grid <- function(level, niche, is_asv) {
+  # Map names to directory format
+  m2_niche <- paste0("VGO3_", niche)
+  m3_niche <- paste0("VGO3_", niche)
+  
+  # Load data
+  p_m2 <- make_comp_plot(load_maaslin(root_m2, m2_niche, level), paste("MaAsLin2:", niche), is_asv)
+  p_m3 <- make_comp_plot(load_maaslin(root_m3, m3_niche, level), paste("MaAsLin3:", niche), is_asv)
+  p_abc <- make_comp_plot(load_ancom(root_abc, niche, level), paste("ANCOM-BC2:", niche), is_asv, is_ancom = TRUE)
+  
+  # Assemble
+  grid <- (p_m2 | p_m3 | p_abc) + 
+    plot_layout(guides = "collect") +
+    plot_annotation(title = paste("Differential Abundance Comparison -", niche, "-", level, "Level"))
+  
+  # Save
+  file_name <- file.path(output_dir, paste0("Comparison_", niche, "_", level, ".svg"))
+  ggsave(file_name, grid, width = 10, height = 7)
+}
+
+# ASV Level
+generate_comparison_grid("ASV", "NP", is_asv = TRUE)
+generate_comparison_grid("ASV", "OP", is_asv = TRUE)
+
+# Genus Level
+generate_comparison_grid("Genus", "NP", is_asv = FALSE)
+generate_comparison_grid("Genus", "OP", is_asv = FALSE)
+
+
+```
+
+### DAA heatmaps stratified by Respiratory disease
 #### MaAsLin2 heatmaps
 ```{r}
 #### MaAsLin2 HEATMAPS — STRATIFIED BY RespDx ####
-
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
@@ -6267,7 +7221,7 @@ for (tax_level in tax_levels) {
 ```
 
 
-### ANCOM-BC2
+#### ANCOM-BC2 stratified heatmaps
 ```{r}
 # helper to subset TSE by RespDx
 subset_tse_by_level <- function(tse, var = "RespDx", level = "no") {
@@ -6379,9 +7333,8 @@ for (lv in resp_levels) {
 }
 
 message("Done: RespDx-stratified ANCOM-BC2.")
-```
-#### ANCOM-BC2 heatmaps
-```{r}
+
+
 # ANCOM-BC2 heatmaps — NP & OP combined, ASV & Genus
 root_ancom_strat <- "../Output/Cross_sectional/DA/ANCOMBC2/Stratified"
 
@@ -7039,6 +7992,53 @@ cat("OP participants AFTER:",
 
 ```
 
+# Check dates of microbiome sampling
+```{r}
+ps <- readRDS("../Input/Phyloseq/VGO3_NPOP/1_ps_raw.Rds")
+
+
+# filter for population == "CP"
+dates <- as.Date(ps@sam_data$visit_date[ps@sam_data$population == "CP"])
+# sort dates
+dates_sorted <- sort(dates)
+# earliest date
+earliest_date <- min(dates, na.rm = TRUE)
+latest_date <- max(dates, na.rm = TRUE)
+
+dates_sorted
+earliest_date # 2021-08-11
+latest_date # 2022-07-27
+
+
+# keep only CP rows
+df <- ps@sam_data[ps@sam_data$population == "CP", ]
+
+# make sure visit_date is a Date
+df$visit_date <- as.Date(df$visit_date)
+
+# create 2-month blocks starting from the earliest CP date
+start_date <- min(df$visit_date, na.rm = TRUE)
+end_date   <- max(df$visit_date, na.rm = TRUE)
+
+breaks <- seq(start_date, end_date + 62, by = "2 months")
+
+# assign each visit to a 2-month block
+df$block <- cut(df$visit_date, breaks = breaks, right = FALSE, include.lowest = TRUE)
+
+df <- data.frame(df)
+# count unique participants per block
+out <- aggregate(sample_identifier ~ block, data = df, function(x) length(unique(x)))
+
+# add block start/end dates
+out$block_start <- breaks[1:nrow(out)]
+out$block_end   <- breaks[2:(nrow(out) + 1)] - 1
+
+# rename count column
+names(out)[2] <- "n_participants"
+
+out[, c("block_start", "block_end", "n_participants")]
+
+```
 
 
 
