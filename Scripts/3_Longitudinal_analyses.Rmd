@@ -2071,6 +2071,23 @@ ids_RQ1 <- ps_RQ1@sam_data$ID
 length(intersect(ids_RQ2, ids_RQ1)) # 108 intersect
 setdiff(ids_RQ2, ids_RQ1) # 0 in RQ2 but not in RQ1 
 setdiff(ids_RQ1, ids_RQ2) # 2 in RQ1 but not in RQ2: "21255" "30381"
+
+
+# Save phyloseqs for zenodo upload and remove identifiable metadata
+# Phyloseq for longitudinal lung function analyses
+zenodo_longitudinal_lf <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ1_T0micro_LFboth.rds")
+keep_cols <- c("qPCR", "ID", "timepoint", "niche", "DI.Run")
+sample_data(zenodo_longitudinal_lf) <- sample_data(zenodo_longitudinal_lf)[, keep_cols]
+saveRDS(zenodo_longitudinal_lf, "../Output/Zenodo_upload/VGO3_ps_longitudinal_lungfunction.rds")
+
+
+# Phyloseq for longitudinal stability analyses
+zenodo_longitudinal_stability <- readRDS("../Output/Longitudinal/Phyloseq/ps_RQ2_pairedNiche_only.rds")
+keep_cols <- c("qPCR", "ID", "timepoint", "niche", "DI.Run")
+sample_data(zenodo_longitudinal_stability) <- sample_data(zenodo_longitudinal_stability)[, keep_cols]
+saveRDS(zenodo_longitudinal_stability, "../Output/Zenodo_upload/VGO3_ps_longitudinal_stability.rds")
+
+
 ```
 # Add season 
 ```{r}

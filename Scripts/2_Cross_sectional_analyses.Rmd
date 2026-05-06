@@ -1096,6 +1096,12 @@ sample_data(ps4_m) <- sd
 # Save phyloseq
 ```{r}
 saveRDS(ps4_m, "../Output/Cross_sectional/Phyloseq/ps_final_VGO3.rds")
+
+# Save for zenodo upload and remove identifiable metadata
+zenodo_cross_sectional <- readRDS("../Output/Cross_sectional/Phyloseq/ps_final_VGO3.rds")
+keep_cols <- c("qPCR", "VGO3_ID", "timepoint", "niche", "DI.Run")
+sample_data(zenodo_cross_sectional) <- sample_data(zenodo_cross_sectional)[, keep_cols]
+saveRDS(zenodo_cross_sectional, "../Output/Zenodo_upload/VGO3_ps_crosssectional.rds")
 ```
 
 # Replace sample data in the rarefied phyloseq with adapted data
